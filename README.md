@@ -73,13 +73,13 @@ There are no runtime dependencies. The only devDependencies are exact pins:
 
 | Package | Version | Age evidence checked for October 8, 2026 |
 | --- | --- | --- |
-| `@figma/plugin-typings` | `1.117.0` | [Official npm version history](https://www.npmjs.com/package/%40figma/plugin-typings?activeTab=versions) lists it as over a year old; [Figma's matching release tag](https://github.com/figma/plugin-typings/tree/v1.117.0) is dated `2025-08-13T21:46:41Z`. |
+| `@figma/plugin-typings` | `1.117.0` | npm registry `time` metadata: `2025-08-13T21:50:04.952Z`; [registry metadata](https://registry.npmjs.org/@figma/plugin-typings). [Figma's matching release tag](https://github.com/figma/plugin-typings/tree/v1.117.0) is dated `2025-08-13T21:46:41Z`. |
 | `typescript` | `5.9.3` | npm registry `time` metadata: `2025-09-30T21:19:38.784Z`; [registry metadata](https://registry.npmjs.org/typescript). |
 | `esbuild` | `0.25.12` | npm registry `time` metadata: `2025-11-01T23:36:22.605Z`; [registry metadata](https://registry.npmjs.org/esbuild). |
 
-All three releases predate the September 24, 2026 cutoff by more than two weeks. TypeScript and esbuild timestamps were read from the locally cached npm registry responses because shell network access was unavailable during implementation.
+All three releases predate the September 24, 2026 cutoff by more than two weeks.
 
-The lockfile was validated with `npm install --package-lock-only --ignore-scripts --offline` using those cached registry records. Its Figma typings entry records the exact version but has no `resolved` or `integrity` field because that package was not cached and the registry was unreachable. On a network-enabled machine, refresh it with `npm install --package-lock-only --ignore-scripts`, then run `npm ci && npm run verify` to fetch and verify the pinned package normally.
+Every lockfile entry records the registry `resolved` URL and `integrity` hash, so `npm ci` fetches exactly these versions and verifies each tarball. The `@figma/plugin-typings` entry was refreshed from the registry on October 9, 2026; its hash matches the registry's published `dist.integrity` for 1.117.0.
 
 ```sh
 npm run typecheck # Figma main-thread types; separate browser UI types
