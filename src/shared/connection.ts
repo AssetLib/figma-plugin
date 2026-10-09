@@ -2,7 +2,7 @@ import type { Connection } from './types.js';
 import { validFileKey } from './validation.js';
 
 export const PRODUCTION_ORIGIN = 'https://assetlib-console.vercel.app';
-export const DEVELOPMENT_ORIGIN = 'http://127.0.0.1:3100';
+export const DEVELOPMENT_ORIGIN = 'http://localhost:3100';
 
 export function normalizeConsoleOrigin(value: string): string {
   const origin = value.trim().replace(/\/$/, '');

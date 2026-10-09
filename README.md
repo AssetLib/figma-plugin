@@ -14,7 +14,7 @@ npm run verify
 The build creates `dist/code.js` and a self-contained `dist/ui.html`. Both outputs must exist before importing the plugin.
 
 1. In Figma desktop, open a design file and select **Plugins → Development → New plugin**. Choose **Figma design** and **Custom UI**, name it **Assetlib**, and save the generated starter in a separate temporary folder.
-2. Copy the Figma-assigned `id` from that starter's `manifest.json` into this repository's `manifest.json` as a top-level string. This repository does not invent a published plugin ID. Keep your assigned ID stable: local connection and sync storage is scoped to the plugin ID.
+2. Copy the Figma-assigned `id` from that starter's `manifest.json` into this repository's `manifest.json` as a top-level string. This repository does not invent a published plugin ID. Importing a manifest without an `id` appears to succeed, but the plugin then cannot save its connection: Figma reports `Cannot access client storage without a plugin ID`. Keep your assigned ID stable: local connection and sync storage is scoped to the plugin ID.
 3. Select **Plugins → Development → Import plugin from manifest…** and choose this repository's `manifest.json`. If Figma already lists the temporary starter under the same ID, remove that development entry before importing this manifest; retain the assigned ID.
 4. Run **Plugins → Development → Assetlib**. Rebuild after source changes; use Figma's development hot reload or reopen the plugin.
 
@@ -24,7 +24,7 @@ See Figma's [development plugin instructions](https://help.figma.com/hc/en-us/ar
 
 Create an **app-scoped API token with the `draft` scope** in the Assetlib console's **Tokens** panel. A Figma access token is neither needed nor accepted as a substitute.
 
-In the plugin's connection settings, enter the console origin, organization ID, app ID, and draft token. The default origin is `https://assetlib-console.vercel.app`. Development also supports exactly `http://127.0.0.1:3100`. Other origins are rejected. Choose **Test connection** to save the settings, call the placements endpoint, and load the available placements.
+In the plugin's connection settings, enter the console origin, organization ID, app ID, and draft token. The default origin is `https://assetlib-console.vercel.app`. Development also supports exactly `http://localhost:3100`; Figma rejects IP-literal development domains such as `http://127.0.0.1:3100`, and the console accepts the `localhost` host for token routes in local mode. Other origins are rejected. Choose **Test connection** to save the settings, call the placements endpoint, and load the available placements.
 
 Settings and the token are saved through `figma.clientStorage` on this device. The password field is cleared after saving, and only a short prefix is displayed afterward. The plugin does not log the token. Figma client storage is local plugin storage, not an encrypted credential vault; clearing it or changing the plugin ID loses the connection and remembered sync destinations.
 
@@ -58,7 +58,7 @@ The manifest declares:
 ```json
 {
   "allowedDomains": ["https://assetlib-console.vercel.app"],
-  "devAllowedDomains": ["http://127.0.0.1:3100"],
+  "devAllowedDomains": ["http://localhost:3100"],
   "reasoning": "Sends exported artwork to the Assetlib console you connect."
 }
 ```

@@ -239,7 +239,8 @@ async function sendExport(message: Extract<MainMessage, { type: 'exported' }>): 
 }
 
 window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
-  if (event.source !== parent) return;
+  // Figma posts plugin messages from its top window, not from the iframe's direct parent (a shim iframe).
+  if (event.source !== parent && event.source !== top) return;
   const message = event.data?.pluginMessage;
   if (!message) return;
   switch (message.type) {

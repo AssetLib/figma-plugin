@@ -36,7 +36,7 @@ test('file URL fallback accepts both file and design links and excludes non-Figm
 test('connection origin is limited to the two manifest origins', () => {
   assert.equal(normalizeConsoleOrigin(`${PRODUCTION_ORIGIN}/`), PRODUCTION_ORIGIN);
   assert.equal(normalizeConsoleOrigin(DEVELOPMENT_ORIGIN), DEVELOPMENT_ORIGIN);
-  for (const origin of ['http://localhost:3100', 'https://assetlib-console.vercel.app.evil.test',
+  for (const origin of ['http://127.0.0.1:3100', 'https://assetlib-console.vercel.app.evil.test',
     `${PRODUCTION_ORIGIN}/path`, `${PRODUCTION_ORIGIN}?token=secret`, `https://user:secret@assetlib-console.vercel.app`]) {
     assert.throws(() => normalizeConsoleOrigin(origin));
   }
@@ -254,5 +254,5 @@ test('errors explain token scopes, payload size, console conflicts, and the call
   assert.equal(mapHttpError(409, { error: { message: 'Canvas does not match.' } }), 'Canvas does not match.');
   assert.match(mapHttpError(500, null), /HTTP 500/);
   assert.equal(mapHttpError(400, { message: 'Invalid file key.' }), 'Invalid file key.');
-  assert.match(mapNetworkError(DEVELOPMENT_ORIGIN), /http:\/\/127\.0\.0\.1:3100/);
+  assert.match(mapNetworkError(DEVELOPMENT_ORIGIN), /http:\/\/localhost:3100/);
 });
