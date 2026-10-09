@@ -31,9 +31,13 @@ export interface NodeSelection {
   type: string;
 }
 
-export interface ExportSettings {
+export interface SourceExportSettings {
   format: 'PNG';
   constraint: { type: 'WIDTH' | 'HEIGHT'; value: number };
+}
+
+export interface ExportSettings extends SourceExportSettings {
+  useAbsoluteBounds: true;
 }
 
 export interface Connection {
@@ -54,7 +58,7 @@ export interface DraftBody {
     nodeId: string;
     nodeName: string;
     versionId: null;
-    export: ExportSettings;
+    export: SourceExportSettings;
   };
   bind: CellBinding;
   rebind: boolean;

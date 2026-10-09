@@ -63,7 +63,8 @@ export function buildDraftBody(input: {
   if (!validNodeId(node.id)) throw new Error('The selected node id cannot be sent to the console.');
   if (typeof node.name !== 'string') throw new Error('The selected node has no valid name.');
   const expected = chooseExportSettings(node, placement);
-  if (settings.format !== 'PNG' || settings.constraint.type !== expected.constraint.type || settings.constraint.value !== expected.constraint.value) {
+  if (settings.format !== 'PNG' || settings.useAbsoluteBounds !== true
+    || settings.constraint.type !== expected.constraint.type || settings.constraint.value !== expected.constraint.value) {
     throw new Error('The export settings no longer match the selected node and placement. Export again.');
   }
   if (decodedBase64Length(bytesBase64) > MAX_IMAGE_BYTES) throw new Error('The export is too large (maximum 4 MiB). Use a smaller export constraint.');

@@ -1,7 +1,7 @@
 import {
   apiUrl, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions,
   chooseExportSettings, mapHttpError, mapNetworkError, parseDraftResponse,
-  parsePlacements, tokenPrefix, validateBinding, validateConnection,
+  parsePlacements, parsePngDimensions, tokenPrefix, validateBinding, validateConnection,
 } from './shared/index.js';
 import type { CellBinding, Connection, DraftResult, Placement } from './shared/index.js';
 import type { MainMessage, SelectionState, UiMessage } from './shared/protocol.js';
@@ -23,6 +23,9 @@ const armPicker = element<HTMLSelectElement>('arm');
 const sendButton = element<HTMLButtonElement>('send');
 const syncButton = element<HTMLButtonElement>('sync');
 let connection: Connection | null = null;
+// No selection reply is trusted while a connection save awaits acknowledgement.
+let connectionGeneration: number | null = null;
+let selectionGeneration: number | null = null;
 let placements: Placement[] = [];
 let selection: SelectionState = { node: null, reason: 'Select one node.', fileKey: null, remembered: null };
 let busy = false;
@@ -36,6 +39,14 @@ function clearError(): void { element('error').hidden = true; element('error').t
 function showError(message: string): void { element('error').textContent = message; element('error').hidden = false; }
 function errorText(error: unknown): string { return error instanceof Error ? error.message : 'The action could not be completed.'; }
 function setBusy(value: boolean): void { busy = value; render(); }
+function hasCurrentSelection(): boolean {
+  return connectionGeneration !== null && selectionGeneration === connectionGeneration;
+}
+function clearRememberedSelection(): void {
+  selection = { ...selection, remembered: null };
+  selectionGeneration = null;
+  selectionIdentity = '';
+}
 function chosenPlacement(): Placement | undefined { return placements.find(item => item.key === placementPicker.value); }
 function chosenBinding(placement: Placement): CellBinding {
   return validateBinding(placement, {
@@ -44,6 +55,7 @@ function chosenBinding(placement: Placement): CellBinding {
   });
 }
 function rememberedBinding(): { placement: Placement; bind: CellBinding } | null {
+  if (!hasCurrentSelection()) return null;
   const target = selection.remembered;
   if (!target) return null;
   const placement = placements.find(item => item.key === target.placementKey);
@@ -93,7 +105,7 @@ function render(): void {
   element('file-fallback').hidden = Boolean(selection.fileKey);
   placementPicker.disabled = busy || placements.length === 0;
   const placement = chosenPlacement();
-  const ready = Boolean(connection && node && !selection.reason && selection.fileKey && !busy);
+  const ready = Boolean(connection && hasCurrentSelection() && node && !selection.reason && selection.fileKey && !busy);
   sendButton.disabled = !ready || !placement;
   const validArea = node && !selection.reason;
   element('export-note').textContent = placement && validArea ? exportDescription(placement) : '';
@@ -129,11 +141,14 @@ async function request(config: Connection, endpoint: 'placements' | 'drafts', bo
 }
 async function loadPlacements(): Promise<void> {
   if (!connection) return;
+  const config = connection;
+  const generation = connectionGeneration;
   clearError();
   setStatus('Testing connection…');
   setBusy(true);
   try {
-    const response = await request(connection, 'placements');
+    const response = await request(config, 'placements');
+    if (generation !== connectionGeneration) return;
     if (response.status !== 200) throw new Error(mapHttpError(response.status, response.payload));
     placements = parsePlacements(response.payload);
     placementPicker.replaceChildren(...(placements.length
@@ -145,6 +160,7 @@ async function loadPlacements(): Promise<void> {
     settings.open = false;
     setStatus(placements.length ? `Connected. ${placements.length} placement${placements.length === 1 ? '' : 's'} available.` : 'Connected. Create a placement in the console, then test again.');
   } catch (error) {
+    if (generation !== connectionGeneration) return;
     placements = [];
     placementPicker.replaceChildren(new Option('Test your connection to load placements', ''));
     updateCellPickers();
@@ -152,7 +168,7 @@ async function loadPlacements(): Promise<void> {
     settings.open = true;
     setStatus('');
     showError(errorText(error));
-  } finally { setBusy(false); }
+  } finally { if (generation === connectionGeneration) setBusy(false); }
 }
 function bindingLabel(bind: CellBinding): string {
   return [bind.slotKey, bind.arm ?? 'Control', bind.appearance ?? 'Any', bind.state ?? 'default state'].join(' · ');
@@ -181,7 +197,7 @@ function showResult(result: DraftResult, config: Connection, rebind: boolean): v
   container.hidden = false;
 }
 function beginSend(rebind: boolean): void {
-  if (busy || !connection || !selection.node || !selection.fileKey || selection.reason) return;
+  if (busy || !connection || !hasCurrentSelection() || !selection.node || !selection.fileKey || selection.reason) return;
   clearError();
   try {
     const remembered = rebind ? rememberedBinding() : null;
@@ -199,9 +215,15 @@ async function sendExport(message: Extract<MainMessage, { type: 'exported' }>): 
   const operation = pending;
   if (!operation || operation.id !== message.requestId) return;
   try {
+    const bytes = new Uint8Array(message.bytes);
+    const dimensions = parsePngDimensions(bytes);
+    const difference = aspectRatioDifference(dimensions, operation.placement);
+    if (difference > 0.02) {
+      throw new Error(`The exported PNG (${dimensions.width} × ${dimensions.height}) differs from the placement (${operation.placement.width} × ${operation.placement.height}) aspect ratio by ${(difference * 100).toFixed(1)}%, more than 2%. Adjust the artwork or choose a matching placement before sending. Nothing was uploaded.`);
+    }
     setStatus('Sending PNG to the draft…');
     const body = buildDraftBody({ node: message.node, fileKey: message.fileKey, placement: operation.placement, bind: operation.bind,
-      bytesBase64: bytesToBase64(new Uint8Array(message.bytes)), settings: message.settings, rebind: operation.rebind });
+      bytesBase64: bytesToBase64(bytes), settings: message.settings, rebind: operation.rebind });
     const response = await request(operation.connection, 'drafts', body);
     if (response.status !== 201 && response.status !== 409) throw new Error(mapHttpError(response.status, response.payload));
     let result: DraftResult;
@@ -222,7 +244,10 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
   if (!message) return;
   switch (message.type) {
     case 'connection':
+      clearRememberedSelection();
       connection = message.connection;
+      connectionGeneration = message.connectionGeneration;
+      placements = [];
       token.value = '';
       if (connection) {
         origin.value = connection.origin; orgId.value = connection.orgId; appId.value = connection.appId;
@@ -232,6 +257,8 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
       if (connection) void loadPlacements(); else { setBusy(false); setStatus('Connect to your app to get started.'); }
       break;
     case 'selection': {
+      if (message.connectionGeneration !== connectionGeneration) break;
+      selectionGeneration = message.connectionGeneration;
       selection = message.selection;
       const identity = JSON.stringify([selection.fileKey, selection.node?.id, selection.remembered]);
       if (identity !== selectionIdentity) { selectionIdentity = identity; selectRemembered(); }
@@ -256,6 +283,8 @@ element<HTMLFormElement>('connection-form').addEventListener('submit', event => 
     const sameApp = connection && connection.origin === origin.value && connection.orgId === orgId.value.trim() && connection.appId === appId.value.trim();
     const next = validateConnection({ origin: origin.value, orgId: orgId.value, appId: appId.value, token: token.value.trim() || (sameApp ? connection?.token ?? '' : '') });
     token.value = '';
+    clearRememberedSelection();
+    connectionGeneration = null;
     placements = [];
     setBusy(true); setStatus('Saving connection…');
     post({ type: 'save-connection', connection: next });

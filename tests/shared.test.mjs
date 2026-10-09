@@ -4,7 +4,7 @@ import {
   MAX_BODY_BYTES, MAX_IMAGE_BYTES, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN,
   apiUrl, aspectRatioDifference, assertDraftBodyLimit, buildDraftBody, bytesToBase64,
   cellOptions, chooseExportSettings, decodedBase64Length, mapHttpError, mapNetworkError,
-  normalizeConsoleOrigin, parseDraftResponse, parseFileKey, parsePlacements, tokenPrefix,
+  normalizeConsoleOrigin, parseDraftResponse, parseFileKey, parsePlacements, parsePngDimensions, tokenPrefix,
   utf8Length, validArm, validateBinding, validateConnection,
 } from '../.test-build/shared/index.js';
 
@@ -108,15 +108,61 @@ test('binding permits only declared cells, with null for control/any/default', (
   assert.throws(() => validateBinding(placement, { ...bind, arm: 'b' }), /arm/);
 });
 
-test('export constraint follows G1: HEIGHT for taller nodes, WIDTH otherwise', () => {
-  assert.deepEqual(chooseExportSettings(node, placement), { format: 'PNG', constraint: { type: 'WIDTH', value: 1200 } });
+test('export uses absolute bounds with HEIGHT for taller nodes and WIDTH otherwise', () => {
+  assert.deepEqual(chooseExportSettings(node, placement), { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 1200 } });
   assert.deepEqual(chooseExportSettings({ ...node, width: 400, height: 800 }, placement),
-    { format: 'PNG', constraint: { type: 'HEIGHT', value: 900 } });
+    { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'HEIGHT', value: 900 } });
   assert.deepEqual(chooseExportSettings({ ...node, width: 1600, height: 400 }, placement),
-    { format: 'PNG', constraint: { type: 'WIDTH', value: 1200 } });
+    { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 1200 } });
   for (const dimension of [0, -1, NaN, Infinity]) {
     assert.throws(() => chooseExportSettings({ ...node, width: dimension }, placement), /non-zero/);
     assert.throws(() => aspectRatioDifference(node, { ...placement, height: dimension }), /non-zero/);
+  }
+});
+
+function pngHeader(width = 1200, height = 900) {
+  const bytes = new Uint8Array(33);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(8, 13);
+  bytes.set([73, 72, 68, 82], 12);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  bytes.set([8, 6, 0, 0, 0], 24);
+  return bytes;
+}
+
+test('PNG dimensions come from big-endian IHDR values, including a byte-offset view', () => {
+  assert.deepEqual(parsePngDimensions(pngHeader()), { width: 1200, height: 900 });
+  assert.deepEqual(parsePngDimensions(pngHeader(1, 0x7fffffff)), { width: 1, height: 0x7fffffff });
+  const backing = new Uint8Array(45).fill(255);
+  backing.set(pngHeader(815, 600), 7);
+  const dimensions = parsePngDimensions(backing.subarray(7, 40));
+  assert.deepEqual(dimensions, { width: 815, height: 600 });
+  assert.ok(aspectRatioDifference(dimensions, placement) < 0.02);
+  assert.ok(aspectRatioDifference(parsePngDimensions(pngHeader(817, 600)), placement) > 0.02);
+});
+
+test('PNG dimensions reject malformed signatures, IHDR chunks, truncation and illegal sizes', () => {
+  for (let length = 0; length < 33; length++) {
+    assert.throws(() => parsePngDimensions(pngHeader().subarray(0, length)), /PNG.*IHDR/);
+  }
+  for (let index = 0; index < 8; index++) {
+    const bytes = pngHeader();
+    bytes[index] ^= 255;
+    assert.throws(() => parsePngDimensions(bytes), /PNG.*IHDR/);
+  }
+  for (const length of [0, 12, 14, 0xffffffff]) {
+    const bytes = pngHeader();
+    new DataView(bytes.buffer).setUint32(8, length);
+    assert.throws(() => parsePngDimensions(bytes), /PNG.*IHDR/);
+  }
+  const wrongType = pngHeader();
+  wrongType.set([73, 68, 65, 84], 12);
+  assert.throws(() => parsePngDimensions(wrongType), /PNG.*IHDR/);
+  for (const value of [0, 0x80000000, 0xffffffff]) {
+    assert.throws(() => parsePngDimensions(pngHeader(value, 900)), /PNG.*dimensions/);
+    assert.throws(() => parsePngDimensions(pngHeader(1200, value)), /PNG.*dimensions/);
   }
 });
 
@@ -159,7 +205,10 @@ test('draft body contains only the source export and chosen binding contract', (
   assert.equal(makeBody({ node: { ...node, name: ' ' } }).name, placement.key);
   for (const fileKey of ['', 'bad/key', 'x'.repeat(129)]) assert.throws(() => makeBody({ fileKey }), /file URL/);
   for (const id of ['', 'bad_id', 'x'.repeat(65)]) assert.throws(() => makeBody({ node: { ...node, id } }), /node id/);
-  assert.throws(() => makeBody({ settings: { format: 'PNG', constraint: { type: 'WIDTH', value: 600 } } }), /Export again/);
+  assert.throws(() => makeBody({ settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 600 } } }), /Export again/);
+  for (const useAbsoluteBounds of [undefined, false]) {
+    assert.throws(() => makeBody({ settings: { ...chooseExportSettings(node, placement), useAbsoluteBounds } }), /Export again/);
+  }
   assert.throws(() => makeBody({ bind: { ...bind, arm: 'b' } }), /arm/);
 });
 

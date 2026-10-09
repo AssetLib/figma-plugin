@@ -8,6 +8,7 @@ import type { MainMessage, RememberedTarget, UiMessage } from './shared/protocol
 const CONNECTION_KEY = 'assetlib.connection.v1';
 const FILE_URL_KEY = 'assetlib.file-url.v1';
 let connection: Connection | null = null;
+let connectionGeneration = 0;
 let savedFileUrl = '';
 // Without the public file key, a saved URL must be confirmed for each run:
 // node IDs and page IDs alone cannot identify a file across documents.
@@ -40,20 +41,23 @@ function isRemembered(value: unknown, fileKey: string, nodeId: string): value is
 }
 async function reportSelection(): Promise<void> {
   const revision = ++selectionRevision;
+  // Client storage can resolve after a different app or token has been saved.
+  const generation = connectionGeneration;
+  const config = connection;
   const node = selectedNode();
   const fileKey = currentFileKey();
   let reason: string | null = null;
   let remembered: RememberedTarget | null = null;
   if (!node) reason = figma.currentPage.selection.length === 0 ? 'Select one node to send its artwork.' : 'Select just one node. Multiple selections cannot be sent together.';
   else if (node.width <= 0 || node.height <= 0) reason = 'This node has no exportable area. Select a node with a positive width and height.';
-  if (node && fileKey && connection) {
+  if (node && fileKey && config) {
     try {
-      const value: unknown = await figma.clientStorage.getAsync(targetKey(connection, fileKey, node.id));
+      const value: unknown = await figma.clientStorage.getAsync(targetKey(config, fileKey, node.id));
       if (isRemembered(value, fileKey, node.id)) remembered = value;
     } catch { /* A storage read failure must not prevent a new send. */ }
   }
-  if (revision !== selectionRevision) return;
-  post({ type: 'selection', selection: { node: node ? describeNode(node) : null, reason, fileKey, remembered } });
+  if (revision !== selectionRevision || generation !== connectionGeneration) return;
+  post({ type: 'selection', connectionGeneration: generation, selection: { node: node ? describeNode(node) : null, reason, fileKey, remembered } });
 }
 
 const initialized = (async () => {
@@ -71,7 +75,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
   await initialized;
   switch (message.type) {
     case 'init':
-      post({ type: 'connection', connection, savedFileUrl });
+      post({ type: 'connection', connectionGeneration, connection, savedFileUrl });
       await reportSelection();
       break;
     case 'save-connection': {
@@ -79,7 +83,8 @@ async function handleMessage(message: UiMessage): Promise<void> {
       try { await figma.clientStorage.setAsync(CONNECTION_KEY, next); }
       catch { throw new Error('Could not save the connection in Figma. Please try again.'); }
       connection = next;
-      post({ type: 'connection', connection, savedFileUrl });
+      connectionGeneration += 1;
+      post({ type: 'connection', connectionGeneration, connection, savedFileUrl });
       await reportSelection();
       break;
     }

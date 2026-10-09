@@ -24,8 +24,8 @@ export type UiMessage =
   | { type: 'remember'; requestId: number };
 
 export type MainMessage =
-  | { type: 'connection'; connection: Connection | null; savedFileUrl: string }
-  | { type: 'selection'; selection: SelectionState }
+  | { type: 'connection'; connectionGeneration: number; connection: Connection | null; savedFileUrl: string }
+  | { type: 'selection'; connectionGeneration: number; selection: SelectionState }
   | { type: 'file-saved'; fileKey: string }
   | { type: 'exported'; requestId: number; node: NodeSelection; fileKey: string; settings: ExportSettings; bytes: Uint8Array }
   | { type: 'remembered'; requestId: number }
