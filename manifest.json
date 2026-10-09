@@ -10,6 +10,7 @@
   "documentAccess": "dynamic-page",
   "networkAccess": {
     "allowedDomains": [
+      "https://console.assetlib.dev",
       "https://assetlib-console.vercel.app"
     ],
     "devAllowedDomains": [

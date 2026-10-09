@@ -22,9 +22,11 @@ See Figma's [development plugin instructions](https://help.figma.com/hc/en-us/ar
 
 ## Connect
 
-Create an **app-scoped API token with the `draft` scope** in the Assetlib console's **Tokens** panel. A Figma access token is neither needed nor accepted as a substitute.
+Create an **app-scoped API token with the `draft` scope** in the **Tokens** panel of the [Assetlib console](https://console.assetlib.dev). A Figma access token is neither needed nor accepted as a substitute.
 
-In the plugin's connection settings, enter the console origin, organization ID, app ID, and draft token. The default origin is `https://assetlib-console.vercel.app`. Development also supports exactly `http://localhost:3100`; Figma rejects IP-literal development domains such as `http://127.0.0.1:3100`, and the console accepts the `localhost` host for token routes in local mode. Other origins are rejected. Choose **Test connection** to save the settings, call the placements endpoint, and load the available placements.
+In the plugin's connection settings, enter the console origin, organization ID, app ID, and draft token. The default origin is `https://console.assetlib.dev`. Development also supports exactly `http://localhost:3100`; Figma rejects IP-literal development domains such as `http://127.0.0.1:3100`, and the console accepts the `localhost` host for token routes in local mode. Other origins are rejected. Choose **Test connection** to save the settings, call the placements endpoint, and load the available placements.
+
+Connections saved by earlier builds may name the console's previous host, `https://assetlib-console.vercel.app`. The plugin loads such a connection on `https://console.assetlib.dev` with the same token and saves the change, and sync destinations remembered under the previous host still apply. The console still accepts app tokens on the previous host, and the manifest keeps it allowed so an unrebuilt `dist/` keeps working. New connections cannot choose it.
 
 Settings and the token are saved through `figma.clientStorage` on this device. The password field is cleared after saving, and only a short prefix is displayed afterward. The plugin does not log the token. Figma client storage is local plugin storage, not an encrypted credential vault; clearing it or changing the plugin ID loses the connection and remembered sync destinations.
 
@@ -57,7 +59,7 @@ The manifest declares:
 
 ```json
 {
-  "allowedDomains": ["https://assetlib-console.vercel.app"],
+  "allowedDomains": ["https://console.assetlib.dev", "https://assetlib-console.vercel.app"],
   "devAllowedDomains": ["http://localhost:3100"],
   "reasoning": "Sends exported artwork to the Assetlib console you connect."
 }

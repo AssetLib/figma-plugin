@@ -10,7 +10,9 @@ const [mainSource, uiSource] = await Promise.all(['src/code.ts', 'src/ui.ts'].ma
   return result.outputFiles[0].text;
 }));
 
-const connection = { origin: 'https://assetlib-console.vercel.app', orgId: 'org-one', appId: 'app-a', token: 'draft_a' };
+const connection = { origin: 'https://console.assetlib.dev', orgId: 'org-one', appId: 'app-a', token: 'draft_a' };
+// Connections saved before the console moved to console.assetlib.dev name its earlier host.
+const legacyConnection = { ...connection, origin: 'https://assetlib-console.vercel.app' };
 const placement = { key: 'hero.artwork', screen: 'Home', width: 1000, height: 1000,
   states: ['old', 'new'], defaultState: 'old', variants: { appearance: ['light', 'dark'], arm: ['b', 'c'] }, origin: 'declared' };
 const node = { id: '12:34', name: 'Hero artwork', type: 'FRAME', width: 1000, height: 1000 };
@@ -56,7 +58,7 @@ class Element {
   append(...children) { this.children.push(...children); }
 }
 
-function harness({ remembered = rememberedA, bytes = pngHeader(1000, 1000) } = {}) {
+function harness({ remembered = rememberedA, bytes = pngHeader(1000, 1000), saved = connection } = {}) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) elements.set(id, new Element(id));
@@ -68,7 +70,7 @@ function harness({ remembered = rememberedA, bytes = pngHeader(1000, 1000) } = {
   const requests = [];
   const exports = [];
   const pendingReads = [];
-  const storage = new Map([['assetlib.connection.v1', clone(connection)], [storageKey(connection), clone(remembered)]]);
+  const storage = new Map(saved ? [['assetlib.connection.v1', clone(saved)], [storageKey(saved), clone(remembered)]] : []);
   const events = new Map();
   let delayTargets = false;
   let connectionWrite = null;
@@ -120,7 +122,7 @@ function harness({ remembered = rememberedA, bytes = pngHeader(1000, 1000) } = {
     },
   }, { filename: 'ui.bundle.js' });
   return {
-    element, mainMessages, uiMessages, requests, exports, pendingReads, deliver,
+    element, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage,
     drafts: () => requests.filter(request => request.method === 'POST'),
     exportMessages: () => uiMessages.filter(message => message.type === 'export'),
     delayTargetReads() { delayTargets = true; },
@@ -261,4 +263,54 @@ test('malformed PNG bytes show an actionable error before any draft upload', asy
   assert.equal(app.drafts().length, 0);
   assert.equal(app.element('error').hidden, false);
   assert.match(app.element('error').textContent, /PNG/i);
+});
+
+test('a connection saved on the legacy host loads on the current host with the same token and keeps its sync target', async () => {
+  const app = harness({ saved: legacyConnection });
+  await flush();
+  const loaded = app.mainMessages.find(message => message.type === 'connection');
+  assert.deepEqual(loaded.connection, connection, 'only the origin changes');
+  assert.deepEqual(app.storage.get('assetlib.connection.v1'), connection, 'the moved origin is saved for the next run');
+  assert.equal(app.element('origin').value, connection.origin);
+  assert.deepEqual(app.requests.map(request => [request.method, request.url, request.authorization]),
+    [['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, 'Bearer draft_a']]);
+  assert.equal(app.element('sync').disabled, false, 'the sync target remembered under the legacy host is still found');
+
+  app.element('sync').dispatch('click');
+  await flush();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(app.drafts()[0].url, `${connection.origin}/api/apps/org-one/app-a/drafts`);
+  assert.equal(app.drafts()[0].authorization, 'Bearer draft_a');
+  assert.equal(app.drafts()[0].body.rebind, true);
+  assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: 'light', arm: 'b' });
+  assert.deepEqual(app.storage.get(storageKey(connection)), rememberedA, 'the sync target is now saved under the current host');
+  const link = app.element('result').children.find(child => child.textContent === 'Open Assetlib console');
+  assert.equal(link.href, connection.origin, 'people are sent to the current console host');
+
+  app.saveConnection({ ...connection, token: '' });
+  await flush();
+  assert.equal(app.element('error').hidden, true);
+  assert.equal(app.requests.at(-1).url, `${connection.origin}/api/apps/org-one/app-a/placements`);
+  assert.equal(app.requests.at(-1).authorization, 'Bearer draft_a', 're-saving the same app keeps the saved token');
+});
+
+test('a first connection uses the current host and cannot choose the legacy host', async () => {
+  const app = harness({ saved: null });
+  await flush();
+  assert.equal(app.element('status').textContent, 'Connect to your app to get started.');
+  assert.equal(app.requests.length, 0);
+
+  app.saveConnection(legacyConnection);
+  await flush();
+  assert.equal(app.uiMessages.filter(message => message.type === 'save-connection').length, 0);
+  assert.equal(app.element('error').hidden, false);
+  assert.match(app.element('error').textContent, /https:\/\/console\.assetlib\.dev/);
+  assert.equal(app.requests.length, 0);
+
+  app.saveConnection(connection);
+  await flush();
+  assert.deepEqual(app.storage.get('assetlib.connection.v1'), connection);
+  assert.deepEqual(app.requests.map(request => [request.method, request.url, request.authorization]),
+    [['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, 'Bearer draft_a']]);
+  assert.equal(app.element('send').disabled, false);
 });

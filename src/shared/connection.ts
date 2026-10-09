@@ -1,15 +1,28 @@
 import type { Connection } from './types.js';
 import { validFileKey } from './validation.js';
 
-export const PRODUCTION_ORIGIN = 'https://assetlib-console.vercel.app';
+export const PRODUCTION_ORIGIN = 'https://console.assetlib.dev';
 export const DEVELOPMENT_ORIGIN = 'http://localhost:3100';
+// The console's earlier production host. It still accepts app tokens, so a
+// connection saved with it moves to PRODUCTION_ORIGIN on load with the same token.
+export const LEGACY_PRODUCTION_ORIGIN = 'https://assetlib-console.vercel.app';
+
+function trimOrigin(value: string): string { return value.trim().replace(/\/$/, ''); }
 
 export function normalizeConsoleOrigin(value: string): string {
-  const origin = value.trim().replace(/\/$/, '');
+  const origin = trimOrigin(value);
   if (origin !== PRODUCTION_ORIGIN && origin !== DEVELOPMENT_ORIGIN) {
     throw new Error(`Use ${PRODUCTION_ORIGIN} or ${DEVELOPMENT_ORIGIN} as the console origin.`);
   }
   return origin;
+}
+
+/** Validates a connection read from client storage. A saved legacy production origin becomes PRODUCTION_ORIGIN. */
+export function loadSavedConnection(value: unknown): Connection {
+  if (!value || typeof value !== 'object') throw new Error('No saved connection.');
+  const saved = value as Connection;
+  const origin = typeof saved.origin === 'string' && trimOrigin(saved.origin) === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : saved.origin;
+  return validateConnection({ ...saved, origin });
 }
 
 export function validateConnection(value: Connection): Connection {

@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
-  MAX_BODY_BYTES, MAX_IMAGE_BYTES, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN,
+  MAX_BODY_BYTES, MAX_IMAGE_BYTES, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
   apiUrl, aspectRatioDifference, assertDraftBodyLimit, buildDraftBody, bytesToBase64,
-  cellOptions, chooseExportSettings, decodedBase64Length, mapHttpError, mapNetworkError,
+  cellOptions, chooseExportSettings, decodedBase64Length, loadSavedConnection, mapHttpError, mapNetworkError,
   normalizeConsoleOrigin, parseDraftResponse, parseFileKey, parsePlacements, parsePngDimensions, tokenPrefix,
   utf8Length, validArm, validateBinding, validateConnection,
 } from '../.test-build/shared/index.js';
+
+const readText = path => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
 const placement = { key: 'travel.coast', screen: 'Travel / Discover', width: 1200, height: 900,
   states: null, defaultState: null, variants: null, origin: 'declared' };
@@ -33,13 +36,17 @@ test('file URL fallback accepts both file and design links and excludes non-Figm
   }
 });
 
-test('connection origin is limited to the two manifest origins', () => {
+test('connection origin is limited to the production and development origins', () => {
+  assert.equal(PRODUCTION_ORIGIN, 'https://console.assetlib.dev');
   assert.equal(normalizeConsoleOrigin(`${PRODUCTION_ORIGIN}/`), PRODUCTION_ORIGIN);
   assert.equal(normalizeConsoleOrigin(DEVELOPMENT_ORIGIN), DEVELOPMENT_ORIGIN);
-  for (const origin of ['http://127.0.0.1:3100', 'https://assetlib-console.vercel.app.evil.test',
-    `${PRODUCTION_ORIGIN}/path`, `${PRODUCTION_ORIGIN}?token=secret`, `https://user:secret@assetlib-console.vercel.app`]) {
-    assert.throws(() => normalizeConsoleOrigin(origin));
+  for (const origin of ['http://127.0.0.1:3100', 'https://console.assetlib.dev.evil.test', 'http://console.assetlib.dev',
+    `${PRODUCTION_ORIGIN}/path`, `${PRODUCTION_ORIGIN}?token=secret`, `https://user:secret@console.assetlib.dev`,
+    LEGACY_PRODUCTION_ORIGIN]) {
+    assert.throws(() => normalizeConsoleOrigin(origin), /console\.assetlib\.dev/);
   }
+  assert.throws(() => validateConnection({ origin: LEGACY_PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token: 'draft' }),
+    'a new connection cannot choose the legacy host');
   const connection = validateConnection({ origin: PRODUCTION_ORIGIN, orgId: ' org-123 ', appId: 'app-456', token: ' draft_secret ' });
   assert.equal(connection.orgId, 'org-123');
   assert.equal(connection.token, 'draft_secret');
@@ -53,6 +60,33 @@ test('connection origin is limited to the two manifest origins', () => {
     assert.ok(tokenPrefix(secret).endsWith('…'));
     assert.ok(!tokenPrefix(secret).includes(secret));
   }
+});
+
+test('a saved connection on the legacy production host loads on the current host with the same token', () => {
+  const saved = { origin: LEGACY_PRODUCTION_ORIGIN, orgId: 'org-123', appId: 'app-456', token: 'draft_secret' };
+  for (const origin of [LEGACY_PRODUCTION_ORIGIN, `${LEGACY_PRODUCTION_ORIGIN}/`, ` ${LEGACY_PRODUCTION_ORIGIN} `]) {
+    assert.deepEqual(loadSavedConnection({ ...saved, origin }), { ...saved, origin: PRODUCTION_ORIGIN });
+  }
+  assert.equal(apiUrl(loadSavedConnection(saved), 'drafts'), `${PRODUCTION_ORIGIN}/api/apps/org-123/app-456/drafts`);
+  for (const origin of [PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN]) {
+    assert.deepEqual(loadSavedConnection({ ...saved, origin }), { ...saved, origin });
+  }
+  for (const value of [null, 'text', { ...saved, origin: 'https://assetlib-console.vercel.app.evil.test' },
+    { ...saved, origin: 'http://assetlib-console.vercel.app' }, { ...saved, origin: 42 }, { ...saved, token: '' }]) {
+    assert.throws(() => loadSavedConnection(value));
+  }
+});
+
+test('manifest, origin picker, and connection rules name the same origins, with the current host as default', async () => {
+  const manifest = JSON.parse(await readText('manifest.json'));
+  assert.deepEqual(manifest.networkAccess.allowedDomains, [PRODUCTION_ORIGIN, LEGACY_PRODUCTION_ORIGIN],
+    'the legacy host stays allowed so a build made before the move keeps working');
+  assert.deepEqual(manifest.networkAccess.devAllowedDomains, [DEVELOPMENT_ORIGIN]);
+  const html = await readText('src/ui.html');
+  const picker = /<select id="origin">([\s\S]*?)<\/select>/.exec(html);
+  assert.ok(picker, 'the origin picker exists');
+  const options = [...picker[1].matchAll(/<option value="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(options, [PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN], 'new connections default to the current host and never offer the legacy one');
 });
 
 test('placements parse stateless and stateful picker data without importing bindings', () => {

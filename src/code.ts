@@ -1,6 +1,6 @@
 import {
-  MAX_IMAGE_BYTES, chooseExportSettings, parseFileKey, parsePlacements,
-  validateBinding, validateConnection,
+  LEGACY_PRODUCTION_ORIGIN, MAX_IMAGE_BYTES, PRODUCTION_ORIGIN, chooseExportSettings, loadSavedConnection,
+  parseFileKey, parsePlacements, validateBinding, validateConnection,
 } from './shared/index.js';
 import type { Connection, NodeSelection } from './shared/index.js';
 import type { MainMessage, RememberedTarget, UiMessage } from './shared/protocol.js';
@@ -24,6 +24,12 @@ function currentFileKey(): string | null {
 }
 function targetKey(config: Connection, fileKey: string, nodeId: string): string {
   return `assetlib.target.v1:${JSON.stringify([config.origin, config.orgId, config.appId, fileKey, nodeId])}`;
+}
+// Sync targets remembered before the console moved hosts stay keyed by the legacy origin.
+function targetKeys(config: Connection, fileKey: string, nodeId: string): string[] {
+  const keys = [targetKey(config, fileKey, nodeId)];
+  if (config.origin === PRODUCTION_ORIGIN) keys.push(targetKey({ ...config, origin: LEGACY_PRODUCTION_ORIGIN }, fileKey, nodeId));
+  return keys;
 }
 function selectedNode(): SceneNode | null {
   return figma.currentPage.selection.length === 1 ? figma.currentPage.selection[0] ?? null : null;
@@ -52,8 +58,10 @@ async function reportSelection(): Promise<void> {
   else if (node.width <= 0 || node.height <= 0) reason = 'This node has no exportable area. Select a node with a positive width and height.';
   if (node && fileKey && config) {
     try {
-      const value: unknown = await figma.clientStorage.getAsync(targetKey(config, fileKey, node.id));
-      if (isRemembered(value, fileKey, node.id)) remembered = value;
+      for (const key of targetKeys(config, fileKey, node.id)) {
+        const value: unknown = await figma.clientStorage.getAsync(key);
+        if (isRemembered(value, fileKey, node.id)) { remembered = value; break; }
+      }
     } catch { /* A storage read failure must not prevent a new send. */ }
   }
   if (revision !== selectionRevision || generation !== connectionGeneration) return;
@@ -61,10 +69,15 @@ async function reportSelection(): Promise<void> {
 }
 
 const initialized = (async () => {
+  let stored: unknown;
   try {
-    const stored: unknown = await figma.clientStorage.getAsync(CONNECTION_KEY);
-    if (stored) connection = validateConnection(stored as Connection);
+    stored = await figma.clientStorage.getAsync(CONNECTION_KEY);
+    if (stored) connection = loadSavedConnection(stored);
   } catch { connection = null; }
+  if (connection && connection.origin !== (stored as Connection).origin) {
+    // Persist the moved origin; if this fails, the same move repeats on the next load.
+    try { await figma.clientStorage.setAsync(CONNECTION_KEY, connection); } catch { /* keep the loaded connection */ }
+  }
   try {
     const stored: unknown = await figma.clientStorage.getAsync(FILE_URL_KEY);
     if (typeof stored === 'string') { parseFileKey(stored); savedFileUrl = stored; }
