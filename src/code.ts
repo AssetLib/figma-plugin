@@ -1,12 +1,18 @@
 import {
-  LEGACY_PRODUCTION_ORIGIN, MAX_IMAGE_BYTES, PRODUCTION_ORIGIN, chooseExportSettings, loadSavedConnection,
-  parseFileKey, parsePlacements, validateBinding, validateConnection,
+  LEGACY_PRODUCTION_ORIGIN, MAX_IMAGE_BYTES, MAX_INSERT_PIXELS, PRODUCTION_ORIGIN, chooseExportSettings, defaultPreferences,
+  environmentLabel, isUint8Array, linkMatches, loadSavedConnection, parseFileKey, parsePlacements, parsePreferences,
+  parseStoredLink, pngSize, sanitizeName, validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
-import type { Connection, NodeSelection } from './shared/index.js';
+import type { Connection, NodeSelection, Preferences, StoredLink } from './shared/index.js';
 import type { MainMessage, RememberedTarget, UiMessage } from './shared/protocol.js';
 
 const CONNECTION_KEY = 'assetlib.connection.v1';
 const FILE_URL_KEY = 'assetlib.file-url.v1';
+const PREFERENCES_KEY = 'assetlib.preferences.v1';
+// pluginData on an inserted frame: the cell it came from, never the token.
+const LINK_KEY = 'assetlib.link.v1';
+// A transcoded 2048 px PNG fits.
+const MAX_INSERT_BYTES = 24 * 1024 * 1024;
 let connection: Connection | null = null;
 let connectionGeneration = 0;
 let savedFileUrl = '';
@@ -15,7 +21,11 @@ let savedFileUrl = '';
 let fallbackFileKey: string | null = null;
 let selectionRevision = 0;
 let exporting = false;
-const exported = new Map<number, { storageKey: string; target: RememberedTarget }>();
+let importing = false;
+let preferences: Preferences = defaultPreferences();
+// Client storage targets keep their original shape; insertedFrom is only ever derived from a link.
+type StoredTarget = Omit<RememberedTarget, 'fileKey' | 'insertedFrom'> & { fileKey: string };
+const exported = new Map<number, { storageKey: string; target: StoredTarget }>();
 
 function post(message: MainMessage): void { figma.ui.postMessage(message); }
 function currentFileKey(): string | null {
@@ -37,9 +47,9 @@ function selectedNode(): SceneNode | null {
 function describeNode(node: SceneNode): NodeSelection {
   return { id: node.id, name: node.name, width: node.width, height: node.height, type: node.type };
 }
-function isRemembered(value: unknown, fileKey: string, nodeId: string): value is RememberedTarget {
+function isRemembered(value: unknown, fileKey: string, nodeId: string): value is StoredTarget {
   if (!value || typeof value !== 'object') return false;
-  const item = value as Partial<RememberedTarget>;
+  const item = value as Partial<StoredTarget>;
   return item.fileKey === fileKey && item.nodeId === nodeId && typeof item.placementKey === 'string'
     && (item.state === null || typeof item.state === 'string')
     && (item.appearance === null || item.appearance === 'light' || item.appearance === 'dark')
@@ -60,9 +70,17 @@ async function reportSelection(): Promise<void> {
     try {
       for (const key of targetKeys(config, fileKey, node.id)) {
         const value: unknown = await figma.clientStorage.getAsync(key);
-        if (isRemembered(value, fileKey, node.id)) { remembered = value; break; }
+        if (isRemembered(value, fileKey, node.id)) { remembered = { ...value, insertedFrom: null }; break; }
       }
     } catch { /* A storage read failure must not prevent a new send. */ }
+  }
+  if (!remembered && node && config) {
+    // An inserted frame names its cell in pluginData. A copy keeps the data but not the node id, so it is ignored.
+    let raw = '';
+    try { raw = node.getPluginData(LINK_KEY); } catch { raw = ''; }
+    const link = parseStoredLink(raw);
+    if (link && linkMatches(link, config, node.id)) remembered = { fileKey, nodeId: node.id, placementKey: link.placementKey,
+      state: link.state, appearance: link.appearance, arm: link.arm, insertedFrom: { environment: link.environment, assetId: link.assetId } };
   }
   if (revision !== selectionRevision || generation !== connectionGeneration) return;
   post({ type: 'selection', connectionGeneration: generation, selection: { node: node ? describeNode(node) : null, reason, fileKey, remembered } });
@@ -82,13 +100,15 @@ const initialized = (async () => {
     const stored: unknown = await figma.clientStorage.getAsync(FILE_URL_KEY);
     if (typeof stored === 'string') { parseFileKey(stored); savedFileUrl = stored; }
   } catch { savedFileUrl = ''; }
+  try { preferences = parsePreferences(await figma.clientStorage.getAsync(PREFERENCES_KEY)); }
+  catch { preferences = defaultPreferences(); }
 })();
 
 async function handleMessage(message: UiMessage): Promise<void> {
   await initialized;
   switch (message.type) {
     case 'init':
-      post({ type: 'connection', connectionGeneration, connection, savedFileUrl });
+      post({ type: 'connection', connectionGeneration, connection, savedFileUrl, preferences });
       await reportSelection();
       break;
     case 'save-connection': {
@@ -97,7 +117,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       catch { throw new Error('Could not save the connection in Figma. Please try again.'); }
       connection = next;
       connectionGeneration += 1;
-      post({ type: 'connection', connectionGeneration, connection, savedFileUrl });
+      post({ type: 'connection', connectionGeneration, connection, savedFileUrl, preferences });
       await reportSelection();
       break;
     }
@@ -112,7 +132,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       break;
     }
     case 'export': {
-      if (exporting) throw new Error('An export is already in progress.');
+      if (exporting || importing) throw new Error('An export is already in progress.');
       if (!connection) throw new Error('Save and test your connection first.');
       const node = selectedNode();
       const fileKey = currentFileKey();
@@ -150,6 +170,56 @@ async function handleMessage(message: UiMessage): Promise<void> {
       catch { throw new Error('The draft was sent, but Figma could not save its sync target. Send again to remember it.'); }
       exported.delete(message.requestId);
       post({ type: 'remembered', requestId: message.requestId });
+      await reportSelection();
+      break;
+    }
+    case 'save-preferences': {
+      // A convenience only: nothing is posted, and a storage failure is ignored.
+      preferences = parsePreferences(message.preferences);
+      try { await figma.clientStorage.setAsync(PREFERENCES_KEY, preferences); } catch { /* keep the in-memory value */ }
+      break;
+    }
+    case 'insert': {
+      if (importing || exporting) throw new Error('An image is already being inserted or exported.');
+      if (!connection || message.connectionGeneration !== connectionGeneration) throw new Error('The connection changed. Choose the image again.');
+      const { bytes, frame, scale } = message;
+      if (!isUint8Array(bytes) || bytes.byteLength === 0 || bytes.byteLength > MAX_INSERT_BYTES) throw new Error('The console returned an image Figma cannot use. Refresh and try again.');
+      const size = pngSize(bytes);
+      if (!size || size.width > MAX_INSERT_PIXELS || size.height > MAX_INSERT_PIXELS) throw new Error('The console returned an image Figma cannot use. Refresh and try again.');
+      if (![1, 2, 3].includes(scale) || !frame || typeof frame !== 'object' || !Number.isInteger(frame.width) || !Number.isInteger(frame.height)
+        || frame.width < 1 || frame.height < 1 || frame.width > MAX_INSERT_PIXELS || frame.height > MAX_INSERT_PIXELS) throw new Error('Choose a valid size.');
+      const link = message.link ? validateInsertLink(message.link) : null;
+      const name = sanitizeName(message.name);
+      importing = true;
+      try {
+        let image: Image;
+        try { image = figma.createImage(bytes); } catch { throw new Error('Figma could not read this image. Refresh and try again.'); }
+        const width = Math.round((frame.width / scale) * 100) / 100;
+        const height = Math.round((frame.height / scale) * 100) / 100;
+        // A frame, not a rectangle: designers can add layers inside without changing the node id.
+        const node = figma.createFrame();
+        node.name = name;
+        node.resize(width, height);
+        node.fills = [{ type: 'IMAGE', imageHash: image.hash, scaleMode: 'FILL' }];
+        node.clipsContent = true;
+        const center = figma.viewport.center;
+        node.x = Math.round(center.x - width / 2);
+        node.y = Math.round(center.y - height / 2);
+        if (link) {
+          const stored: StoredLink = { v: 1, origin: connection.origin, orgId: connection.orgId, appId: connection.appId,
+            ...link, nodeId: node.id, insertedAt: new Date().toISOString() };
+          node.setPluginData(LINK_KEY, JSON.stringify(stored));
+        }
+        // Select only after the link is written, so the selection report finds it.
+        figma.currentPage.selection = [node];
+        const bounds = figma.viewport.bounds;
+        if (node.x < bounds.x || node.y < bounds.y || node.x + width > bounds.x + bounds.width || node.y + height > bounds.y + bounds.height) {
+          figma.viewport.scrollAndZoomIntoView([node]);
+        }
+        figma.notify(link ? `Inserted ${name} from ${environmentLabel(link.environment)}` : `Inserted ${name}`);
+        post({ type: 'inserted', requestId: message.requestId, connectionGeneration, node: describeNode(node), linked: Boolean(link) });
+      } finally { importing = false; }
+      // selectionchange is asynchronous and coalesced; report the new selection now.
       await reportSelection();
       break;
     }

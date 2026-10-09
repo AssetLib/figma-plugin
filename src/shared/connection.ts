@@ -1,5 +1,5 @@
 import type { Connection } from './types.js';
-import { validFileKey } from './validation.js';
+import { validFileKey, validSha256, validUuid } from './validation.js';
 
 export const PRODUCTION_ORIGIN = 'https://console.assetlib.dev';
 export const DEVELOPMENT_ORIGIN = 'http://localhost:3100';
@@ -36,8 +36,36 @@ export function validateConnection(value: Connection): Connection {
   return { origin, orgId, appId, token };
 }
 
-export function apiUrl(connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>, endpoint: 'placements' | 'drafts'): string {
-  return `${normalizeConsoleOrigin(connection.origin)}/api/apps/${encodeURIComponent(connection.orgId)}/${encodeURIComponent(connection.appId)}/${endpoint}`;
+type AppRoute = Pick<Connection, 'origin' | 'orgId' | 'appId'>;
+function appBase(connection: AppRoute): string {
+  return `${normalizeConsoleOrigin(connection.origin)}/api/apps/${encodeURIComponent(connection.orgId)}/${encodeURIComponent(connection.appId)}`;
+}
+
+export function apiUrl(connection: AppRoute, endpoint: 'placements' | 'drafts' | 'placements/artwork'): string {
+  return `${appBase(connection)}/${endpoint}`;
+}
+
+/** The image library page. No URL global: query values are encoded by hand. */
+export function assetsUrl(connection: AppRoute, query: { cursor?: string; limit?: number; q?: string } = {}): string {
+  const params: string[] = [];
+  if (query.limit !== undefined) {
+    if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 50) throw new Error('Choose between 1 and 50 images per page.');
+    params.push(`limit=${query.limit}`);
+  }
+  if (query.cursor !== undefined) {
+    if (!validUuid(query.cursor)) throw new Error('The console returned an invalid page cursor. Refresh and try again.');
+    params.push(`cursor=${encodeURIComponent(query.cursor)}`);
+  }
+  // Image names never hold control characters, and the console refuses them in q.
+  const q = query.q?.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 120);
+  if (q) params.push(`q=${encodeURIComponent(q)}`);
+  return `${appBase(connection)}/assets${params.length ? `?${params.join('&')}` : ''}`;
+}
+
+/** Rendition bytes. Built only from a validated asset id and hash, never from a URL in a response. */
+export function renditionUrl(connection: AppRoute, assetId: string, sha256: string): string {
+  if (!validUuid(assetId) || !validSha256(sha256)) throw new Error('The console returned an invalid image reference. Refresh and try again.');
+  return `${appBase(connection)}/assets/${assetId.toLowerCase()}/renditions/${sha256}`;
 }
 
 export function tokenPrefix(token: string): string {

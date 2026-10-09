@@ -10,6 +10,11 @@ const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 export function bytesToBase64(bytes: Uint8Array): string {
   if (bytes.length === 0) throw new Error('The selected node exported an empty PNG.');
   if (bytes.length > MAX_IMAGE_BYTES) throw new Error('The export is too large (maximum 4 MiB). Use a smaller export constraint.');
+  return encodeBase64(bytes);
+}
+
+/** Plain base64 without the export limits, for example for thumbnail data: URLs. */
+export function encodeBase64(bytes: Uint8Array): string {
   const chunks: string[] = [];
   let chunk = '';
   for (let i = 0; i < bytes.length; i += 3) {

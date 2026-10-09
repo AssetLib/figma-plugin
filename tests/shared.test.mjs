@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  MAX_BODY_BYTES, MAX_IMAGE_BYTES, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
-  apiUrl, aspectRatioDifference, assertDraftBodyLimit, buildDraftBody, bytesToBase64,
-  cellOptions, chooseExportSettings, decodedBase64Length, loadSavedConnection, mapHttpError, mapNetworkError,
-  normalizeConsoleOrigin, parseDraftResponse, parseFileKey, parsePlacements, parsePngDimensions, tokenPrefix,
-  utf8Length, validArm, validateBinding, validateConnection,
+  MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
+  apiUrl, artworkAsset, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
+  cellOptions, chooseExportSettings, decodedBase64Length, defaultPreferences, encodeBase64, environmentLabel, findCell,
+  insertRendition, insertUnavailable, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
+  normalizeConsoleOrigin, parseArtwork, parseAssetPage, parseDraftResponse, parseFileKey, parsePlacements, parsePngDimensions,
+  parsePreferences, parseStoredLink, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
+  utf8Length, validArm, validateBinding, validateConnection, validateInsertLink,
 } from '../.test-build/shared/index.js';
 
 const readText = path => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -289,4 +291,187 @@ test('errors explain token scopes, payload size, console conflicts, and the call
   assert.match(mapHttpError(500, null), /HTTP 500/);
   assert.equal(mapHttpError(400, { message: 'Invalid file key.' }), 'Invalid file key.');
   assert.match(mapNetworkError(DEVELOPMENT_ORIGIN), /http:\/\/localhost:3100/);
+});
+
+// ---- Insert ----
+const assetId = '7f2b3c4d-1111-4abc-8def-0123456789ab';
+const otherId = '7f2b3c4d-2222-4abc-8def-0123456789ab';
+const hash = n => n.toString(16).padStart(64, '0');
+const item = (n, mime, width, height, bytes = 1000) => ({ sha256: hash(n), mime, bytes, width, height, url: `/api/apps/o/a/assets/${assetId}/renditions/${hash(n)}` });
+const strip = ({ url, ...rest }) => rest;
+const libraryAsset = (renditions, extra = {}) => ({ id: assetId, name: 'Coast', width: 1200, height: 900, createdAt: '2026-10-09T00:00:00.000Z',
+  processingIntent: 'artwork', source: { provider: 'figma', fileKey: 'abc', nodeId: '1:2' }, renditions, ...extra });
+const family = { key: 'onboarding.hero', screen: 'Onboarding', width: 1200, height: 900, states: ['empty', 'growing'], defaultState: 'empty',
+  variants: { appearance: ['dark'], arm: ['b'] }, origin: 'declared' };
+const art = (id, arm = null, appearance = null) => ({ assetId: id, via: { arm, appearance } });
+function familyCells() {
+  const cells = [];
+  for (const arm of [null, 'b']) for (const appearance of [null, 'dark']) for (const state of ['empty', 'growing']) {
+    cells.push({ state, appearance, arm, draft: arm === 'b' && appearance === 'dark' ? art(otherId, 'b', 'dark') : art(assetId), staging: art(assetId), production: null });
+  }
+  return cells;
+}
+const artworkPayload = (overrides = {}) => ({
+  environments: { staging: { sequence: 7, createdAt: '2026-10-09T04:47:08.642Z' }, production: null },
+  placements: [{ ...family, cells: familyCells() }],
+  assets: { [assetId]: libraryAsset([item(1, 'image/png', 1200, 900)]), [otherId]: libraryAsset([item(2, 'image/webp', 1200, 900)], { id: otherId, name: 'Dark b' }) },
+  ...overrides,
+});
+
+test('insert picks the largest PNG or WebP within 4 MiB and 4096 px, preferring PNG on a tie', () => {
+  const png1200 = item(1, 'image/png', 1200, 900);
+  const webp1200 = item(2, 'image/webp', 1200, 900);
+  const webp512 = item(3, 'image/webp', 512, 384);
+  const svg = item(4, 'image/svg+xml', 2048, 2048);
+  const bigPng = item(5, 'image/png', 2048, 1536, MAX_INSERT_DOWNLOAD + 1);
+  assert.deepEqual(insertRendition({ renditions: [webp512, webp1200, png1200, svg, bigPng] }), png1200, 'PNG wins the tie; SVG and over-cap are skipped');
+  assert.deepEqual(insertRendition({ renditions: [png1200, webp1200] }), png1200);
+  assert.deepEqual(insertRendition({ renditions: [webp512, item(6, 'image/webp', 2048, 1536, MAX_INSERT_DOWNLOAD)] }).sha256, hash(6), 'exactly 4 MiB is allowed');
+  assert.deepEqual(insertRendition({ renditions: [webp512, bigPng] }), webp512, 'a smaller version is the fallback');
+  assert.equal(insertRendition({ renditions: [bigPng, svg, item(7, 'image/png', 5000, 10, 100)] }), null);
+  assert.equal(insertRendition({ renditions: [] }), null);
+  assert.deepEqual(thumbnailRendition({ renditions: [png1200, webp1200, webp512, svg] }), webp512, 'the smallest WebP');
+  assert.deepEqual(thumbnailRendition({ renditions: [png1200, item(8, 'image/png', 256, 192), svg] }).sha256, hash(8), 'else the smallest PNG');
+  assert.equal(thumbnailRendition({ renditions: [svg] }), null);
+  const heavyWebp = item(9, 'image/webp', 64, 64, MAX_PREVIEW_BYTES + 1);
+  assert.deepEqual(thumbnailRendition({ renditions: [heavyWebp, item(10, 'image/png', 128, 128, MAX_PREVIEW_BYTES)] }).sha256, hash(10), 'a version over the preview cap is skipped');
+  assert.equal(thumbnailRendition({ renditions: [heavyWebp, item(11, 'image/png', 2048, 2048, 3 * 1024 * 1024)] }), null, 'no preview rather than a multi-MiB one');
+});
+
+test('artwork parses contracts, cells, and environments, ignoring rendition urls and sources', () => {
+  const parsed = parseArtwork(artworkPayload());
+  assert.deepEqual(parsed.environments, { staging: { sequence: 7, createdAt: '2026-10-09T04:47:08.642Z' }, production: null });
+  assert.deepEqual(parsePlacements({ placements: parsed.placements }), [family]);
+  assert.equal(parsed.placements[0].cells.length, 8);
+  assert.deepEqual(parsed.assets[assetId], { id: assetId, name: 'Coast', width: 1200, height: 900, processingIntent: 'artwork', renditions: [strip(item(1, 'image/png', 1200, 900))] });
+  const cell = findCell(parsed.placements[0], { state: 'growing', appearance: 'dark', arm: 'b' });
+  assert.deepEqual(cell.draft, art(otherId, 'b', 'dark'));
+  assert.deepEqual(artworkAsset(parsed, cell.draft).name, 'Dark b');
+  assert.equal(artworkAsset(parsed, { assetId: '7f2b3c4d-3333-4abc-8def-0123456789ab', via: { arm: null, appearance: null } }), null, 'a missing asset is unavailable');
+  assert.equal(artworkAsset(parsed, null), null);
+  assert.deepEqual(baseCoordinate(family), { state: 'empty', appearance: null, arm: null });
+  assert.equal(findCell(parsed.placements[0], { state: null, appearance: null, arm: null }), null, 'a stateful placement has no null state');
+  assert.deepEqual(parseArtwork(artworkPayload({ environments: { staging: null, production: null }, placements: [], assets: {} })).placements, []);
+});
+
+test('artwork rejects illegal coordinates and inheritance, and drops an invalid image instead of failing', () => {
+  const withCell = change => artworkPayload({ placements: [{ ...family, cells: [{ ...familyCells()[0], ...change }] }] });
+  for (const change of [{ state: null }, { state: 'missing' }, { state: '__proto__' }, { appearance: 'light' }, { appearance: 'any' },
+    { arm: 'c' }, { arm: 'control' }, { draft: art('not-a-uuid') }, { draft: { assetId } }, { staging: art(assetId, 'b', null) },
+    { production: art(assetId, null, 'dark') }, { draft: undefined }]) {
+    assert.throws(() => parseArtwork(withCell(change)), /invalid placement artwork/, JSON.stringify(change));
+  }
+  const stateless = { ...family, states: null, defaultState: null };
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...stateless, cells: [{ ...familyCells()[0] }] }] })), /invalid placement artwork/, 'a stateless cell has a null state');
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: [familyCells()[0], familyCells()[0]] }] })), /invalid placement artwork/, 'duplicate cells');
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: Array.from({ length: 241 }, () => familyCells()[0]) }] })), /invalid placement artwork/);
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: null }] })), /invalid placement artwork/);
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, width: 0, cells: [] }] })), /invalid placement/);
+  assert.throws(() => parseArtwork(artworkPayload({ environments: { staging: { sequence: -1, createdAt: 'x' }, production: null } })), /invalid placement artwork/);
+  for (const value of [null, [], { placements: [] }, { environments: {}, placements: {}, assets: {} }]) assert.throws(() => parseArtwork(value));
+
+  const assets = { [assetId]: libraryAsset([item(1, 'image/png', 1200, 900)], { width: 0 }), [otherId]: libraryAsset([], { id: assetId }),
+    '7f2b3c4d-4444-4abc-8def-0123456789ab': libraryAsset([item(9, 'image/avif', 10, 10), item(10, 'image/png', 0, 10), item(11, 'image/webp', 10, 10)], { id: '7f2b3c4d-4444-4abc-8def-0123456789ab' }) };
+  const parsed = parseArtwork(artworkPayload({ assets }));
+  assert.deepEqual(Object.keys(parsed.assets), ['7f2b3c4d-4444-4abc-8def-0123456789ab'], 'invalid dimensions and a mismatched key are dropped');
+  assert.deepEqual(parsed.assets['7f2b3c4d-4444-4abc-8def-0123456789ab'].renditions, [strip(item(11, 'image/webp', 10, 10))], 'unknown formats and invalid versions are skipped');
+  assert.equal(Object.getPrototypeOf(parseArtwork(artworkPayload({ assets: JSON.parse('{"__proto__": {"id": "x"}}') })).assets), Object.prototype);
+});
+
+test('image pages parse assets and a uuid cursor, dropping invalid assets', () => {
+  const page = parseAssetPage({ assets: [libraryAsset([item(1, 'image/png', 1200, 900)], { processingIntent: null }), { id: 'bad' }, libraryAsset([], { name: 42 })], nextCursor: assetId });
+  assert.deepEqual(page, { assets: [{ id: assetId, name: 'Coast', width: 1200, height: 900, processingIntent: null, renditions: [strip(item(1, 'image/png', 1200, 900))] }], nextCursor: assetId });
+  assert.deepEqual(parseAssetPage({ assets: [], nextCursor: null }), { assets: [], nextCursor: null });
+  for (const value of [null, { assets: {} }, { assets: [], nextCursor: 'x' }, { assets: [] }]) assert.throws(() => parseAssetPage(value), /invalid image list/);
+});
+
+test('layer names list the key, arm, appearance, and a non-default state within 200 characters', () => {
+  assert.equal(layerName(family, { state: 'growing', appearance: 'dark', arm: 'b' }), 'onboarding.hero · b · dark · growing');
+  assert.equal(layerName(family, { state: 'empty', appearance: 'dark', arm: null }), 'onboarding.hero · dark', 'the default state is left out');
+  assert.equal(layerName({ ...family, states: null, defaultState: null }, { state: null, appearance: null, arm: null }), 'onboarding.hero');
+  assert.equal(Array.from(layerName({ ...family, key: '🙂'.repeat(300) }, { state: null, appearance: null, arm: null })).length, 200);
+  assert.equal(sanitizeName(' Coast\u0000 house\u009f\n '), 'Coast house');
+  assert.equal(sanitizeName('\u0007'), 'Assetlib image');
+  assert.equal(sanitizeName(42), 'Assetlib image');
+  assert.equal(sanitizeName('x'.repeat(250)).length, 200);
+  assert.equal(environmentLabel('production'), 'Production');
+});
+
+test('stored links never throw, match only their own node in the same app, and accept the legacy host', () => {
+  const link = { v: 1, origin: PRODUCTION_ORIGIN, orgId: 'org-1', appId: 'app-1', placementKey: 'onboarding.hero', state: 'growing',
+    appearance: 'dark', arm: 'b', environment: 'staging', assetId, nodeId: '12:34', insertedAt: '2026-10-09T00:00:00.000Z' };
+  const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org-1', appId: 'app-1', token: 'draft_secret' };
+  assert.deepEqual(parseStoredLink(JSON.stringify({ ...link, token: 'draft_secret', extra: true })), link, 'unknown fields are dropped');
+  for (const raw of ['', '{', 'null', '[]', '"text"', JSON.stringify({ ...link, v: 2 }), JSON.stringify({ ...link, nodeId: 'a b' }),
+    JSON.stringify({ ...link, assetId: 'x' }), JSON.stringify({ ...link, environment: 'preview' }), JSON.stringify({ ...link, orgId: '../x' }),
+    JSON.stringify({ ...link, state: 'Bad' }), JSON.stringify({ ...link, insertedAt: undefined })]) {
+    assert.equal(parseStoredLink(raw), null, raw);
+  }
+  assert.equal(parseStoredLink(undefined), null);
+  assert.equal(linkMatches(link, connection, '12:34'), true);
+  assert.equal(linkMatches(link, connection, '12:35'), false, 'a copy has another node id');
+  assert.equal(linkMatches(link, { ...connection, appId: 'app-2' }, '12:34'), false);
+  assert.equal(linkMatches(link, { ...connection, orgId: 'org-2' }, '12:34'), false);
+  assert.equal(linkMatches(link, { ...connection, origin: DEVELOPMENT_ORIGIN }, '12:34'), false);
+  assert.equal(linkMatches({ ...link, origin: LEGACY_PRODUCTION_ORIGIN }, connection, '12:34'), true);
+  assert.deepEqual(validateInsertLink({ ...link, nodeId: undefined, extra: 1 }),
+    { placementKey: 'onboarding.hero', state: 'growing', appearance: 'dark', arm: 'b', environment: 'staging', assetId });
+  for (const change of [{ placementKey: '' }, { arm: 'control' }, { appearance: 'any' }, { environment: 'live' }, { assetId: 'x' }]) {
+    assert.throws(() => validateInsertLink({ ...link, ...change }), /link is invalid/);
+  }
+});
+
+test('library URLs are built from validated ids and encoded query values, never from response URLs', () => {
+  const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org-1', appId: 'app-1' };
+  const base = `${PRODUCTION_ORIGIN}/api/apps/org-1/app-1`;
+  assert.equal(apiUrl(connection, 'placements/artwork'), `${base}/placements/artwork`);
+  assert.equal(assetsUrl(connection), `${base}/assets`);
+  assert.equal(assetsUrl(connection, { limit: 24 }), `${base}/assets?limit=24`);
+  assert.equal(assetsUrl(connection, { limit: 24, cursor: assetId, q: ' coast & ridge/#?= ' }), `${base}/assets?limit=24&cursor=${assetId}&q=coast%20%26%20ridge%2F%23%3F%3D`);
+  assert.equal(assetsUrl(connection, { q: '   ' }), `${base}/assets`);
+  assert.equal(assetsUrl(connection, { q: 'co\u0000a\tst\u007f' }), `${base}/assets?q=coast`, 'control characters never reach the console');
+  assert.equal(assetsUrl(connection, { q: '\u0007' }), `${base}/assets`);
+  assert.equal(assetsUrl(connection, { q: 'é'.repeat(130) }), `${base}/assets?q=${encodeURIComponent('é'.repeat(120))}`);
+  for (const query of [{ limit: 0 }, { limit: 51 }, { limit: 1.5 }, { cursor: 'x' }, { cursor: `${assetId}&q=1` }]) assert.throws(() => assetsUrl(connection, query));
+  assert.equal(renditionUrl(connection, assetId.toUpperCase(), hash(1)), `${base}/assets/${assetId}/renditions/${hash(1)}`);
+  for (const [id, sha] of [['x', hash(1)], [`${assetId}/../x`, hash(1)], [assetId, 'A'.repeat(64)], [assetId, hash(1).slice(1)], [assetId, `${hash(1)}?x`]]) {
+    assert.throws(() => renditionUrl(connection, id, sha), /invalid image reference/);
+  }
+  assert.throws(() => renditionUrl({ ...connection, origin: 'https://evil.test' }, assetId, hash(1)));
+});
+
+test('pngSize reads IHDR dimensions without throwing, and plain base64 matches Node', () => {
+  assert.deepEqual(pngSize(pngHeader(4096, 1)), { width: 4096, height: 1 });
+  for (const bytes of [new Uint8Array(), pngHeader().subarray(0, 32), pngHeader(0, 10), pngHeader(10, 0x80000000), new Uint8Array(40), [137, 80, 78, 71], null, 'png']) {
+    assert.equal(pngSize(bytes), null);
+  }
+  const backing = new Uint8Array(50);
+  backing.set(pngHeader(64, 32), 9);
+  assert.deepEqual(pngSize(backing.subarray(9, 42)), { width: 64, height: 32 });
+  assert.equal(isUint8Array(Buffer.from('x')), true);
+  assert.equal(isUint8Array(new Uint16Array(1)), false);
+  for (const length of [0, 1, 2, 3, 16385, MAX_IMAGE_BYTES + 1]) {
+    const bytes = Uint8Array.from({ length }, (_, index) => (index * 7) % 256);
+    assert.equal(encodeBase64(bytes), Buffer.from(bytes).toString('base64'));
+  }
+});
+
+test('insert errors explain the read scope and an older console, and send errors are unchanged', () => {
+  assert.equal(mapHttpError(403, null, 'insert'), 'This token cannot read this app’s images. Use a token with the draft scope for this organization and app.');
+  assert.match(mapHttpError(403, null), /does not allow drafts/);
+  assert.equal(mapHttpError(404, { error: 'Rendition not found.' }, 'insert'), MISSING_INSERT);
+  assert.equal(mapHttpError(404, { error: 'Placement not found.' }), 'Placement not found.');
+  assert.equal(mapHttpError(401, null, 'insert'), mapHttpError(401, null));
+  assert.equal(mapHttpError(429, null, 'insert'), mapHttpError(429, null));
+  assert.equal(mapHttpError(400, { error: 'Invalid cursor.' }, 'insert'), 'Invalid cursor.');
+  assert.match(insertUnavailable(DEVELOPMENT_ORIGIN), /^This console does not support Insert yet, or http:\/\/localhost:3100 could not be reached\. Send still works/);
+});
+
+test('preferences fall back field by field to Send, Placements, Draft, and 1×', () => {
+  assert.deepEqual(defaultPreferences(), { tab: 'send', browse: 'placements', environment: 'draft', scale: 1 });
+  assert.deepEqual(parsePreferences({ tab: 'insert', browse: 'images', environment: 'production', scale: 3, extra: true }),
+    { tab: 'insert', browse: 'images', environment: 'production', scale: 3 });
+  assert.deepEqual(parsePreferences({ tab: 'publish', browse: 'images', environment: 'live', scale: '2' }),
+    { tab: 'send', browse: 'images', environment: 'draft', scale: 1 });
+  for (const value of [undefined, null, 'text', []]) assert.deepEqual(parsePreferences(value), defaultPreferences());
 });

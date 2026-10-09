@@ -2,7 +2,7 @@
   "name": "@assetlib/figma-plugin",
   "version": "0.1.0",
   "private": true,
-  "description": "Send selected Figma artwork to Assetlib placement drafts.",
+  "description": "Insert Assetlib images into Figma and send artwork back to placement drafts.",
   "type": "module",
   "license": "MIT",
   "engines": { "node": ">=22" },
@@ -10,7 +10,8 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.ui.json",
     "test": "node scripts/test.mjs",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm run typecheck && npm test && npm run build",
+    "e2e:local": "node scripts/e2e-local.mjs"
   },
   "devDependencies": {
     "@figma/plugin-typings": "1.117.0",

@@ -16,6 +16,6 @@
     "devAllowedDomains": [
       "http://localhost:3100"
     ],
-    "reasoning": "Sends exported artwork to the Assetlib console you connect."
+    "reasoning": "Reads images from, and sends exported artwork to, the Assetlib console you connect."
   }
 }

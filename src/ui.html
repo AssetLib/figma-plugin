@@ -5,38 +5,95 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Assetlib</title>
   <style>
-    :root { color-scheme: light dark; font: 12px/1.5 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); }
+    :root { color-scheme: light; font: 12px/1.5 'Instrument Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); --focus: #b63f1b; }
+    /* Native controls and scrollbars follow Figma's theme, not the OS. */
+    html.figma-dark { --focus: #e4572e; color-scheme: dark; }
     * { box-sizing: border-box; }
     body { margin: 0; padding: 20px; }
-    h1 { margin: 0; font-size: 19px; letter-spacing: -.5px; }
-    h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
+    h1 { margin: 0; font-size: 19px; font-weight: 500; letter-spacing: -.5px; }
+    h2 { margin: 0 0 8px; font-size: 12px; font-weight: 500; }
     p { margin: 6px 0; overflow-wrap: anywhere; }
     header { margin-bottom: 20px; }
     .muted, small { color: var(--figma-color-text-secondary, #666); }
     section, details { border-top: 1px solid var(--figma-color-border, #ddd); padding: 16px 0; }
-    summary { cursor: pointer; font-weight: 600; }
+    summary { cursor: pointer; font-weight: 500; }
     details[open] summary { margin-bottom: 12px; }
     label { display: grid; gap: 5px; margin-bottom: 10px; }
-    input, select, button { font: inherit; border: 1px solid var(--figma-color-border, #ccc); border-radius: 5px; padding: 8px 10px; min-height: 34px; }
+    input, select, button { font: inherit; border: 1px solid var(--figma-color-border, #ccc); border-radius: 3px; padding: 8px 10px; min-height: 34px; }
     input, select { width: 100%; min-width: 0; background: var(--figma-color-bg, white); color: inherit; }
-    button { cursor: pointer; background: var(--figma-color-bg-secondary, #f5f5f5); color: inherit; font-weight: 600; }
-    button.primary { background: var(--figma-color-bg-brand, #146b45); color: var(--figma-color-text-onbrand, white); border-color: transparent; }
-    button:disabled { opacity: .45; cursor: default; }
-    :focus-visible { outline: 2px solid var(--figma-color-border-selected, #1769ff); outline-offset: 2px; }
+    button { cursor: pointer; background: var(--figma-color-bg-secondary, #f5f5f5); color: inherit; font-weight: 500; }
+    button.primary { background: var(--figma-color-text, #222); color: var(--figma-color-bg, #fff); border-color: transparent; }
+    button:disabled, input:disabled, select:disabled { opacity: .45; cursor: default; }
+    /* Vermilion appears only on the focus ring. */
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .row { display: flex; gap: 10px; }
     .row > * { flex: 1; min-width: 0; }
     .actions { display: grid; gap: 8px; margin-top: 12px; }
-    .notice { padding: 10px; background: var(--figma-color-bg-warning, #fff1cf); color: var(--figma-color-text-warning, #664500); border-radius: 5px; }
-    .error { padding: 10px; background: var(--figma-color-bg-danger, #fff0ef); color: var(--figma-color-text-danger, #a12619); border-radius: 5px; }
-    #selection-name { font-weight: 600; }
-    #result { border: 1px solid var(--figma-color-border, #ddd); padding: 12px; border-radius: 5px; margin-top: 12px; }
+    /* The tertiary washes keep warning and danger text readable; the solid bg-warning and bg-danger are fills for white text. */
+    .notice { padding: 10px; background: var(--figma-color-bg-warning-tertiary, #fff1cf); color: var(--figma-color-text-warning, #664500); border-radius: 6px; }
+    .error { padding: 10px; background: var(--figma-color-bg-danger-tertiary, #fff0ef); color: var(--figma-color-text-danger, #a12619); border-radius: 6px; }
+    #selection-name { font-weight: 500; }
+    #result { border: 1px solid var(--figma-color-border, #ddd); padding: 12px; border-radius: 6px; margin-top: 12px; }
     #result ul { margin: 6px 0; padding-left: 18px; }
     a { color: var(--figma-color-text-brand, #1769ff); }
     [hidden] { display: none !important; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+    .tabs { display: flex; gap: 18px; border-top: 1px solid var(--figma-color-border, #ddd); border-bottom: 1px solid var(--figma-color-border, #ddd); }
+    .tabs [role="tab"] { min-height: 32px; padding: 0 2px; border: 0; border-radius: 0; background: none; color: var(--figma-color-text-secondary, #666); box-shadow: inset 0 -2px 0 transparent; }
+    .tabs [role="tab"][aria-selected="true"] { color: var(--figma-color-text, #222); box-shadow: inset 0 -2px 0 var(--figma-color-text, #222); }
+    #panel-send > section:first-child { border-top: 0; }
+    #panel-insert { padding-top: 16px; }
+    .segmented { display: flex; border: 1px solid var(--figma-color-border, #ccc); border-radius: 3px; overflow: hidden; }
+    .segmented button { flex: 1; min-height: 28px; padding: 0 8px; border: 0; border-radius: 0; background: none; }
+    .segmented button + button { border-left: 1px solid var(--figma-color-border, #ccc); }
+    .segmented [aria-checked="true"] { background: var(--figma-color-text, #222); color: var(--figma-color-bg, #fff); }
+    .tools { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+    .tools .search { flex: 1; margin: 0; }
+    .tools .scale { display: flex; align-items: center; gap: 6px; margin: 0; white-space: nowrap; }
+    .tools .scale select { width: auto; }
+    .env-row { display: flex; gap: 8px; align-items: center; }
+    .env-row .segmented { flex: 1; }
+    #insert-refresh, #images-more, #insert-clear { min-height: 28px; padding: 0 10px; }
+    #env-note { margin: 6px 0 0; }
+    .group { margin: 14px 0 2px; color: var(--figma-color-text-secondary, #666); }
+    .placement { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 56px; padding: 8px; border: 0; border-radius: 0; background: none; text-align: left; font-weight: 400; }
+    .placement:not(:disabled):hover, .tile:not(:disabled):hover { background: var(--figma-color-bg-hover, #f0f0f0); }
+    .placement[aria-pressed="true"] { background: var(--figma-color-bg-secondary, #f5f5f5); box-shadow: inset 2px 0 0 var(--figma-color-text, #222); }
+    .key { display: block; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .size { display: block; color: var(--figma-color-text-secondary, #666); }
+    .tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--figma-color-bg-tertiary, #ececec); color: var(--figma-color-text-secondary, #666); white-space: nowrap; }
+    .thumb { position: relative; display: block; width: 40px; height: 40px; border-radius: 3px; overflow: hidden;
+      background: repeating-conic-gradient(var(--figma-color-bg-secondary, #f5f5f5) 0 25%, var(--figma-color-bg-tertiary, #e6e6e6) 0 50%) 0 0 / 8px 8px; }
+    .thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .thumb img:not([src]) { visibility: hidden; }
+    /* data-sha="" means the image has no preview version at all, as opposed to one that is loading or failed. */
+    .thumb:has(img[data-sha=""])::after { content: 'No preview'; position: absolute; inset: 0; display: grid; place-items: center; padding: 2px; text-align: center; font-size: 9px; line-height: 1.2; color: var(--figma-color-text-secondary, #666); }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .tile { display: grid; gap: 2px; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: none; text-align: left; font-weight: 400; }
+    .tile .thumb { width: 100%; height: auto; aspect-ratio: 1; border-radius: 6px; }
+    .tile[aria-pressed="true"] .thumb { outline: 2px solid var(--figma-color-text, #222); }
+    .tile .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tile .size { font-size: 11px; }
+    #images-more { display: block; width: 100%; margin-top: 10px; }
+    .empty { padding: 16px 0; }
+    .insert-bar { position: sticky; bottom: 0; margin: 12px -20px 0; padding: 12px 20px 8px; background: var(--figma-color-bg, #fff); border-top: 1px solid var(--figma-color-border, #ddd); }
+    .insert-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+    .insert-head > div { flex: 1; min-width: 0; }
+    .insert-head .thumb { flex: none; width: 48px; height: 48px; }
+    .insert-head p { margin: 0; }
+    /* Pickers share a row when their labels fit, and wrap instead of truncating an option. */
+    .insert-bar .row { flex-wrap: wrap; }
+    .insert-bar .row > * { flex: 1 1 auto; }
+    .insert-messages p { margin: 8px 0 0; }
+    .insert-messages p:empty { margin: 0; }
+    #insert-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #insert { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #insert-note { margin: 6px 0 0; }
   </style>
 </head>
 <body>
-  <header><h1>Assetlib</h1><p class="muted">Send selected artwork to your app’s draft.</p></header>
+  <header><h1>Assetlib</h1><p class="muted">Insert your app’s artwork, and send edits back to its draft.</p></header>
   <details id="settings" open>
     <summary>Connection <span id="connection-label" class="muted"></span></summary>
     <p class="muted">Create an app-scoped <strong>draft</strong> token in the console’s Tokens panel. This is an Assetlib token, not a Figma token.</p>
@@ -48,31 +105,73 @@
       <button type="submit">Test connection</button>
     </form>
   </details>
-  <section aria-labelledby="selection-title">
-    <h2 id="selection-title">Selected artwork</h2>
-    <p id="selection-name">Reading selection…</p><p id="selection-meta" class="muted"></p>
-    <div id="file-fallback" hidden>
-      <p class="muted">Figma has not supplied this file’s key. Confirm its file URL once for this plugin session.</p>
-      <form id="file-form"><label>Figma file URL<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off"></label><button type="submit">Use this file</button></form>
+  <div class="tabs" role="tablist" aria-label="Assetlib">
+    <button id="tab-send" type="button" role="tab" aria-selected="true" aria-controls="panel-send">Send</button>
+    <button id="tab-insert" type="button" role="tab" aria-selected="false" aria-controls="panel-insert">Insert</button>
+  </div>
+  <div id="panel-send" role="tabpanel" aria-labelledby="tab-send">
+    <section aria-labelledby="selection-title">
+      <h2 id="selection-title">Selected artwork</h2>
+      <p id="selection-name">Reading selection…</p><p id="selection-meta" class="muted"></p>
+      <div id="file-fallback" hidden>
+        <p class="muted">Figma has not supplied this file’s key. Confirm its file URL once for this plugin session.</p>
+        <form id="file-form"><label>Figma file URL<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off"></label><button type="submit">Use this file</button></form>
+      </div>
+    </section>
+    <section aria-labelledby="placement-title">
+      <h2 id="placement-title">Draft placement</h2>
+      <label>Placement<select id="placement" disabled><option value="">Test your connection to load placements</option></select></label>
+      <div class="row">
+        <label id="state-label" hidden>State<select id="state"></select></label>
+        <label id="appearance-label" hidden>Appearance<select id="appearance"></select></label>
+        <label id="arm-label" hidden>Arm<select id="arm"></select></label>
+      </div>
+      <p id="export-note" class="muted"></p>
+      <p id="aspect-warning" class="notice" hidden></p>
+      <div class="actions"><button id="send" class="primary" disabled>Send to draft</button><button id="sync" hidden disabled></button></div>
+      <p id="sync-note" class="muted" hidden></p>
+      <p class="muted">Changes stay in draft until you publish in the console.</p>
+    </section>
+    <div id="result" aria-live="polite" hidden></div>
+  </div>
+  <div id="panel-insert" role="tabpanel" aria-labelledby="tab-insert" hidden>
+    <div class="segmented" role="radiogroup" aria-label="Browse">
+      <button id="browse-placements" type="button" role="radio" aria-checked="true">Placements</button>
+      <button id="browse-images" type="button" role="radio" aria-checked="false">Images</button>
     </div>
-  </section>
-  <section aria-labelledby="placement-title">
-    <h2 id="placement-title">Draft placement</h2>
-    <label>Placement<select id="placement" disabled><option value="">Test your connection to load placements</option></select></label>
-    <div class="row">
-      <label id="state-label" hidden>State<select id="state"></select></label>
-      <label id="appearance-label" hidden>Appearance<select id="appearance"></select></label>
-      <label id="arm-label" hidden>Arm<select id="arm"></select></label>
+    <div class="tools">
+      <label class="search"><span class="visually-hidden">Search</span><input id="insert-search" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Search by key or screen"></label>
+      <label class="scale">Insert at<select id="insert-scale"><option value="1">1× pixels</option><option value="2">@2x (½)</option><option value="3">@3x (⅓)</option></select></label>
     </div>
-    <p id="export-note" class="muted"></p>
-    <p id="aspect-warning" class="notice" hidden></p>
-    <div class="actions"><button id="send" class="primary" disabled>Send to draft</button><button id="sync" hidden disabled></button></div>
-    <p id="sync-note" class="muted" hidden></p>
-    <p class="muted">Changes stay in draft until you publish in the console.</p>
-  </section>
-  <p id="status" role="status" aria-live="polite"></p>
-  <p id="error" class="error" role="alert" hidden></p>
-  <div id="result" aria-live="polite" hidden></div>
+    <div class="env-row">
+      <div id="env-group" class="segmented" role="radiogroup" aria-label="Environment">
+        <button id="env-draft" type="button" role="radio" aria-checked="true">Draft</button>
+        <button id="env-staging" type="button" role="radio" aria-checked="false">Staging</button>
+        <button id="env-production" type="button" role="radio" aria-checked="false">Production</button>
+      </div>
+      <button id="insert-refresh" type="button">Refresh</button>
+    </div>
+    <p id="env-note" class="muted"></p>
+    <div id="insert-list"></div>
+    <div id="image-grid" class="grid" hidden></div>
+    <button id="images-more" type="button" hidden>Load more</button>
+    <div id="insert-empty" class="empty" hidden><p id="insert-empty-text" class="muted"></p><button id="insert-clear" type="button" hidden>Clear search</button></div>
+    <div id="insert-bar" class="insert-bar">
+      <div class="insert-head"><span id="insert-preview" class="thumb"><img id="insert-thumb" alt=""></span><div><p id="insert-title"></p><p id="insert-meta" class="muted"></p></div></div>
+      <div class="row">
+        <label id="insert-state-label" hidden>State<select id="insert-state"></select></label>
+        <label id="insert-appearance-label" hidden>Appearance<select id="insert-appearance"></select></label>
+        <label id="insert-arm-label" hidden>Arm<select id="insert-arm"></select></label>
+      </div>
+      <button id="insert" class="primary" type="button" disabled>Insert</button>
+      <p id="insert-note" class="muted"></p>
+      <div id="insert-messages" class="insert-messages"></div>
+    </div>
+  </div>
+  <div id="messages">
+    <p id="status" role="status" aria-live="polite"></p>
+    <p id="error" class="error" role="alert" hidden></p>
+  </div>
   <!-- ASSETLIB_SCRIPT -->
 </body>
 </html>

@@ -1,6 +1,6 @@
 # Assetlib for Figma
 
-Send one selected Figma node to an Assetlib placement as a draft, then sync that node's later edits. Sending and syncing update drafts; publishing remains a separate action in the Assetlib console.
+Insert your app's placement artwork and library images into Figma, send one selected Figma node to an Assetlib placement as a draft, then sync that node's later edits. Inserting only reads; sending and syncing update drafts; publishing remains a separate action in the Assetlib console.
 
 ## Install as a development plugin
 
@@ -24,7 +24,7 @@ See Figma's [development plugin instructions](https://help.figma.com/hc/en-us/ar
 
 ## Connect
 
-Create an **app-scoped API token with the `draft` scope** in the **Tokens** panel of the [Assetlib console](https://console.assetlib.dev). A Figma access token is neither needed nor accepted as a substitute.
+Create an **app-scoped API token with the `draft` scope** in the **Tokens** panel of the [Assetlib console](https://console.assetlib.dev). A Figma access token is neither needed nor accepted as a substitute. A draft token can read every image in its app, as well as update draft placement bindings; treat it accordingly.
 
 In the plugin's connection settings, enter the console origin, organization ID, app ID, and draft token. The default origin is `https://console.assetlib.dev`. Development also supports exactly `http://localhost:3100`; Figma rejects IP-literal development domains such as `http://127.0.0.1:3100`, and the console accepts the `localhost` host for token routes in local mode. Other origins are rejected. Choose **Test connection** to save the settings, call the placements endpoint, and load the available placements.
 
@@ -34,7 +34,22 @@ Settings and the token are saved through `figma.clientStorage` on this device. T
 
 When `figma.fileKey` is available, the plugin uses it. Availability depends on the plugin's publication state. Otherwise the plugin asks for the current file URL and parses the key from `https://www.figma.com/file/<key>/…` or `https://www.figma.com/design/<key>/…`. It remembers the URL as a suggestion and asks for confirmation once each time the plugin opens in this fallback mode: node IDs alone cannot safely identify a file across documents. Use the URL of the currently open file.
 
+## Insert artwork
+
+The **Insert** tab brings the app's artwork into the current page. Choose **Placements** or **Images**:
+
+- **Placements** lists the app's placements, grouped by screen, with the art each one shows. Pick an environment: **Draft** (the default, and what Send and Sync change), **Staging**, or **Production**; an environment with nothing published yet cannot be chosen. A row with no art is tagged **Not set**, one whose image the console did not return **Unavailable**, and one whose image has no prepared versions **Re-upload needed**. In Draft, a row whose base art differs from production is tagged **Differs from production**, or **Not in production** when production has no art for it. Select a row, then choose its state, appearance, and arm when the placement declares them. A cell without its own art shows the art it inherits (for example **Inherits Control · Any**), as the app would.
+- **Images** lists every active image in the app, newest first, with search by name and **Load more**.
+
+Choose **Insert**. The image arrives as a frame with an image fill, centered in the current view and selected. Placement inserts are named after the placement and cell (for example `onboarding.hero · b · dark`) and sized to the placement's width and height; image inserts take the image's name and size. **Insert at** sets the scale: **1× pixels** keeps that size, **@2x (½)** and **@3x (⅓)** divide it, for device frames drawn in points; the footer then shows both sizes (for example `1000 × 1000 → 333.33 × 333.33`). The choice, the tab, the browse mode, and the environment are remembered on this device.
+
+The plugin downloads the largest prepared version of the image that is PNG or WebP and at most 4 MiB, preferring PNG. Figma accepts PNG but not WebP, so a WebP version (photos have only WebP versions) is converted to PNG in the plugin window first. An image larger than 4 MiB in every version cannot be inserted; download it from the console instead. Originals are never downloaded. An animated (Lottie) image is inserted as its still poster, and an SVG image as its PNG version, not as editable vectors. An image uploaded before the console prepared versions has none; upload it again to use it in Figma.
+
+Previews are downloaded the same way, from the smallest version up to 512 KiB, and shown from memory; an image without such a version shows **No preview**. If the console limits requests, previews pause and resume shortly.
+
 ## Send artwork
+
+On the **Send** tab:
 
 1. Select exactly one exportable node. The plugin shows its name, ID, type, width, and height, or explains why the selection cannot be sent.
 2. Choose a placement. State, appearance, and arm choices are limited to what that placement declares. **Any** appearance and **Control** arm map to `null` in the API. Omitting a state uses the placement's declared default state; an explicit state must be declared.
@@ -51,11 +66,17 @@ After the console creates an asset successfully, the plugin remembers the file k
 
 The console replaces references to the previous asset from that same file and node in draft cells and states within the connected app. The result lists what was rebound. Sync can therefore update several draft destinations that already reference that source. If the remembered placement or cell options no longer exist, refresh the placements and choose a current destination before sending again.
 
+A frame inserted from a placement is linked to the cell it came from, so **Sync to &lt;placement&gt;** appears as soon as it is selected, including for teammates who open the file with a connection to the same app. Edit the frame, adding layers inside it if needed, then choose Sync: its first Sync fills exactly that cell in draft, never the cell it inherited from, and later syncs replace that layer's earlier sends wherever they are bound in draft. After the first successful Sync the plugin also remembers the target on this device, as for any sent node. A copy of a linked frame (for example with Cmd+D) is not linked; send it with **Send to draft** like any other node. Library images are not linked to a placement. When Figma does not supply the file key, confirm the file URL before Sync is enabled.
+
 ## Data and network access
 
 The plugin sends only the selected node's exported PNG bytes (base64 in JSON), node ID and name, file key, PNG export settings, chosen placement coordinates, asset name, schema version, and sync flag. `source.versionId` is `null`. The app-scoped draft token is sent as a bearer token to the chosen console origin.
 
 It never sends the Figma document, unrelated layers, or a Figma token. Selecting a frame or group exports its visible contents as one PNG; it does not upload its editable layer tree.
+
+It receives the app's placements; for each placement cell, which image it shows in draft, staging, and production, and when staging and production were published; the app's image names, sizes, and prepared versions; and the bytes of the versions it previews or inserts. Rendition URLs are built from the image ID and hash; the plugin never sends the token to a URL taken from a response.
+
+A frame inserted from a placement stores plugin data `assetlib.link.v1`: the console origin, organization and app IDs, placement key, state, appearance, arm, environment, image ID, the frame's node ID, and the insert time. It never holds the token. Plugin data is private to this plugin but travels with the file, so anyone with a copy of the file can read it; organization and app IDs are not secret, since they appear in public delivery URLs.
 
 The manifest declares:
 
@@ -63,13 +84,13 @@ The manifest declares:
 {
   "allowedDomains": ["https://console.assetlib.dev", "https://assetlib-console.vercel.app"],
   "devAllowedDomains": ["http://localhost:3100"],
-  "reasoning": "Sends exported artwork to the Assetlib console you connect."
+  "reasoning": "Reads images from, and sends exported artwork to, the Assetlib console you connect."
 }
 ```
 
-Requests use `GET /api/apps/{orgId}/{appId}/placements` and `POST /api/apps/{orgId}/{appId}/drafts`. The placements endpoint accepts `draft` or `declare`; sending requires `draft`. Both routes authenticate only with that bearer token, never cookies, and must allow cross-origin requests from the Figma plugin UI; the hosted console does so on both production hosts. Local development requires that console server to be running on port 3100. The development-only origin is not available to a published plugin.
+Requests use exactly these five calls under `/api/apps/{orgId}/{appId}/`: `GET placements`, `GET placements/artwork`, `GET assets` (with `limit`, `cursor`, and `q`), `GET assets/{assetId}/renditions/{sha256}`, and `POST drafts`. The placements endpoint accepts `draft` or `declare`; the other four require `draft`. All of them authenticate only with that bearer token, never cookies, and must allow cross-origin requests from the Figma plugin UI. The hosted console does so for placements and drafts on both production hosts; the artwork, image, and rendition reads exist only in a console that includes them, and until the hosted console does, Insert shows that the console does not support it yet while Send keeps working. Rendition bytes are served `private, no-store`. The plugin never calls the public delivery routes. Local development requires that console server to be running on port 3100. The development-only origin is not available to a published plugin.
 
-HTTP 401/403 messages explain the token or scope; HTTP 409 preserves the console's message; HTTP 413 suggests reducing the export constraint; network failures name the origin that was called. The shared contract allows at most 4 MiB decoded PNG bytes and 6 MiB for the JSON body.
+HTTP 401/403 messages explain the token or scope; HTTP 409 preserves the console's message; HTTP 413 suggests reducing the export constraint; network failures name the origin that was called. A console without the Insert endpoints is reported as such while Send keeps working, and an image removed after the list loaded asks for a Refresh. The shared contract allows at most 4 MiB decoded PNG bytes and 6 MiB for the JSON body.
 
 ## Development and verification
 
@@ -92,9 +113,17 @@ npm run build     # Bundle main and inline the UI script
 npm run verify    # Typecheck, tests, and build
 ```
 
-`src/code.ts` handles selection, Figma exports, and client storage. `src/ui.ts` and `src/ui.html` provide the interface and HTTP calls. `src/shared/` holds pure request, picker, export, file-key, and error logic. `tests/shared.test.mjs` runs the compiled shared logic with `node --test`. `tests/plugin.test.mjs` bundles `src/code.ts` and `src/ui.ts` with esbuild and runs both in `node:vm` against a fake `figma` API, DOM, and `fetch`, covering saved and new connections, connection switches, Send, Sync, and the exported PNG checks. Neither runs real Figma or a real console.
+`src/code.ts` handles selection, Figma exports, inserted frames, and client storage. `src/ui.ts` and `src/ui.html` provide the interface and HTTP calls; `src/image.ts` converts WebP to PNG in the plugin window. `src/shared/` holds pure request, picker, export, file-key, library, link, and error logic. `tests/shared.test.mjs` runs the compiled shared logic with `node --test`. `tests/plugin.test.mjs` bundles `src/code.ts` and `src/ui.ts` with esbuild and runs both in `node:vm` against the fake `figma` API, DOM, console, and `fetch` in `tests/fakes.mjs`, covering saved and new connections, connection switches, Send, Sync, the exported PNG checks, Insert from placements and images, links, preferences, and previews. Neither runs real Figma or a real console.
 
-Known limits: one node at a time; PNG only; no OAuth; no document-wide sync; no automatic release publication; local-device settings and sync history. Actual Figma exports, client storage across restarts, console CORS, and authenticated draft/rebind behavior require a manual Figma-and-console integration check in addition to the local verification command.
+`npm run e2e:local` runs the same bundles and fakes against a running local console with Node's real `fetch`. Start the console on port 3100 (`npm run setup && npm run dev` in `apps/console`), create a **Draft** token in Settings › Tokens, copy the organization and app IDs from Settings › General, and write `{"origin":"http://localhost:3100","orgId":"…","appId":"…","token":"…"}` to a file outside both repositories with mode 600. Then:
+
+```sh
+npm run e2e:local -- --connection /path/to/local-connection.json
+```
+
+It inserts `travel.coast` from each published environment and the first image with a PNG version, syncs the draft insert back (the app's draft `travel.coast` then shows the synced test image), reads the artwork again, checks the new image's bytes and CORS preflights, and checks that the token appears only in the bearer header. WebP-only images are skipped, because converting them needs a browser. It is not part of `npm test`.
+
+Known limits: one node or image at a time; PNG only for sending; inserts are raster images, not editable vectors; no update or relink of an inserted frame yet; no OAuth; no document-wide sync; no automatic release publication; local-device settings and sync history. Actual Figma exports and inserts, client storage across restarts, preview rendering, and WebP conversion require a manual check in Figma desktop against a console in addition to the local verification commands.
 
 ## License
 
