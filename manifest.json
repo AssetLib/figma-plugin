@@ -1,0 +1,13 @@
+{
+  "name": "Assetlib",
+  "api": "1.0.0",
+  "editorType": ["figma"],
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["https://assetlib-console.vercel.app"],
+    "devAllowedDomains": ["http://127.0.0.1:3100"],
+    "reasoning": "Sends exported artwork to the Assetlib console you connect."
+  }
+}

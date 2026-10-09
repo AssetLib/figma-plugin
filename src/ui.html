@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assetlib</title>
+  <style>
+    :root { color-scheme: light dark; font: 12px/1.5 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px; }
+    h1 { margin: 0; font-size: 19px; letter-spacing: -.5px; }
+    h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
+    p { margin: 6px 0; overflow-wrap: anywhere; }
+    header { margin-bottom: 20px; }
+    .muted, small { color: var(--figma-color-text-secondary, #666); }
+    section, details { border-top: 1px solid var(--figma-color-border, #ddd); padding: 16px 0; }
+    summary { cursor: pointer; font-weight: 600; }
+    details[open] summary { margin-bottom: 12px; }
+    label { display: grid; gap: 5px; margin-bottom: 10px; }
+    input, select, button { font: inherit; border: 1px solid var(--figma-color-border, #ccc); border-radius: 5px; padding: 8px 10px; min-height: 34px; }
+    input, select { width: 100%; min-width: 0; background: var(--figma-color-bg, white); color: inherit; }
+    button { cursor: pointer; background: var(--figma-color-bg-secondary, #f5f5f5); color: inherit; font-weight: 600; }
+    button.primary { background: var(--figma-color-bg-brand, #146b45); color: var(--figma-color-text-onbrand, white); border-color: transparent; }
+    button:disabled { opacity: .45; cursor: default; }
+    :focus-visible { outline: 2px solid var(--figma-color-border-selected, #1769ff); outline-offset: 2px; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; min-width: 0; }
+    .actions { display: grid; gap: 8px; margin-top: 12px; }
+    .notice { padding: 10px; background: var(--figma-color-bg-warning, #fff1cf); color: var(--figma-color-text-warning, #664500); border-radius: 5px; }
+    .error { padding: 10px; background: var(--figma-color-bg-danger, #fff0ef); color: var(--figma-color-text-danger, #a12619); border-radius: 5px; }
+    #selection-name { font-weight: 600; }
+    #result { border: 1px solid var(--figma-color-border, #ddd); padding: 12px; border-radius: 5px; margin-top: 12px; }
+    #result ul { margin: 6px 0; padding-left: 18px; }
+    a { color: var(--figma-color-text-brand, #1769ff); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header><h1>Assetlib</h1><p class="muted">Send selected artwork to your app’s draft.</p></header>
+  <details id="settings" open>
+    <summary>Connection <span id="connection-label" class="muted"></span></summary>
+    <p class="muted">Create an app-scoped <strong>draft</strong> token in the console’s Tokens panel. This is an Assetlib token, not a Figma token.</p>
+    <form id="connection-form">
+      <label>Console origin<select id="origin"><option value="https://assetlib-console.vercel.app">https://assetlib-console.vercel.app</option><option value="http://127.0.0.1:3100">http://127.0.0.1:3100 (development)</option></select></label>
+      <div class="row"><label>Organization ID<input id="org-id" required autocomplete="off" spellcheck="false"></label><label>App ID<input id="app-id" required autocomplete="off" spellcheck="false"></label></div>
+      <label>Draft token<input id="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste your draft token"></label>
+      <p id="token-prefix" class="muted"></p>
+      <button type="submit">Test connection</button>
+    </form>
+  </details>
+  <section aria-labelledby="selection-title">
+    <h2 id="selection-title">Selected artwork</h2>
+    <p id="selection-name">Reading selection…</p><p id="selection-meta" class="muted"></p>
+    <div id="file-fallback" hidden>
+      <p class="muted">Figma has not supplied this file’s key. Confirm its file URL once for this plugin session.</p>
+      <form id="file-form"><label>Figma file URL<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off"></label><button type="submit">Use this file</button></form>
+    </div>
+  </section>
+  <section aria-labelledby="placement-title">
+    <h2 id="placement-title">Draft placement</h2>
+    <label>Placement<select id="placement" disabled><option value="">Test your connection to load placements</option></select></label>
+    <div class="row">
+      <label id="state-label" hidden>State<select id="state"></select></label>
+      <label id="appearance-label" hidden>Appearance<select id="appearance"></select></label>
+      <label id="arm-label" hidden>Arm<select id="arm"></select></label>
+    </div>
+    <p id="export-note" class="muted"></p>
+    <p id="aspect-warning" class="notice" hidden></p>
+    <div class="actions"><button id="send" class="primary" disabled>Send to draft</button><button id="sync" hidden disabled></button></div>
+    <p id="sync-note" class="muted" hidden></p>
+    <p class="muted">Changes stay in draft until you publish in the console.</p>
+  </section>
+  <p id="status" role="status" aria-live="polite"></p>
+  <p id="error" class="error" role="alert" hidden></p>
+  <div id="result" aria-live="polite" hidden></div>
+  <!-- ASSETLIB_SCRIPT -->
+</body>
+</html>
