@@ -1,5 +1,7 @@
 # Workstream G implementation report
 
+Historical record of the plugin's first implementation, kept unchanged apart from local paths. Its open items in section 4 have since been closed: `manifest.json` carries the Figma-assigned plugin ID, the lockfile records the registry `resolved` URL and `integrity` hash for every package, `npm ci && npm run verify` passes, and the plugin was checked live in Figma desktop. README describes the current behavior.
+
 ## 1. Files added and changed, migrations added
 
 Changed: `README.md`.
@@ -21,7 +23,7 @@ Implemented: connection storage and token-prefix display; placement lookup; sing
 
 ## 2. Exact verification output, including failures
 
-Required command: `npm ci && npm run verify` — exit 1. Environment overrides only directed the npm cache to writable `/tmp/assetlib-figma-offline-cache` and disabled fetch retries with a 15-second fetch timeout. The second command did not execute because install failed.
+Required command: `npm ci && npm run verify` — exit 1. Environment overrides only directed the npm cache to a writable temporary directory and disabled fetch retries with a 15-second fetch timeout. The second command did not execute because install failed.
 
 ```text
 npm error code ENOTFOUND
@@ -32,7 +34,7 @@ npm error network This is a problem related to network connectivity.
 npm error network In most cases you are behind a proxy or have bad network settings.
 npm error network
 npm error network If you are behind a proxy, please make sure that the 'proxy' config is set properly.  See: 'npm help config'
-npm error A complete log of this run can be found in: /tmp/assetlib-figma-offline-cache/_logs/2026-10-09T01_47_15_416Z-debug-0.log
+npm error A complete log of this run can be found in: <npm cache>/_logs/2026-10-09T01_47_15_416Z-debug-0.log
 ```
 
 A separate `npm run verify` before locally supplying the dependencies exited 2:
@@ -53,7 +55,7 @@ error TS2688: Cannot find type definition file for '@figma/plugin-typings'.
 
 The initial online lockfile-only attempt also exited 1 because npm could not resolve the registry. A lockfile was then produced from cached TypeScript/esbuild registry metadata and the independently verified Figma version entry. The successful command was:
 
-`npm install --package-lock-only --ignore-scripts --offline --cache /tmp/assetlib-figma-offline-cache`
+`npm install --package-lock-only --ignore-scripts --offline --cache <npm cache>`
 
 Exact output (exit 0):
 
@@ -66,7 +68,7 @@ found 0 vulnerabilities
 
 The Figma lock entry contains the exact version but lacks registry resolution/integrity metadata. This is recorded in the README; no integrity value was invented.
 
-To verify the source without claiming a successful npm installation, cached TypeScript 5.9.3 and esbuild 0.25.12 were installed in `/tmp/assetlib-figma-build-tools`. The complete required Figma declarations and package metadata were obtained unchanged from the official [v1.117.0 release tag](https://github.com/figma/plugin-typings/tree/v1.117.0), whose tag points to commit `05ef5e70867630ddda390c30c901090bdfaf3b01`, and stored in `/tmp/assetlib-figma-typings-v1.117.0`. Their Git blob hashes were checked against the retrieved originals. Ignored local `node_modules` symlinks expose these exact versions to the normal repository scripts. These temporary links are local verification aids, not an npm-registry installation or files to distribute.
+To verify the source without claiming a successful npm installation, cached TypeScript 5.9.3 and esbuild 0.25.12 were installed in a temporary directory outside the repository. The complete required Figma declarations and package metadata were obtained unchanged from the official [v1.117.0 release tag](https://github.com/figma/plugin-typings/tree/v1.117.0), whose tag points to commit `05ef5e70867630ddda390c30c901090bdfaf3b01`, and stored in another temporary directory. Their Git blob hashes were checked against the retrieved originals. Ignored local `node_modules` symlinks expose these exact versions to the normal repository scripts. These temporary links are local verification aids, not an npm-registry installation or files to distribute.
 
 With those exact local dependencies, `npm run verify` exited 0:
 

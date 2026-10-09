@@ -13,10 +13,12 @@ npm run verify
 
 The build creates `dist/code.js` and a self-contained `dist/ui.html`. Both outputs must exist before importing the plugin.
 
-1. In Figma desktop, open a design file and select **Plugins → Development → New plugin**. Choose **Figma design** and **Custom UI**, name it **Assetlib**, and save the generated starter in a separate temporary folder.
-2. Copy the Figma-assigned `id` from that starter's `manifest.json` into this repository's `manifest.json` as a top-level string. This repository does not invent a published plugin ID. Importing a manifest without an `id` appears to succeed, but the plugin then cannot save its connection: Figma reports `Cannot access client storage without a plugin ID`. Keep your assigned ID stable: local connection and sync storage is scoped to the plugin ID.
-3. Select **Plugins → Development → Import plugin from manifest…** and choose this repository's `manifest.json`. If Figma already lists the temporary starter under the same ID, remove that development entry before importing this manifest; retain the assigned ID.
-4. Run **Plugins → Development → Assetlib**. Rebuild after source changes; use Figma's development hot reload or reopen the plugin.
+1. In Figma desktop, open a design file, select **Plugins → Development → Import plugin from manifest…**, and choose this repository's `manifest.json`.
+2. Run **Plugins → Development → Assetlib**. Rebuild after source changes; use Figma's development hot reload or reopen the plugin.
+
+`manifest.json` commits the plugin `id` `1690264758934826227`, which Figma assigned when this plugin was created as a development plugin. The plugin is not published to the Figma Community. Figma scopes client storage to the plugin ID, so saved connections and sync destinations belong to that ID; don't change it in the repository. A manifest without an `id` imports, but the plugin then cannot save its connection: Figma reports `Cannot access client storage without a plugin ID`.
+
+To use a development ID of your own instead: select **Plugins → Development → New plugin**, choose **Figma design** and **Custom UI**, save the generated starter in a separate temporary folder, and copy its `id` into your local `manifest.json` before importing. If Figma lists that starter under the same ID, remove its development entry first. Don't commit your ID. Client storage under a different ID starts empty, so connections and sync destinations saved under the other ID don't carry over.
 
 See Figma's [development plugin instructions](https://help.figma.com/hc/en-us/articles/360042786733-Create-a-classic-plugin-for-development), [manifest reference](https://developers.figma.com/docs/plugins/manifest/), and [client storage reference](https://developers.figma.com/docs/plugins/api/figma-clientStorage/). The manifest uses Plugin API `1.0.0` and the required `documentAccess: "dynamic-page"`; it does not request private APIs.
 
@@ -39,7 +41,7 @@ When `figma.fileKey` is available, the plugin uses it. Availability depends on t
 3. Review any aspect-ratio warning, then choose **Send to draft**. The plugin warns when the selected node's ratio differs from the placement by more than 2%.
 4. Read the result: created asset dimensions, binding success or the console's binding error, and a link back to the console.
 
-Exports are PNG. The plugin chooses the placement's width as the export constraint, or the placement's height when the node is proportionally taller, as required by the Phase 3 contract. Figma preserves the node's aspect ratio; the plugin does not crop or stretch it. Match the node's aspect ratio to the placement when you need exact canvas dimensions.
+Exports are PNG. The plugin uses the placement's width as the export constraint, or the placement's height when the node is proportionally taller. Figma preserves the node's aspect ratio; the plugin does not crop or stretch it. Match the node's aspect ratio to the placement when you need exact canvas dimensions.
 
 If a binding fails with HTTP 409, the console may still have created the asset. The plugin shows that partial result and the console's message; check the console before retrying to avoid unnecessary duplicate assets. A send does not publish a release.
 
@@ -65,7 +67,7 @@ The manifest declares:
 }
 ```
 
-Requests use `GET /api/apps/{orgId}/{appId}/placements` and `POST /api/apps/{orgId}/{appId}/drafts`. The placements endpoint accepts `draft` or `declare`; sending requires `draft`. The console must implement the Phase 3 draft/placements contract and allow requests from the Figma plugin UI. Local development requires that console server to be running on port 3100. The development-only origin is not available to a published plugin.
+Requests use `GET /api/apps/{orgId}/{appId}/placements` and `POST /api/apps/{orgId}/{appId}/drafts`. The placements endpoint accepts `draft` or `declare`; sending requires `draft`. Both routes authenticate only with that bearer token, never cookies, and must allow cross-origin requests from the Figma plugin UI; the hosted console does so on both production hosts. Local development requires that console server to be running on port 3100. The development-only origin is not available to a published plugin.
 
 HTTP 401/403 messages explain the token or scope; HTTP 409 preserves the console's message; HTTP 413 suggests reducing the export constraint; network failures name the origin that was called. The shared contract allows at most 4 MiB decoded PNG bytes and 6 MiB for the JSON body.
 
@@ -90,7 +92,7 @@ npm run build     # Bundle main and inline the UI script
 npm run verify    # Typecheck, tests, and build
 ```
 
-`src/code.ts` handles selection, Figma exports, and client storage. `src/ui.ts` and `src/ui.html` provide the interface and HTTP calls. `src/shared/` holds pure request, picker, export, file-key, and error logic. Tests under `tests/` exercise the compiled shared logic with `node --test`; they do not execute the Figma main thread or UI.
+`src/code.ts` handles selection, Figma exports, and client storage. `src/ui.ts` and `src/ui.html` provide the interface and HTTP calls. `src/shared/` holds pure request, picker, export, file-key, and error logic. `tests/shared.test.mjs` runs the compiled shared logic with `node --test`. `tests/plugin.test.mjs` bundles `src/code.ts` and `src/ui.ts` with esbuild and runs both in `node:vm` against a fake `figma` API, DOM, and `fetch`, covering saved and new connections, connection switches, Send, Sync, and the exported PNG checks. Neither runs real Figma or a real console.
 
 Known limits: one node at a time; PNG only; no OAuth; no document-wide sync; no automatic release publication; local-device settings and sync history. Actual Figma exports, client storage across restarts, console CORS, and authenticated draft/rebind behavior require a manual Figma-and-console integration check in addition to the local verification command.
 
