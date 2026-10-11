@@ -249,14 +249,17 @@ test('draft body contains only the source export and chosen binding contract', (
 });
 
 test('decoded upload and UTF-8 JSON body limits are bounded independently', () => {
+  const fitting = Buffer.alloc(3 * 1024 * 1024).toString('base64');
+  assert.equal(makeBody({ bytesBase64: fitting }).imageBase64.length, fitting.length);
   const maximumImage = Buffer.alloc(MAX_IMAGE_BYTES).toString('base64');
   assert.equal(decodedBase64Length(maximumImage), MAX_IMAGE_BYTES);
-  assert.equal(makeBody({ bytesBase64: maximumImage }).imageBase64.length, maximumImage.length);
+  // Within the decoded bound, but its base64 JSON body is above Vercel's 4.5 MB request limit.
+  assert.throws(() => makeBody({ bytesBase64: maximumImage }), /4\.5 MB/);
   assert.throws(() => makeBody({ bytesBase64: Buffer.alloc(MAX_IMAGE_BYTES + 1).toString('base64') }), /4 MiB/);
   assert.equal(utf8Length('abcéท🙂'), Buffer.byteLength('abcéท🙂'));
   assertDraftBodyLimit('a'.repeat(MAX_BODY_BYTES - 2));
-  assert.throws(() => assertDraftBodyLimit('a'.repeat(MAX_BODY_BYTES - 1)), /6 MiB/);
-  assert.throws(() => assertDraftBodyLimit('🙂'.repeat(MAX_BODY_BYTES / 4)), /6 MiB/);
+  assert.throws(() => assertDraftBodyLimit('a'.repeat(MAX_BODY_BYTES - 1)), /4\.5 MB/);
+  assert.throws(() => assertDraftBodyLimit('🙂'.repeat(MAX_BODY_BYTES / 4)), /4\.5 MB/);
 });
 
 test('successful draft results retain returned dimensions and remembered source details', () => {

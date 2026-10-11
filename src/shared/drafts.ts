@@ -4,7 +4,8 @@ import { validateBinding } from './placements.js';
 import { boundedString, isRecord, positiveDimension, validArm, validFileKey, validNodeId, validState } from './validation.js';
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-export const MAX_BODY_BYTES = 6 * 1024 * 1024;
+// Vercel Functions refuse request bodies above 4.5 MB before the console runs.
+export const MAX_BODY_BYTES = 4_500_000;
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 export function bytesToBase64(bytes: Uint8Array): string {
@@ -51,7 +52,7 @@ export function utf8Length(value: string): number {
 }
 
 export function assertDraftBodyLimit(value: unknown): void {
-  if (utf8Length(JSON.stringify(value)) > MAX_BODY_BYTES) throw new Error('The draft request is too large (maximum 6 MiB). Use a smaller export constraint.');
+  if (utf8Length(JSON.stringify(value)) > MAX_BODY_BYTES) throw new Error('The draft request is too large (maximum 4.5 MB). Use a smaller export constraint.');
 }
 
 export function buildDraftBody(input: {
