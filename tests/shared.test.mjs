@@ -330,8 +330,13 @@ test('409 binding failure remains a created draft with the console error and any
 test('errors explain token scopes, payload size, console conflicts, and the called origin', () => {
   assert.equal(mapHttpError(401, { error: 'server detail' }), TOKEN_REFUSED);
   assert.equal(TOKEN_REFUSED, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
-  assert.equal(mapHttpError(403, null), TOKEN_SCOPE);
+  // The console's 403 bodies: only a missing scope is about the scope; a revoked token, or any other 403, is refused.
+  const scope = { error: 'This API token lacks the required scope.' };
+  assert.equal(mapHttpError(403, scope), TOKEN_SCOPE);
   assert.equal(TOKEN_SCOPE, 'This token can’t send drafts. Create a token with Draft permission.');
+  assert.equal(mapHttpError(403, { error: 'This API token has been revoked.' }), TOKEN_REFUSED);
+  assert.equal(mapHttpError(403, { error: 'This API token is no longer authorized.' }, 'insert'), TOKEN_REFUSED);
+  assert.equal(mapHttpError(403, null), TOKEN_REFUSED);
   assert.equal(mapHttpError(413, null), 'This export is too large for Assetlib (over 3.3 MB as a PNG). Reduce its detail or size and try again.');
   assert.equal(mapHttpError(429, null), 'Assetlib is busy. Try again in a minute.');
   assert.match(mapHttpError(409, null), /couldn’t put this image in the chosen cell/);
@@ -513,8 +518,9 @@ test('pngSize reads IHDR dimensions without throwing, and plain base64 matches N
 });
 
 test('insert errors explain the read scope and an older console, and send errors are unchanged', () => {
-  assert.equal(mapHttpError(403, null, 'insert'), 'This token can’t read this app’s images. Create a token with Draft permission.');
-  assert.equal(mapHttpError(403, null), TOKEN_SCOPE);
+  const scope = { error: 'This API token lacks the required scope.' };
+  assert.equal(mapHttpError(403, scope, 'insert'), 'This token can’t read this app’s images. Create a token with Draft permission.');
+  assert.equal(mapHttpError(403, scope), TOKEN_SCOPE);
   assert.equal(MISSING_INSERT, 'This console doesn’t support Insert yet. Send still works.');
   assert.equal(mapHttpError(404, { error: 'Rendition not found.' }, 'insert'), MISSING_INSERT);
   assert.equal(mapHttpError(404, { error: 'Placement not found.' }), 'Placement not found.');

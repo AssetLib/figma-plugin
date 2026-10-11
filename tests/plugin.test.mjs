@@ -748,14 +748,16 @@ test('without a file key, the first Sync asks for the file’s link on the Send 
 });
 
 test('Insert errors: each failed list says why in its place, with the one action that helps, and Send still works', async () => {
-  for (const [status, expected, action] of [
+  for (const [status, expected, action, error] of [
     [403, 'This token can’t read this app’s images. Create a token with Draft permission.', 'insert-token'],
+    // A revoked token also answers 403, but its trouble is the token, not its scope: said as a 401 is.
+    [403, 'Assetlib no longer accepts this token. Paste a new one.', 'insert-token', 'This API token has been revoked.'],
     [404, 'This console doesn’t support Insert yet. Send still works.', 'insert-go-send'],
     [401, 'Assetlib no longer accepts this token. Paste a new one.', 'insert-token'],
     [429, 'Assetlib is busy. Try again in a minute.', 'insert-retry'],
     [500, 'Assetlib had a problem (500). Try again in a minute.', 'insert-retry'],
   ]) {
-    const app = harness({ console: { statuses: { artwork: status } } });
+    const app = harness({ console: { statuses: { artwork: status }, errors: error ? { artwork: error } : {} } });
     await openInsert(app);
     assert.equal(app.element('insert-empty').hidden, false, `HTTP ${status}`);
     assert.equal(app.element('insert-empty-text').textContent, expected, `HTTP ${status}`);
@@ -763,7 +765,7 @@ test('Insert errors: each failed list says why in its place, with the one action
     assert.deepEqual(['insert-retry', 'insert-token', 'insert-go-send'].filter(id => !app.element(id).hidden), [action], `HTTP ${status}`);
     assert.equal(app.element('error').hidden, true, 'the error line is for actions, not lists');
     assert.equal(app.activeElement(), app.element('insert-empty'), 'focus moves to it');
-    assert.equal(app.element('connection-label').textContent, status === 401 ? 'Needs attention' : 'Connected');
+    assert.equal(app.element('connection-label').textContent, status === 401 || error ? 'Needs attention' : 'Connected');
     if (action === 'insert-go-send') {
       app.element('insert-go-send').dispatch('click');
       assert.equal(app.element('panel-send').hidden, false, 'Go to Send');
@@ -1219,6 +1221,15 @@ test('a failed connection test is said once: by the view in front, or under the 
   insert.element('settings').dispatch('toggle');
   await settle();
   assert.equal(insert.element('insert-empty').hidden, false);
+
+  // A revoked token answers the test with a 403: said as a refused token, never as a missing scope.
+  const revoked = harness({ prefs: { tab: 'insert' }, console: { statuses: { placements: 403 }, errors: { placements: 'This API token has been revoked.' } } });
+  await settle();
+  assert.equal(revoked.element('insert-empty-text').textContent, 'Assetlib no longer accepts this token. Paste a new one.');
+  revoked.element('insert-token').dispatch('click');
+  await settle();
+  assert.equal(revoked.element('connection-error').textContent, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
+  assert.equal(revoked.element('token').getAttribute('aria-invalid'), 'true');
 
   // Unreachable on Insert: Try again in the list, nothing opens, and no field is marked.
   const offline = harness({ prefs: { tab: 'insert' }, console: { failures: new Set(['placements']) } });
@@ -2981,8 +2992,8 @@ test('linked node selected → replace relinks', async () => {
   assert.deepEqual(clone(component.fills), [solid, { type: 'IMAGE', imageHash: 'hash-2', scaleMode: 'CROP', imageTransform: crop }]);
   assert.deepEqual({ ...linkOf(component), insertedAt: 'set' }, { v: 1, origin: connection.origin, orgId: 'org-one', appId: 'app-a', placementKey: placement.key,
     state: 'old', appearance: 'dark', arm: 'c', environment: 'draft', assetId: baseArt, nodeId: component.id, insertedAt: 'set' }, 'relinked to the chosen cell');
-  assert.equal(component.name, 'hero.artwork · b · light', 'the layer keeps its name');
-  assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text], ['Replaced image in hero.artwork · b · light', 'Undo']);
+  assert.equal(component.name, 'hero.artwork · c · dark', 'a layer named for its cell takes the new cell’s name');
+  assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text], ['Replaced image in hero.artwork · c · dark', 'Undo']);
   assert.equal(insertedMessage(app).mode, 'replace');
   assert.deepEqual(lastSelection(app).remembered.insertedFrom, { environment: 'draft', assetId: baseArt });
   assert.equal(app.element('sync-title').textContent, 'Linked to hero.artwork');
@@ -2991,16 +3002,19 @@ test('linked node selected → replace relinks', async () => {
   rowFor(app, card.key).dispatch('click');
   await choose(app);
   assert.equal(linkOf(component).placementKey, card.key);
+  assert.equal(component.name, 'home.card', 'and another placement’s');
   assert.match(component.description, /^Assetlib placement home\.card \(1200 × 800\)\. /);
   assert.deepEqual(clone(component.documentationLinks), [{ uri: 'https://console.assetlib.dev/w/org-one/app-a/placements' }]);
   assert.deepEqual(downloads(app).at(-1), sha(30), 'a 1000 px layer needs 1200 px');
 
-  // A description the designer wrote is theirs, and stays.
+  // A description and a name the designer wrote are theirs, and stay.
   component.description = 'Hero for the spring campaign';
+  component.name = 'Spring hero';
   rowFor(app, placement.key).dispatch('click');
   await choose(app);
   assert.equal(linkOf(component).placementKey, placement.key);
   assert.equal(component.description, 'Hero for the spring campaign');
+  assert.equal(component.name, 'Spring hero');
 
   // A library image replaces the image, and the layer stays linked to its cell: a library image never writes a link.
   const before = component.getPluginData(LINK_KEY);
@@ -3011,7 +3025,7 @@ test('linked node selected → replace relinks', async () => {
   await choose(app);
   assert.equal(topImage(component), `hash-${app.images.length}`);
   assert.equal(component.getPluginData(LINK_KEY), before);
-  assert.equal(app.notifications.at(-1).message, 'Replaced image in hero.artwork · b · light');
+  assert.equal(app.notifications.at(-1).message, 'Replaced image in Spring hero');
 
   // Insert as new frame: beside the linked layer, not in it.
   await choose(app, 'insert-new');
@@ -4167,6 +4181,20 @@ test('a Send relinks a component and its marker to the placement it went to; a d
   own.element('send').dispatch('click');
   await settle();
   assert.equal(own.figma.currentPage.selection[0].description, 'Our hero image');
+
+  // A layer still named for the placement it was linked to takes the name of the one it went to; the designer's name stays.
+  const link = { v: 1, origin: connection.origin, orgId: 'org-one', appId: 'app-a', placementKey: card.key, state: null, appearance: null, arm: null,
+    environment: 'production', assetId: baseArt, nodeId: component.id, insertedAt: '2026-10-09T00:00:00.000Z' };
+  for (const [name, expected] of [['home.card', 'hero.artwork'], ['Spring hero', 'Spring hero']]) {
+    const linked = harness({ remembered: null, selection: [{ ...component, name, pluginData: { [LINK_KEY]: JSON.stringify(link) } }], console: { draft: boundDraft } });
+    await settle();
+    pick(linked, 'placement', placement.key);
+    linked.element('send').dispatch('click');
+    await settle();
+    const sent = linked.figma.currentPage.selection[0];
+    assert.equal(linkOf(sent).placementKey, placement.key);
+    assert.equal(sent.name, expected, name);
+  }
 });
 
 test('linking the file retires a fill’s Undo, and an edit waits for a drop’s own undo step', async () => {

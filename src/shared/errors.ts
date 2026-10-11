@@ -21,7 +21,7 @@ export const MISSING_INSERT = 'This console doesn’t support Insert yet. Send s
 // A rendition that disappears between the listing and the download; the console itself supports Insert.
 export const GONE_IMAGE = 'This image was removed. Refresh to update the list.';
 
-// The token form, for a token the console refused (401) or no longer honours (a revoked token answers 403).
+// A token the console refused (401) or no longer honours (403 for a revoked token, unlike a missing scope).
 export const TOKEN_REFUSED = 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.';
 // A token without the draft scope (a declare token for CI).
 export const TOKEN_SCOPE = 'This token can’t send drafts. Create a token with Draft permission.';
@@ -42,8 +42,16 @@ export function serverError(status: number): string {
   return `Assetlib had a problem (${status}). Try again in a minute.`;
 }
 
+/**
+ * The console refused the token itself: a 401, or a 403 that isn't about its scope (revoked, or no longer authorized).
+ * The console's 403 for a token without the scope is the one that says "scope".
+ */
+export function tokenRefused(status: number, payload: unknown): boolean {
+  return status === 401 || (status === 403 && !/\bscope\b/i.test(consoleMessage(payload) ?? ''));
+}
+
 export function mapHttpError(status: number, payload: unknown, action: 'send' | 'insert' = 'send'): string {
-  if (status === 401) return TOKEN_REFUSED;
+  if (tokenRefused(status, payload)) return TOKEN_REFUSED;
   if (status === 403 && action === 'insert') return 'This token can’t read this app’s images. Create a token with Draft permission.';
   if (status === 403) return TOKEN_SCOPE;
   if (status === 404 && action === 'insert') return MISSING_INSERT;

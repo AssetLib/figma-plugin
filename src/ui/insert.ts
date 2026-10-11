@@ -2,7 +2,7 @@
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_REFUSED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, consoleLink,
   environmentLabel, fillRendition, findCell, insertRendition, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
-  placementMeta, pngSize, renditionPath,
+  placementMeta, pngSize, renditionPath, tokenRefused,
 } from '../shared/index.js';
 import type {
   Appearance, ArtworkResponse, CanvasTarget, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
@@ -17,7 +17,7 @@ import {
 import { readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
 import { syncBar } from './send.js';
-import { NEW_FRAME, actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, state } from './state.js';
+import { NEW_FRAME, actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, refusedToken, state } from './state.js';
 import type { ReadFailure } from './state.js';
 import { releaseListImages, resetThumbnails, retryFailedThumbnails, showThumbnail, thumbnailFrame } from './thumbnails.js';
 
@@ -589,7 +589,7 @@ export function enterInsert(): void {
  * person is in a field. A refused token the open settings already say (needsAttention) is left to them.
  */
 function showListError(failure: ReadFailure): void {
-  listError = { ...readProblem(failure), connection: failure.kind === 'http' && failure.status === 401 };
+  listError = { ...readProblem(failure), connection: refusedToken(failure) };
   presentListError();
 }
 function presentListError(): void {
@@ -661,7 +661,7 @@ async function loadArtwork(): Promise<void> {
     const result = await send(config, { path: 'placements/artwork', channel: 'list' });
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
-      if (result.status === 401) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
+      if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
       const failure = readFailureOf(result, readFailure(result, config, 'insert'));
       artwork = null;
       artworkGeneration = null;
@@ -708,7 +708,7 @@ async function loadImages(reset: boolean): Promise<void> {
     const result = await send(config, { path: assetsPath({ limit: 24, cursor, q: q || undefined }), channel: 'list' });
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
-      if (result.status === 401) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
+      if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
       failure = readFailureOf(result, readFailure(result, config, 'insert'));
       throw new Error(failure.text);
     }
@@ -738,7 +738,7 @@ async function fetchPng(config: Connection, generation: number, asset: LibraryAs
   const result = await send(config, { path: renditionPath(asset.id, rendition.sha256), bytes: rendition.bytes });
   if (generation !== state.connectionGeneration || result.kind === 'aborted') return null;
   if (result.status !== 200) {
-    if (result.status === 401) needsAttention();
+    if (tokenRefused(result.status, result.payload)) needsAttention();
     // This console listed the image, so a 404 means the image went away, not that the console lacks Insert.
     throw new Error(result.kind === 'http' && result.status === 404 ? GONE_IMAGE : readFailure(result, config, 'insert'));
   }

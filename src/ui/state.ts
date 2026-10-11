@@ -1,4 +1,4 @@
-import { MISSING_INSERT, TOKEN_NO_LONGER_ACCEPTED, defaultPreferences } from '../shared/index.js';
+import { MISSING_INSERT, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, defaultPreferences } from '../shared/index.js';
 import type { CanvasTarget, Connection, Placement, Preferences } from '../shared/index.js';
 import type { SelectionState } from '../shared/protocol.js';
 
@@ -14,9 +14,13 @@ export type ReadFailure = { kind: 'http' | 'timeout' | 'network' | 'invalid'; st
 
 /** What a view says about a failed read, in place of what it could not load, and the one action that helps. */
 export type ReadProblem = { text: string; action: 'retry' | 'token' | 'send' };
+/** The console refused the token itself (a 401, or a revoked token's 403), not only what it may read. */
+export function refusedToken(failure: ReadFailure): boolean {
+  return failure.kind === 'http' && (failure.status === 401 || failure.text === TOKEN_REFUSED);
+}
 export function readProblem(failure: ReadFailure | null): ReadProblem {
   if (!failure) return { text: 'Assetlib couldn’t load this list. Try again.', action: 'retry' };
-  if (failure.kind === 'http' && failure.status === 401) return { text: TOKEN_NO_LONGER_ACCEPTED, action: 'token' };
+  if (refusedToken(failure)) return { text: TOKEN_NO_LONGER_ACCEPTED, action: 'token' };
   if (failure.kind === 'http' && failure.status === 403) return { text: failure.text, action: 'token' };
   if (failure.text === MISSING_INSERT) return { text: failure.text, action: 'send' };
   return { text: failure.text, action: 'retry' };

@@ -1,15 +1,15 @@
 // The main thread in Figma's sandbox: routes the UI's messages, keeps the connection, exports for Send, and watches the
 // selection. Selection reporting is in main/selection.ts, and Insert and drops on the canvas in main/insert.ts.
 import {
-  DEVICE_STORAGE, MAX_IMAGE_BYTES, SELECTION_CHANGED, chooseExportSettings, clampWindow, defaultPreferences, defaultWindowSize, isConsoleLink, linkNamesFile,
+  DEVICE_STORAGE, MAX_IMAGE_BYTES, SELECTION_CHANGED, chooseExportSettings, clampWindow, defaultPreferences, defaultWindowSize, isConsoleLink, layerName, linkNamesFile,
   loadSavedConnection, mapHttpError, matchedHeight, parseFileLink, parsePlacements, parsePreferences, validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
 import type { Connection, InsertLink, Preferences } from './shared/index.js';
 import { DISCONNECTED, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { UiMessage } from './shared/protocol.js';
 import { currentFileKey, linkFile } from './main/identity.js';
-import { discardDrops, discardPlaceholder, drop, dropPending, insert, retireUndo, retireUndoOnEdit, writeMarker } from './main/insert.js';
-import { describeNode, reportSelection, selectedNode, storeTarget, writeLink } from './main/selection.js';
+import { discardDrops, discardPlaceholder, drop, dropPending, insert, renameRelinked, retireUndo, retireUndoOnEdit, writeMarker } from './main/insert.js';
+import { describeNode, nodeLink, reportSelection, selectedNode, storeTarget, writeLink } from './main/selection.js';
 import type { StoredTarget } from './main/selection.js';
 import { SELECTION_MOVED, main, post } from './main/state.js';
 
@@ -19,7 +19,8 @@ const PREFERENCES_KEY = 'assetlib.preferences.v1';
 let savedFileUrl = '';
 let preferences: Preferences = defaultPreferences();
 // An export waiting for its draft: the connection, the target to remember, the layer, and its placement's declared size.
-type Exported = { config: Connection; target: StoredTarget; node: SceneNode; frame: { width: number; height: number } };
+// name: the layer name Insert gives the bound cell, which a layer still named for its old placement takes.
+type Exported = { config: Connection; target: StoredTarget; node: SceneNode; frame: { width: number; height: number }; name: string };
 const exported = new Map<number, Exported>();
 
 const initialized = (async () => {
@@ -61,8 +62,10 @@ function linkSent(pending: Exported, assetId: string | null): void {
   try { link = validateInsertLink({ placementKey, state, appearance, arm, environment: 'draft', assetId }); } catch { return; }
   // A fill's Undo would take back the link instead of the fill.
   retireUndo();
+  const previous = nodeLink(pending.node, pending.config);
   if (!writeLink(pending.node, pending.config, link)) return;
   writeMarker(pending.node, pending.config, placementKey, pending.frame);
+  renameRelinked(pending.node, previous, pending.name);
   commitOwnStep();
 }
 
@@ -138,7 +141,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error(mapHttpError(413, null));
       exported.clear();
       exported.set(message.requestId, {
-        config, node, frame: { width: placement.width, height: placement.height },
+        config, node, frame: { width: placement.width, height: placement.height }, name: layerName(placement, bind),
         target: { fileKey, nodeId: snapshot.id, placementKey: bind.slotKey, state: bind.state, appearance: bind.appearance, arm: bind.arm },
       });
       post({ type: 'exported', requestId: message.requestId, node: snapshot, fileKey, settings, bytes });

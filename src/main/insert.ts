@@ -5,7 +5,7 @@
 import {
   MAX_INSERT_PIXELS, environmentLabel, insideInstance, isPlacementMarker, isUint8Array, placementMarker, pngSize, sanitizeName, validateInsertLink,
 } from '../shared/index.js';
-import type { CanvasTarget, Connection, InsertLink, InsertMode } from '../shared/index.js';
+import type { CanvasTarget, Connection, InsertLink, InsertMode, StoredLink } from '../shared/index.js';
 import { dropRequestId, isAssetlibDrop, parseDropMetadata, toastText } from '../shared/protocol.js';
 import type { DropMetadata, InsertDestination, UiMessage } from '../shared/protocol.js';
 import { describeNode, dropStoredTargets, inComponent, insertTarget, nodeLink, reportSelection, writeLink } from './selection.js';
@@ -28,9 +28,9 @@ export function notLinked(count: number): string {
 }
 export const NOT_UNDONE = 'Not undone. These layers changed after the fill.';
 // What a fill or replace itself changes on its layers: the image (which detaches a fill style; a frame's fills are also
-// its backgrounds), the link, and a component's marker; a filled component's instances follow its fills. Figma reports
-// any other local change as a later edit, which Undo would take back instead.
-const FILL_CHANGES = new Set<string>(['fills', 'backgrounds', 'fillStyleId', 'pluginData', 'description', 'documentationLinks']);
+// its backgrounds), the link, a component's marker, and a relinked layer's name; a filled component's instances follow
+// its fills and name. Figma reports any other local change as a later edit, which Undo would take back instead.
+const FILL_CHANGES = new Set<string>(['fills', 'backgrounds', 'fillStyleId', 'pluginData', 'description', 'documentationLinks', 'name']);
 
 type InsertMessage = Extract<UiMessage, { type: 'insert' }>;
 type Frame = { width: number; height: number };
@@ -40,8 +40,8 @@ type PendingDrop = { node: SceneNode; placeholder: boolean; generation: number }
 type Paintable = SceneNode & MinimalFillsMixin;
 // relinked: existing layers whose link now names the chosen cell.
 type Inserted = { node: SceneNode; mode: InsertMode; linked: boolean; notice: string; undo: SceneNode[] | null; relinked: string[] };
-// A filled layer as the fill left it: its paints, and a component's description.
-type Filled = { node: SceneNode; fills: string; description: string | null };
+// A filled layer as the fill left it: its paints, its name, and a component's description.
+type Filled = { node: SceneNode; fills: string; name: string; description: string | null };
 
 // The toast whose Undo can still take back the last fill or replace, and the layers it filled. A selection change, a
 // page change, another plugin edit, or a later local edit on the page retires it.
@@ -54,7 +54,7 @@ export function retireUndo(): void {
 }
 /**
  * A later local edit on the page is what Undo would now take back, so the toast goes: a layer made or removed, or any
- * change beyond the fill's own (a filled layer moved or renamed; another layer hidden, locked, or recoloured). Only an
+ * change beyond the fill's own (a filled layer moved; another layer renamed, hidden, locked, or recoloured). Only an
  * instance, or a layer inside one, may report the fill's own properties, as a filled component's instances follow it.
  */
 export function retireUndoOnEdit(event: NodeChangeEvent): void {
@@ -64,7 +64,7 @@ export function retireUndoOnEdit(event: NodeChangeEvent): void {
   if (event.nodeChanges.some(change => change.origin !== 'REMOTE' && !fillOnly(change))) retireUndo();
 }
 function snapshot(node: SceneNode): Filled {
-  return { node, fills: 'fills' in node ? JSON.stringify(node.fills) : '', description: node.type === 'COMPONENT' ? node.description : null };
+  return { node, fills: 'fills' in node ? JSON.stringify(node.fills) : '', name: node.name, description: node.type === 'COMPONENT' ? node.description : null };
 }
 
 /**
@@ -81,6 +81,16 @@ export function writeMarker(node: SceneNode, config: Connection, key: string, fr
   try { node.description = marker?.description ?? ''; } catch { return; }
   if (!ours && node.documentationLinks.length) return;
   try { node.documentationLinks = marker?.documentationUrl ? [{ uri: marker.documentationUrl }] : []; } catch { /* description only */ }
+}
+
+/**
+ * A layer still named for the placement its link named (Insert names it by the key, then its cell) takes the name of the
+ * cell it is now linked to, as its marker does; a name the designer gave it stays.
+ */
+export function renameRelinked(node: SceneNode, previous: StoredLink | null, name: string): void {
+  const key = previous?.placementKey;
+  if (!key || node.name === name || (node.name !== key && !node.name.startsWith(`${key} · `))) return;
+  try { node.name = name; } catch { /* keeps its name */ }
 }
 
 /** A new component's marker. The description is what agents need; a link Figma refuses must not cost the insert. */
@@ -186,12 +196,14 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
   const relinked: string[] = [];
   const unlinked: SceneNode[] = [];
   for (const node of layers) {
+    const previous = link ? nodeLink(node, config) : null;
     try { node.fills = withImage(node.fills, hash); } catch { continue; }
     filled.push(node);
     if (!link) continue;
     if (writeLink(node, config, link)) {
       relinked.push(node.id);
       writeMarker(node, config, link.placementKey, frame);
+      renameRelinked(node, previous, name);
     } else unlinked.push(node);
   }
   const first = filled[0];
@@ -219,7 +231,10 @@ function notifyUndo(notice: string, layers: SceneNode[]): void {
     undoToast = null;
     undoIds = new Set();
     // After another edit to these layers, Undo would take back that edit instead.
-    const unchanged = (layer: Filled) => { const now = snapshot(layer.node); return now.fills === layer.fills && now.description === layer.description; };
+    const unchanged = (layer: Filled) => {
+      const now = snapshot(layer.node);
+      return now.fills === layer.fills && now.name === layer.name && now.description === layer.description;
+    };
     if (filled.every(layer => !layer.node.removed && unchanged(layer))) figma.triggerUndo();
     else figma.notify(NOT_UNDONE);
   } } });

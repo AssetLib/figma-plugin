@@ -162,9 +162,10 @@ const jsonResponse = (status, payload, headers = {}) => ({
 
 /**
  * A console that answers by URL. The state is read on every call, so tests can change it mid-run:
- * statuses[route] answers with that HTTP status (and headers[route], such as retry-after, on it), failures (a Set of
- * routes) throw a network error, and gates[route] (a deferred) holds the response until resolved. GET /api/token
- * (route `token`) answers with state.identity, else the identity the harness registered for the bearer token, else 404
+ * statuses[route] answers with that HTTP status (and headers[route], such as retry-after, on it) and errors[route] as its
+ * error text (a 403 says what the console says for a token without the scope, unless errors[route] says otherwise, as
+ * the console's revoked token does), failures (a Set of routes) throw a network error, and gates[route] (a deferred)
+ * holds the response until resolved. GET /api/token (route `token`) answers with state.identity, else the identity the harness registered for the bearer token, else 404
  * as a console from before that route does.
  */
 export function fakeConsole(state) {
@@ -172,6 +173,7 @@ export function fakeConsole(state) {
   state.failures ??= new Set();
   state.gates ??= {};
   state.headers ??= {};
+  state.errors ??= {};
   return async (url, options, request) => {
     const path = /^https?:\/\/[^/]+\/api\/apps\/[^/]+\/[^/]+\/(.*)$/.exec(url)?.[1] ?? '';
     // /placements/artwork is matched before /placements.
@@ -181,7 +183,11 @@ export function fakeConsole(state) {
     request.route = route;
     if (state.gates[route]) await state.gates[route].promise;
     if (state.failures.has(route)) throw new TypeError('fetch failed');
-    if (state.statuses[route]) return jsonResponse(state.statuses[route], { error: `HTTP ${state.statuses[route]} from the fake console.` }, state.headers[route]);
+    const status = state.statuses[route];
+    if (status) {
+      const error = state.errors[route] ?? (status === 403 ? 'This API token lacks the required scope.' : `HTTP ${status} from the fake console.`);
+      return jsonResponse(status, { error }, state.headers[route]);
+    }
     switch (route) {
       case 'token': {
         const identity = state.identity ?? request.identity;
