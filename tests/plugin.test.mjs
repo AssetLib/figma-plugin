@@ -2708,9 +2708,13 @@ test('three shapes fill and link each with its own id', async () => {
   assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text, app.notifications.at(-1).options.timeout],
     ['Filled 3 layers with home.card', 'Undo', 6000]);
   assert.equal(app.element('status').textContent, 'Filled 3 layers with home.card.');
-  // Undo takes the fill back while it is still the last change to these layers.
+  // Undo takes the fill back while it is still the last change to these layers, and the selection is reported again,
+  // since the link it put back changes no selection.
+  const reports = app.mainMessages.filter(message => message.type === 'selection').length;
   app.notifications.at(-1).options.button.action();
   assert.deepEqual(app.undoTriggers, [1]);
+  await settle();
+  assert.equal(app.mainMessages.filter(message => message.type === 'selection').length, reports + 1);
 
   const changed = await canvas(shapes);
   await choose(changed);

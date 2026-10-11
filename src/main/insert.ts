@@ -235,8 +235,10 @@ function notifyUndo(notice: string, layers: SceneNode[]): void {
       const now = snapshot(layer.node);
       return now.fills === layer.fills && now.name === layer.name && now.description === layer.description;
     };
-    if (filled.every(layer => !layer.node.removed && unchanged(layer))) figma.triggerUndo();
-    else figma.notify(NOT_UNDONE);
+    if (!filled.every(layer => !layer.node.removed && unchanged(layer))) { figma.notify(NOT_UNDONE); return; }
+    figma.triggerUndo();
+    // Undo puts back the layers' earlier link too, which no selection change reports.
+    void reportSelection();
   } } });
   undoToast = toast;
   undoIds = new Set(layers.map(node => node.id));
