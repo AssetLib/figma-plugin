@@ -5,10 +5,9 @@
 // can never put its own words into instructions an agent follows.
 import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN, normalizeConsoleOrigin } from './connection.js';
 import type { Connection } from './types.js';
+import { validPlacementKey } from './validation.js';
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
-// As `assetlib.catalog.json` keys (the CLI's codegen); console-created keys are a subset.
-const PLACEMENT_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/;
 
 export interface PlacementMarker {
   description: string;
@@ -16,10 +15,15 @@ export interface PlacementMarker {
   documentationUrl: string | null;
 }
 
+/** True for a component description `placementMarker` wrote, which a fill or replace may rewrite; a designer's own is kept. */
+export function isPlacementMarker(description: string): boolean {
+  return typeof description === 'string' && description.startsWith('Assetlib placement ');
+}
+
 /** Null for a key outside the catalog's grammar or a size that is not two positive integers. */
 export function placementMarker(connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>, key: string,
   size: { width: number; height: number }): PlacementMarker | null {
-  if (!PLACEMENT_KEY.test(key) || ![size.width, size.height].every(value => Number.isSafeInteger(value) && value > 0)) return null;
+  if (!validPlacementKey(key) || ![size.width, size.height].every(value => Number.isSafeInteger(value) && value > 0)) return null;
   const description = `Assetlib placement ${key} (${size.width} × ${size.height}). This image can change after the app is released, `
     + 'so don’t export it as a static file. '
     + `In code, use the accessor generated for ${key} from assetlib.catalog.json, which carries the bundled fallback. `

@@ -1,19 +1,23 @@
-// The Insert tab: placements by screen and the image library, the cell pickers, and Insert.
+// The Insert tab: placements by screen and the image library, the cell pickers, Insert, and dragging rows and tiles onto the canvas.
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_REFUSED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, consoleLink,
-  environmentLabel, findCell, insertRendition, insertUnavailable, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMeta, pngSize,
-  renditionPath,
+  environmentLabel, fillRendition, findCell, insertRendition, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
+  placementMeta, pngSize, renditionPath,
 } from '../shared/index.js';
 import type {
-  Appearance, ArtworkResponse, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences,
+  Appearance, ArtworkResponse, CanvasTarget, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
 } from '../shared/index.js';
-import type { MainMessage } from '../shared/protocol.js';
+import type { InsertDestination, MainMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
-import { announceError, clearError, element, errorText, flushRender, inField, post, preferFocus, scheduleRender, setStatus, setUnavailable, showError } from './dom.js';
+import {
+  announceError, arrowKeys, clearError, element, errorText, flushRender, inField, keyOf, post, postDrop, preferFocus, rovingStops, scheduleRender, sentence,
+  setBusy, setStatus, setUnavailable, showError,
+} from './dom.js';
 import { readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
-import { actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, state } from './state.js';
+import { syncBar } from './send.js';
+import { NEW_FRAME, actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, state } from './state.js';
 import type { ReadFailure } from './state.js';
 import { releaseListImages, resetThumbnails, retryFailedThumbnails, showThumbnail, thumbnailFrame } from './thumbnails.js';
 
@@ -23,14 +27,27 @@ const insertStatePicker = element<HTMLSelectElement>('insert-state');
 const insertAppearancePicker = element<HTMLSelectElement>('insert-appearance');
 const insertArmPicker = element<HTMLSelectElement>('insert-arm');
 const insertButton = element<HTMLButtonElement>('insert');
+const insertNewButton = element<HTMLButtonElement>('insert-new');
 const insertThumb = element<HTMLImageElement>('insert-thumb');
 const insertBar = element('insert-bar');
+const hintBar = element('hint-bar');
 const emptyState = element('insert-empty');
 const scaleButtons = [element<HTMLButtonElement>('scale-1'), element<HTMLButtonElement>('scale-2'), element<HTMLButtonElement>('scale-3')] as const;
+const browseButtons = [element<HTMLButtonElement>('browse-placements'), element<HTMLButtonElement>('browse-images')] as const;
+const environmentButtons = ENVIRONMENTS.map(name => element<HTMLButtonElement>(`env-${name}`));
+// Below 400 px wide (ui.html) the radios give way to this dropdown; both show the same choice.
+const environmentSelect = element<HTMLSelectElement>('env-select');
 const GUIDE_URL = 'https://www.assetlib.dev/guide';
 const NEEDS_UPLOAD = 'This image has no version Figma can use. Upload it again in the Assetlib console.';
 const TOO_LARGE = 'Too large for Figma. Every version is over 4 MiB.';
 const UNEXPECTED_IMAGE = 'The console sent an unexpected image. Refresh and try again.';
+const CONVERTING = 'Converting to PNG…';
+// A drag's data type: no field in the panel takes it, so a drop back inside the panel changes nothing.
+const DRAG_TYPE = 'application/x-assetlib-item';
+// Figma calls main's drop handler at once, so its reply comes at once; a drag that ended off the canvas gets none.
+const DROP_REPLY_MS = 5000;
+// A finished download is kept this long, so a drop, another drag, or an Insert of the same version reuses it.
+const DOWNLOAD_KEEP_MS = 60000;
 
 /**
  * What the list region shows in place of rows or tiles: a sentence, an optional headline, and at most one action.
@@ -45,8 +62,19 @@ type ListState = {
 let artwork: ArtworkResponse | null = null;
 let artworkGeneration: number | null = null;
 let images: { items: LibraryAsset[]; nextCursor: string | null; q: string } | null = null;
-let selected: { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string } | null = null;
-let pendingInsert: { id: number; generation: number; environment: EnvironmentName | null } | null = null;
+// A row's placement and the cell its pickers show, or a tile's image.
+type Choice = { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string };
+let selected: Choice | null = null;
+let pendingInsert: { id: number; generation: number } | null = null;
+// Insert downloads by version (sha256), as PNG bytes: null when a connection change abandoned it. `status` is the Insert
+// waiting on one, which hears when it converts a WebP; `converting` while it does.
+type Download = { generation: number; bytes: Promise<Uint8Array | null>; status?: (text: string) => void; converting: boolean };
+let downloads = new Map<string, Download>();
+// The row or tile being dragged, and its download, which a drop uses.
+type Dragged = { generation: number; target: InsertTarget; scale: 1 | 2 | 3; bytes: Promise<Uint8Array | null> };
+let dragging: Dragged | null = null;
+// A drop posted to Figma: waiting for main's `dropped` (no nodeId yet, with a timer), then for its download.
+let pendingDrop: (Dragged & { id: number; timer: number; nodeId: string | null }) | null = null;
 // The search the list loading now (state.ops.loadingList) loads, and a ticket that a newer list load (which aborts
 // this one) replaces.
 let loadingQuery = '';
@@ -58,7 +86,15 @@ let listState: ListState | null = null;
 // A Refresh, search, or Load more asked for while a connection save waited; it runs if main refuses the save.
 let listDeferred = false;
 let searchTimer: number | null = null;
+// The rows or tiles in view, in list order, by placement key or asset id, and the lower-case names type-ahead matches.
 let rows = new Map<string, HTMLElement>();
+let rowNames = new Map<string, string>();
+// The row or tile holding the list's one tab stop: the last one focused or chosen.
+let activeKey: string | null = null;
+// The chosen row whose `draggable` follows the footer's picked cell, so it can follow its base cell again once unchosen.
+let dragFollows: string | null = null;
+// Type-ahead: the letters typed less than half a second apart, and when the last one came.
+let typed = { text: '', at: 0 };
 
 function mediaType(value: string): string { return value.split(';')[0]!.trim().toLowerCase(); }
 function currentQuery(): string { return searchInput.value.trim().slice(0, 120); }
@@ -95,12 +131,10 @@ function environmentNote(): string {
   return shown === state.prefs.environment ? '' : `Nothing is published to ${environmentLabel(state.prefs.environment)} yet, so Draft is shown.`;
 }
 
-function selectedPlacement(): PlacementArtwork | null {
-  const current = selected;
+function selectedPlacement(current = selected): PlacementArtwork | null {
   return current?.kind === 'placement' ? artwork?.placements.find(item => item.key === current.key) ?? null : null;
 }
-function selectedImage(): LibraryAsset | null {
-  const current = selected;
+function selectedImage(current = selected): LibraryAsset | null {
   return current?.kind === 'image' ? images?.items.find(item => item.id === current.assetId) ?? null : null;
 }
 type InsertTarget = {
@@ -108,12 +142,40 @@ type InsertTarget = {
   frame: { width: number; height: number }; link: InsertLink | null;
   // A cell with nothing in this environment: the footer shows the row's empty slot, not a preview.
   empty: boolean;
+  // Placement art with a marker, which main inserts as a component.
+  component: boolean;
 };
-/** The frame size in Figma when Insert at divides it (rounded as main rounds it), or nothing at 1×. */
+/** What Insert does with the canvas selection, as main last reported it: a new frame until it has. */
+function reportedTarget(): CanvasTarget {
+  return hasCurrentSelection() ? state.selection.insertTarget ?? NEW_FRAME : NEW_FRAME;
+}
+/** Into a component, or a frame inside one: Figma puts no component there, so placement art goes beside it. */
+function besideComponent(canvas: CanvasTarget, target: InsertTarget | null): boolean {
+  return canvas.mode === 'into' && canvas.insideComponent === true && target?.component === true;
+}
+/** What Insert does with this choice and the canvas selection. */
+function canvasTarget(target: InsertTarget | null): CanvasTarget {
+  const canvas = reportedTarget();
+  return besideComponent(canvas, target) ? NEW_FRAME : canvas;
+}
+/** A fill or a replace keeps the layer's size, so Insert at does not apply. */
+function filling(canvas: CanvasTarget): boolean { return canvas.mode === 'fill' || canvas.mode === 'replace'; }
+/** A side in Figma when Insert at divides it, rounded as main rounds it. */
+function side(value: number, scale: number): number { return Math.round((value / scale) * 100) / 100; }
+/** The frame size in Figma when Insert at divides it, or nothing at 1× or for a fill. */
 function scaledSize(frame: { width: number; height: number }): string {
   const { scale } = state.prefs;
-  const side = (value: number) => Math.round((value / scale) * 100) / 100;
-  return scale === 1 ? '' : `→ ${side(frame.width)} × ${side(frame.height)}`;
+  return scale === 1 || filling(reportedTarget()) ? '' : `→ ${side(frame.width, scale)} × ${side(frame.height, scale)}`;
+}
+/** A layer's name quoted in a note, cut to 24 characters so the note stays short in a narrow window. */
+function quoted(name: string): string { return `“${name.length > 24 ? `${name.slice(0, 23)}…` : name}”`; }
+/** Into a container narrower than the new frame: a hint naming an Insert at that fits. Insert stays available. */
+function widthHint(frame: { width: number }, canvas: CanvasTarget): string {
+  const width = canvas.containerWidth;
+  const { scale } = state.prefs;
+  if (canvas.mode !== 'into' || !width || side(frame.width, scale) <= width) return '';
+  const fits = ([2, 3] as const).find(next => next > scale && side(frame.width, next) <= width);
+  return `Wider than ${canvas.name ? quoted(canvas.name) : 'this frame'} (${Number(width.toFixed(2))}\u00a0px).${fits ? ` Try ${fits}×.` : ''}`;
 }
 /** Why an image can't be inserted, with a console link to it, or null when it can. */
 function blocked(asset: LibraryAsset, connection: Connection | null): { note: string; link: string | null } | null {
@@ -121,11 +183,12 @@ function blocked(asset: LibraryAsset, connection: Connection | null): { note: st
   const link = connection ? consoleLink(connection, 'images', asset.id) : null;
   return { note: asset.renditions.length ? TOO_LARGE : NEEDS_UPLOAD, link };
 }
-function insertTarget(): InsertTarget | null {
-  if (selected?.kind === 'placement') {
-    const placement = selectedPlacement();
+/** What Insert (or a drag) would insert for this choice: the chosen row's, unless another is named. */
+function insertTarget(choice = selected): InsertTarget | null {
+  if (choice?.kind === 'placement') {
+    const placement = selectedPlacement(choice);
     if (!placement || !artwork) return null;
-    const cell = selected.cell;
+    const cell = choice.cell;
     const shown = shownEnvironment();
     const label = environmentLabel(shown);
     const art = findCell(placement, cell)?.[shown] ?? null;
@@ -133,14 +196,15 @@ function insertTarget(): InsertTarget | null {
     const frame = { width: placement.width, height: placement.height };
     // Only the axes the placement declares are named, and only those without a picker above: a picker already says it.
     const picked = pickerAxes(placement);
-    const parts = [label];
+    // The size in Figma comes first, so a narrow window that shortens the line keeps it.
+    const size = scaledSize(frame);
+    const parts = size ? [size, label] : [label];
     if (placement.states?.length && picked.states.length <= 1) parts.push(cell.state ?? placement.defaultState ?? 'default');
     if (placement.variants?.appearance?.length && picked.appearances.length <= 1) parts.push(appearanceLabel(cell.appearance));
     if (placement.variants?.arm?.length && picked.arms.length <= 1) parts.push(cell.arm ?? 'Control');
-    const size = scaledSize(frame);
-    if (size) parts.push(size);
     const target: InsertTarget = { title: placement.key, meta: parts.join(' · '), note: `No image in ${label} for this cell. Choose another cell or environment.`,
-      noteLink: null, name: layerName(placement, cell), asset, ready: false, frame, link: null, empty: !art };
+      noteLink: null, name: layerName(placement, cell), asset, ready: false, frame, link: null, empty: !art,
+      component: Boolean(state.connection && placementMarker(state.connection, placement.key, frame)) };
     if (!art) return target;
     if (!asset) return { ...target, note: 'The console didn’t return this image. Refresh to try again.' };
     // The link names the picked cell, never the family it inherits from, so a Sync never touches the base art.
@@ -150,12 +214,12 @@ function insertTarget(): InsertTarget | null {
     return { ...target, meta, ready: !stop, note: stop?.note ?? '', noteLink: stop?.link ?? null,
       link: { placementKey: placement.key, state: cell.state, appearance: cell.appearance, arm: cell.arm, environment: shown, assetId: art.assetId } };
   }
-  const asset = selectedImage();
+  const asset = selectedImage(choice);
   if (!asset) return null;
   const frame = { width: asset.width, height: asset.height };
   const stop = blocked(asset, state.connection);
   return { title: asset.name || 'Untitled image', meta: [`${asset.width} × ${asset.height}`, scaledSize(frame)].filter(Boolean).join(' '), asset,
-    ready: !stop, note: stop?.note ?? '', noteLink: stop?.link ?? null, name: asset.name || 'Assetlib image', frame, link: null, empty: false };
+    ready: !stop, note: stop?.note ?? '', noteLink: stop?.link ?? null, name: asset.name || 'Assetlib image', frame, link: null, empty: false, component: false };
 }
 function distinct<T>(values: T[]): T[] { return values.filter((value, index) => values.indexOf(value) === index); }
 /** Each axis's values among the placement's cells; the footer shows a picker for an axis with more than one. */
@@ -183,24 +247,48 @@ function buildInsertPickers(placement: PlacementArtwork, cell: CellCoordinate): 
 function pickedCell(): CellCoordinate {
   return { state: insertStatePicker.value || null, appearance: (insertAppearancePicker.value || null) as Appearance | null, arm: insertArmPicker.value || null };
 }
-function updatePressed(): void {
-  const key = selected?.kind === 'placement' ? selected.key : selected?.kind === 'image' ? selected.assetId : null;
-  for (const [id, row] of rows) row.setAttribute('aria-pressed', String(id === key));
+function selectedKey(): string | null { return selected?.kind === 'placement' ? selected.key : selected?.kind === 'image' ? selected.assetId : null; }
+/** A row's or tile's choice: the chosen one with the cell its pickers show, else its base cell. */
+function choiceFor(key: string): Choice | null {
+  if (selectedKey() === key) return selected;
+  if (state.prefs.browse === 'images') return { kind: 'image', assetId: key };
+  const placement = artwork?.placements.find(item => item.key === key);
+  return placement ? { kind: 'placement', key, cell: baseCoordinate(placement) } : null;
+}
+/** A row or tile drags onto the canvas when Insert could insert it: connected, with a version Figma can take. */
+function canDrag(target: InsertTarget | null): boolean { return Boolean(state.connection && target?.ready); }
+/**
+ * Marks the chosen row (aria-selected) and gives the list its one tab stop (a roving tabindex): the row last focused or
+ * chosen, else the chosen one, else the first. Arrow keys move between the rows.
+ */
+function updateSelected(): void {
+  const key = selectedKey();
+  const stop = [activeKey, key].find(id => id !== null && rows.has(id)) ?? rows.keys().next().value ?? null;
+  for (const [id, row] of rows) {
+    row.setAttribute('aria-selected', String(id === key));
+    row.setAttribute('tabindex', id === stop ? '0' : '-1');
+  }
 }
 function selectPlacement(key: string): void {
   const placement = artwork?.placements.find(item => item.key === key);
   if (!placement) return;
-  selected = { kind: 'placement', key, cell: baseCoordinate(placement) };
-  buildInsertPickers(placement, selected.cell);
+  activeKey = key;
+  // Choosing the chosen row again keeps the cell picked in the footer, so Enter and double-click insert what it shows.
+  if (selected?.kind !== 'placement' || selected.key !== key) {
+    selected = { kind: 'placement', key, cell: baseCoordinate(placement) };
+    buildInsertPickers(placement, selected.cell);
+  }
   selectionChanged(key);
 }
 function selectImage(assetId: string): void {
   if (!images?.items.some(item => item.id === assetId)) return;
+  activeKey = assetId;
   selected = { kind: 'image', assetId };
   selectionChanged(assetId);
 }
+function choose(key: string): void { if (state.prefs.browse === 'placements') selectPlacement(key); else selectImage(key); }
 function selectionChanged(id: string): void {
-  updatePressed();
+  updateSelected();
   // Messages about the previous choice no longer apply; a running operation keeps its status.
   if (!actionsBlocked()) setStatus('');
   clearError();
@@ -224,9 +312,9 @@ function rowTag(placement: PlacementArtwork): Tag | null {
   return base.production.assetId !== art.assetId ? { word: 'Changed', title: 'Draft differs from Production.', blocking: false } : null;
 }
 function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HTMLElement {
-  const row = document.createElement('button');
-  row.type = 'button';
+  const row = document.createElement('div');
   row.className = 'placement';
+  row.setAttribute('role', 'option');
   row.setAttribute('data-key', placement.key);
   const text = document.createElement('span'); text.className = 'row-text';
   const key = document.createElement('span'); key.className = 'key'; key.textContent = placement.key;
@@ -244,21 +332,36 @@ function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HT
     row.append(chip);
   }
   row.addEventListener('click', () => selectPlacement(placement.key));
+  row.addEventListener('dblclick', () => insertFrom(placement.key));
+  row.draggable = canDrag(insertTarget(choiceFor(placement.key)));
+  row.addEventListener('dragstart', event => dragStart(event, placement.key));
+  row.addEventListener('dragend', dragEnd);
   rows.set(placement.key, row);
+  rowNames.set(placement.key, placement.key.toLowerCase());
   return row;
 }
 function imageTile(asset: LibraryAsset): HTMLElement {
-  const tile = document.createElement('button');
-  tile.type = 'button';
+  const tile = document.createElement('div');
   tile.className = 'tile';
+  tile.setAttribute('role', 'option');
   tile.setAttribute('data-asset-id', asset.id);
   const kind = asset.processingIntent === 'photo' ? 'Photo' : 'Artwork';
   tile.title = `${asset.name || 'Untitled image'} · ${asset.width} × ${asset.height} · ${kind}`;
-  const name = document.createElement('span'); name.className = 'name'; name.textContent = asset.name || 'Untitled image';
+  const name = document.createElement('span'); name.className = 'name';
+  // A name breaks after its separators (travel.coast.|background, hero_dark_|final) before anywhere else.
+  for (const [index, part] of (asset.name || 'Untitled image').split(/(?<=[._-])/).entries()) {
+    if (index) name.append(document.createElement('wbr'));
+    name.append(part);
+  }
   const size = document.createElement('span'); size.className = 'size'; size.textContent = `${asset.width} × ${asset.height}`;
   tile.append(thumbnailFrame(asset), name, size);
   tile.addEventListener('click', () => selectImage(asset.id));
+  tile.addEventListener('dblclick', () => insertFrom(asset.id));
+  tile.draggable = canDrag(insertTarget({ kind: 'image', assetId: asset.id }));
+  tile.addEventListener('dragstart', event => dragStart(event, asset.id));
+  tile.addEventListener('dragend', dragEnd);
   rows.set(asset.id, tile);
+  rowNames.set(asset.id, (asset.name || 'Untitled image').toLowerCase());
   return tile;
 }
 /** Grey blocks where rows or tiles will be, while the list loads (no shimmer), and the words a screen reader finds there. */
@@ -283,6 +386,14 @@ function skeletons(kind: 'placements' | 'images'): HTMLElement[] {
 /** The rebuilt row or tile for a key, so focus can follow it through a rebuild. */
 export function rowFor(key: string): HTMLElement | null { return rows.get(key) ?? null; }
 
+/** The image the Sync bar shows for a linked layer: its link's image, else its cell's draft art, once the Insert list has them. */
+export function linkedArt(placementKey: string, cell: CellCoordinate, assetId: string | null): LibraryAsset | null {
+  if (!artwork || artworkGeneration !== state.connectionGeneration) return null;
+  if (assetId && artwork.assets[assetId]) return artwork.assets[assetId] ?? null;
+  const placement = artwork.placements.find(item => item.key === placementKey);
+  return placement ? artworkAsset(artwork, findCell(placement, cell)?.draft ?? null) : null;
+}
+
 /** The list's state, unless the open connection settings already say it under the token field. */
 function renderEmpty(current: ListState | null): void {
   const empty = current?.connection && problemInSettings() ? null : current;
@@ -302,9 +413,13 @@ function renderEmpty(current: ListState | null): void {
   if (empty?.link) link.href = empty.link.href;
 }
 
-/** Rebuilds the list or grid; selection changes only update aria-pressed, so focus stays on the row. */
+/**
+ * Rebuilds the list or grid, a listbox with one tab stop while it has rows or tiles (placements in a group per screen);
+ * selection changes only update aria-selected, so focus stays on the row.
+ */
 export function renderList(): void {
   rows = new Map();
+  rowNames = new Map();
   releaseListImages();
   const { browse } = state.prefs;
   const list = element('insert-list');
@@ -331,12 +446,21 @@ export function renderList(): void {
       const matches = current.placements.filter(item => !lower || item.key.toLowerCase().includes(lower) || item.screen.toLowerCase().includes(lower));
       if (!matches.length) empty = { text: `No placements match “${query}”.`, action: 'clear' };
       const screens = distinct(matches.map(item => item.screen));
-      for (const screen of screens) {
+      screens.forEach((screen, index) => {
+        // Each screen is a group of options named by its header, which stays in view while its rows scroll.
         const header = document.createElement('p');
         header.className = 'group';
+        header.id = `insert-group-${index}`;
+        header.setAttribute('role', 'presentation');
+        // It names the group (aria-labelledby reads a hidden element too), so it isn't read again as text inside it.
+        header.setAttribute('aria-hidden', 'true');
         header.textContent = screen;
-        listChildren.push(header, ...matches.filter(item => item.screen === screen).map(item => placementRow(item, current)));
-      }
+        const group = document.createElement('div');
+        group.setAttribute('role', 'group');
+        group.setAttribute('aria-labelledby', header.id);
+        group.append(header, ...matches.filter(item => item.screen === screen).map(item => placementRow(item, current)));
+        listChildren.push(group);
+      });
     }
   } else if (!images) {
     if (loading('images')) gridChildren.push(...skeletons('images'));
@@ -348,7 +472,12 @@ export function renderList(): void {
   } else gridChildren.push(...images.items.map(imageTile));
   list.replaceChildren(...listChildren);
   grid.replaceChildren(...gridChildren);
-  updatePressed();
+  // A listbox only while it holds options; loading, it holds skeletons and the words a screen reader finds there.
+  for (const [box, label, shows] of [[list, 'Placements', browse === 'placements'], [grid, 'Images', browse === 'images']] as const) {
+    if (shows && rows.size) { box.setAttribute('role', 'listbox'); box.setAttribute('aria-label', label); }
+    else { box.removeAttribute('role'); box.removeAttribute('aria-label'); }
+  }
+  updateSelected();
   listState = empty;
   renderEmpty(listState);
   element('images-more').hidden = browse !== 'images' || !images?.nextCursor;
@@ -358,6 +487,7 @@ export function renderInsertControls(): void {
   const { browse } = state.prefs;
   element('browse-placements').setAttribute('aria-checked', String(browse === 'placements'));
   element('browse-images').setAttribute('aria-checked', String(browse === 'images'));
+  rovingStops(browseButtons);
   // Typing stays possible while a list loads; a new search replaces the load.
   searchInput.disabled = !state.connection;
   const label = browse === 'placements' ? 'Search placements' : 'Search images';
@@ -365,14 +495,25 @@ export function renderInsertControls(): void {
   searchInput.setAttribute('aria-label', label);
   searchClear.hidden = !searchInput.value;
   element('env-group').hidden = browse !== 'placements';
+  environmentSelect.hidden = browse !== 'placements';
   const shown = shownEnvironment();
+  // An environment chosen while the artwork loaded may turn out to have nothing published: focus moves to the one shown.
+  const focusedEnvironment = environmentButtons.find(button => button === document.activeElement);
   for (const name of ENVIRONMENTS) {
     const button = element<HTMLButtonElement>(`env-${name}`);
     button.setAttribute('aria-checked', String(shown === name));
     // Live while the list loads; only an environment with nothing published is off.
     button.disabled = !state.connection || Boolean(artwork && !published(name));
     button.title = environmentTitle(name);
+    const option = element<HTMLOptionElement>(`env-option-${name}`);
+    option.disabled = Boolean(artwork && !published(name));
+    option.title = button.title;
   }
+  rovingStops(environmentButtons);
+  if (focusedEnvironment?.disabled) element(`env-${shown}`).focus({ preventScroll: true });
+  environmentSelect.disabled = !state.connection;
+  environmentSelect.value = shown;
+  environmentSelect.title = environmentTitle(shown);
   const refresh = element<HTMLButtonElement>('insert-refresh');
   refresh.disabled = !state.connection;
   refresh.setAttribute('data-busy', String(state.ops.loadingList !== null));
@@ -396,8 +537,12 @@ export function renderInsertBar(): void {
   element('insert-meta').textContent = target?.meta ?? '';
   // The whole line on hover, for a narrow window that shortens it.
   element('insert-meta').title = target?.meta ?? '';
-  element('insert-note').textContent = target?.note ?? '';
-  element('insert-note').hidden = !target?.note;
+  const canvas = canvasTarget(target);
+  const reported = reportedTarget();
+  const beside = besideComponent(reported, target) ? `Figma doesn’t put components inside components, so this goes beside ${reported.name ?? 'the selection'}.` : '';
+  const note = target?.note || (target?.ready ? beside || widthHint(target.frame, canvas) : '');
+  element('insert-note').textContent = note;
+  element('insert-note').hidden = !note;
   const noteLink = element<HTMLAnchorElement>('insert-note-link');
   noteLink.hidden = !target?.noteLink;
   if (target?.noteLink) noteLink.href = target.noteLink;
@@ -405,8 +550,30 @@ export function renderInsertBar(): void {
     for (const id of ['insert-state-label', 'insert-appearance-label', 'insert-arm-label']) element(id).hidden = true;
   }
   scaleButtons.forEach((button, index) => button.setAttribute('aria-checked', String(state.prefs.scale === index + 1)));
-  insertButton.textContent = state.ops.inserting ? 'Inserting…' : 'Insert';
-  setUnavailable(insertButton, actionsBlocked() || !state.connection || !target?.ready || pendingInsert !== null);
+  rovingStops(scaleButtons);
+  // The selection decides the action: Insert, Insert into, Fill, or Replace image; a fill keeps the layer's size, and
+  // what can't be inserted has no size to choose.
+  element('scale-group').hidden = filling(canvas) || !target?.ready;
+  setBusy(insertButton, state.ops.inserting ? 'Inserting…' : canvas.label, state.ops.inserting);
+  // The whole label on hover, for a layer name the button shortens.
+  insertButton.title = canvas.mode === 'new' ? '' : canvas.label;
+  insertNewButton.hidden = canvas.mode === 'new';
+  const unavailable = actionsBlocked() || !state.connection || !target?.ready || pendingInsert !== null;
+  setUnavailable(insertButton, unavailable);
+  setUnavailable(insertNewButton, unavailable);
+  // The chosen row drags the cell its pickers show; the row chosen before drags its base cell again.
+  const key = selectedKey();
+  if (dragFollows !== null && dragFollows !== key) {
+    const before = rows.get(dragFollows);
+    if (before) before.draggable = canDrag(insertTarget(choiceFor(dragFollows)));
+  }
+  dragFollows = key;
+  const row = key === null ? undefined : rows.get(key);
+  if (row) row.draggable = canDrag(target);
+  // How to insert, until the first insert or until closed; the footer takes its place while something is chosen.
+  // The Sync bar, when it shows, is what the selection is about.
+  hintBar.hidden = !state.connection || state.prefs.tab !== 'insert' || !insertBar.hidden || state.prefs.hintSeen === true || rows.size === 0
+    || syncBar() !== null;
 }
 
 /** Opens the Insert tab's list for this connection, unless it is loaded or loading. Waits for the connection test. */
@@ -495,8 +662,7 @@ async function loadArtwork(): Promise<void> {
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
       if (result.status === 401) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
-      // An older console answers the unknown route without CORS headers, which the iframe sees as a network error.
-      const failure = readFailureOf(result, readFailure(result, config, 'insert', state.placementsLoaded ? insertUnavailable(config.origin) : undefined));
+      const failure = readFailureOf(result, readFailure(result, config, 'insert'));
       artwork = null;
       artworkGeneration = null;
       if (selected?.kind === 'placement') selected = null;
@@ -543,7 +709,7 @@ async function loadImages(reset: boolean): Promise<void> {
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
       if (result.status === 401) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
-      failure = readFailureOf(result, readFailure(result, config, 'insert', state.placementsLoaded ? insertUnavailable(config.origin) : undefined));
+      failure = readFailureOf(result, readFailure(result, config, 'insert'));
       throw new Error(failure.text);
     }
     const page = parseAssetPage(result.payload);
@@ -566,7 +732,55 @@ function searchImages(): void {
   // A search for something else replaces the load in flight.
   if (state.ops.loadingList === 'images' ? loadingQuery !== q : !images || images.q !== q) void loadImages(true);
 }
-async function beginInsert(): Promise<void> {
+/** Downloads a version and checks it, as PNG bytes (a WebP is converted); null when a connection change abandoned it. */
+async function fetchPng(config: Connection, generation: number, asset: LibraryAsset, rendition: RenditionInfo,
+  converting: () => void): Promise<Uint8Array | null> {
+  const result = await send(config, { path: renditionPath(asset.id, rendition.sha256), bytes: rendition.bytes });
+  if (generation !== state.connectionGeneration || result.kind === 'aborted') return null;
+  if (result.status !== 200) {
+    if (result.status === 401) needsAttention();
+    // This console listed the image, so a 404 means the image went away, not that the console lacks Insert.
+    throw new Error(result.kind === 'http' && result.status === 404 ? GONE_IMAGE : readFailure(result, config, 'insert'));
+  }
+  if (mediaType(result.contentType) !== rendition.mime || result.bytes.byteLength !== rendition.bytes) throw new Error(UNEXPECTED_IMAGE);
+  markConnected();
+  let bytes = result.bytes;
+  if (rendition.mime === 'image/webp') {
+    converting();
+    try { bytes = await webpToPng(bytes); }
+    catch { throw new Error('Figma couldn’t use this WebP image. Try again, or download it from the console.'); }
+    if (generation !== state.connectionGeneration) return null;
+  }
+  const size = pngSize(bytes);
+  if (!size || size.width !== rendition.width || size.height !== rendition.height) throw new Error(UNEXPECTED_IMAGE);
+  return bytes;
+}
+/**
+ * The insert download of a version: a drag starts it, and its drop, another drag, or an Insert reuses it while it runs
+ * and for a minute after (at most three are kept). A failed one is forgotten, so the next try downloads again.
+ */
+function download(config: Connection, generation: number, asset: LibraryAsset, rendition: RenditionInfo, status?: (text: string) => void): Promise<Uint8Array | null> {
+  for (const [sha, item] of downloads) if (item.generation !== generation) downloads.delete(sha);
+  const cached = downloads.get(rendition.sha256);
+  if (cached) {
+    // An Insert that reuses a drag's download still says when it converts.
+    if (status) { cached.status = status; if (cached.converting) status(CONVERTING); }
+    return cached.bytes;
+  }
+  const entry: Download = { generation, status, converting: false,
+    bytes: fetchPng(config, generation, asset, rendition, () => { entry.converting = true; entry.status?.(CONVERTING); }) };
+  downloads.set(rendition.sha256, entry);
+  while (downloads.size > 3) downloads.delete(downloads.keys().next().value!);
+  const forget = () => { if (downloads.get(rendition.sha256) === entry) downloads.delete(rendition.sha256); };
+  entry.bytes.then(bytes => { entry.converting = false; if (bytes) window.setTimeout(forget, DOWNLOAD_KEEP_MS); else forget(); }, forget);
+  return entry.bytes;
+}
+
+/**
+ * Insert, Insert into, Fill, or Replace image, as the canvas selection decides when it is chosen (main refuses it if the
+ * selection changes during the download); `asNew`, Insert as new frame. A fill downloads only what the layer needs.
+ */
+async function beginInsert(asNew = false): Promise<void> {
   const config = state.connection;
   const generation = state.connectionGeneration;
   if (!config || generation === null || actionsBlocked() || pendingInsert) return;
@@ -575,57 +789,142 @@ async function beginInsert(): Promise<void> {
   if (!target || !asset || !target.ready) return;
   // The size the footer showed when Insert was chosen, even if Insert at changes during the download.
   const { scale } = state.prefs;
+  const canvas = asNew ? NEW_FRAME : canvasTarget(target);
+  const destination: InsertDestination = canvas.mode === 'new' ? { kind: 'new' }
+    : canvas.mode === 'into' ? { kind: 'into', nodeId: canvas.nodeIds[0]! } : { kind: 'fill', nodeIds: [...canvas.nodeIds] };
   clearError();
-  const rendition = insertRendition(asset);
+  const rendition = filling(canvas) ? fillRendition(asset, canvas.containerWidth ?? 0, canvas.containerHeight ?? 0) : insertRendition(asset);
   if (!rendition) { showError(TOO_LARGE); return; }
   state.ops.inserting = true;
   setStatus(`Downloading ${target.name}…`);
   scheduleRender();
   try {
-    const result = await send(config, { path: renditionPath(asset.id, rendition.sha256), bytes: rendition.bytes });
+    const bytes = await download(config, generation, asset, rendition, setStatus);
     // A connection switch drops this insert quietly; the new connection owns the busy state.
-    if (generation !== state.connectionGeneration || result.kind === 'aborted') return;
-    if (result.status !== 200) {
-      if (result.status === 401) needsAttention();
-      // This console listed the image, so a 404 means the image went away, not that the console lacks Insert.
-      throw new Error(result.kind === 'http' && result.status === 404 ? GONE_IMAGE : readFailure(result, config, 'insert'));
-    }
-    if (mediaType(result.contentType) !== rendition.mime || result.bytes.byteLength !== rendition.bytes) throw new Error(UNEXPECTED_IMAGE);
-    markConnected();
-    let bytes = result.bytes;
-    if (rendition.mime === 'image/webp') {
-      setStatus('Converting to PNG…');
-      try { bytes = await webpToPng(bytes); }
-      catch { throw new Error('Figma couldn’t use this WebP image. Try again, or download it from the console.'); }
-      if (generation !== state.connectionGeneration) return;
-    }
-    const size = pngSize(bytes);
-    if (!size || size.width !== rendition.width || size.height !== rendition.height) throw new Error(UNEXPECTED_IMAGE);
-    pendingInsert = { id: nextRequestId(), generation, environment: target.link?.environment ?? null };
+    if (generation !== state.connectionGeneration || !bytes) return;
+    pendingInsert = { id: nextRequestId(), generation };
     setStatus(`Inserting ${target.name}…`);
-    post({ type: 'insert', requestId: pendingInsert.id, connectionGeneration: generation, bytes, name: target.name, frame: target.frame, scale, link: target.link });
+    post({ type: 'insert', requestId: pendingInsert.id, connectionGeneration: generation, bytes, name: target.name, frame: target.frame, scale, link: target.link,
+      target: destination });
   } catch (error) {
     if (generation !== state.connectionGeneration) return;
     pendingInsert = null;
     state.ops.inserting = false;
     setStatus('');
-    const text = errorText(error);
-    // An image removed since the list loaded: Refresh brings the list up to date.
-    showError(text, text === GONE_IMAGE ? { label: 'Refresh', run: refreshList } : undefined);
+    showInsertError(errorText(error));
     scheduleRender();
   }
 }
+/** An insert or a drop failed; an image removed since the list loaded offers Refresh, which brings the list up to date. */
+function showInsertError(text: string): void {
+  showError(text, text === GONE_IMAGE ? { label: 'Refresh', run: refreshList } : undefined);
+}
 
-/** Main inserted the frame, and said so in a toast; the status region repeats it. */
+// ---- Drag to canvas ----
+/**
+ * A row or tile starts dragging when Insert could insert it now: its thumbnail is the drag image, and the insert download
+ * starts (or is reused), so the image is often ready by the drop. Anything else stays put, as an unavailable Insert does.
+ */
+function dragStart(event: DragEvent, key: string): void {
+  const config = state.connection;
+  const generation = state.connectionGeneration;
+  const target = insertTarget(choiceFor(key));
+  const rendition = target?.asset ? insertRendition(target.asset) : null;
+  const data = event.dataTransfer;
+  if (!config || generation === null || !target?.asset || !target.ready || !rendition || !data || actionsBlocked() || pendingInsert || pendingDrop) {
+    event.preventDefault();
+    return;
+  }
+  data.effectAllowed = 'copy';
+  data.setData(DRAG_TYPE, key);
+  const thumb = rows.get(key)?.children[0] as HTMLElement | undefined;
+  if (thumb) {
+    const box = thumb.getBoundingClientRect();
+    data.setDragImage(thumb, box.width / 2, box.height / 2);
+  }
+  dragging = { generation, target, scale: state.prefs.scale, bytes: download(config, generation, target.asset, rendition) };
+}
+/**
+ * The drag ended. Inside the plugin window (Figma's check: the event's view holds no frames) nothing happens. Outside, the
+ * drop goes to Figma as `pluginDrop`, and Insert waits for main's `dropped` (or its error) and then for the download.
+ */
+function dragEnd(event: DragEvent): void {
+  const drag = dragging;
+  dragging = null;
+  if (!drag || !event.view || event.view.length === 0) return;
+  if (drag.generation !== state.connectionGeneration || actionsBlocked() || pendingInsert || pendingDrop) return;
+  const id = nextRequestId();
+  const { target } = drag;
+  pendingDrop = { ...drag, id, nodeId: null, timer: window.setTimeout(() => dropUnanswered(id), DROP_REPLY_MS) };
+  state.ops.inserting = true;
+  clearError();
+  setStatus(`Inserting ${target.name}…`);
+  scheduleRender();
+  postDrop({ clientX: event.clientX, clientY: event.clientY, files: [],
+    dropMetadata: { assetlib: 1, dropId: id, connectionGeneration: drag.generation, name: target.name, frame: target.frame, scale: drag.scale, link: target.link } });
+}
+/** No drop event reached main (the drag ended off the canvas): nothing was made, so the wait ends without a word. */
+function dropUnanswered(id: number): void {
+  if (pendingDrop?.id !== id || pendingDrop.nodeId !== null) return;
+  endDrop();
+  setStatus('');
+}
+function endDrop(): void {
+  if (pendingDrop) window.clearTimeout(pendingDrop.timer);
+  pendingDrop = null;
+  state.ops.inserting = false;
+  scheduleRender();
+}
+/** Main made a placeholder for the drop, or found the image frame it landed on: once downloaded, the image fills it. */
+export function dropped(message: Extract<MainMessage, { type: 'dropped' }>): void {
+  const drop = pendingDrop;
+  if (!drop || drop.id !== message.dropId || message.connectionGeneration !== drop.generation) {
+    // A drop given up on (its answer came too late): its placeholder goes.
+    post({ type: 'discard-placeholder', nodeId: message.nodeId });
+    return;
+  }
+  // Answered already.
+  if (drop.nodeId !== null) return;
+  window.clearTimeout(drop.timer);
+  drop.nodeId = message.nodeId;
+  void fillDrop(drop, message.nodeId);
+}
+async function fillDrop(drop: NonNullable<typeof pendingDrop>, nodeId: string): Promise<void> {
+  let bytes: Uint8Array | null;
+  try { bytes = await drop.bytes; } catch (error) {
+    // A connection change ended the drop already, and main removed its placeholder.
+    if (pendingDrop !== drop) return;
+    post({ type: 'discard-placeholder', nodeId });
+    endDrop();
+    setStatus('');
+    showInsertError(errorText(error));
+    return;
+  }
+  if (pendingDrop !== drop) return;
+  if (!bytes) { post({ type: 'discard-placeholder', nodeId }); endDrop(); setStatus(''); return; }
+  pendingDrop = null;
+  pendingInsert = { id: nextRequestId(), generation: drop.generation };
+  post({ type: 'insert', requestId: pendingInsert.id, connectionGeneration: drop.generation, bytes, name: drop.target.name, frame: drop.target.frame,
+    scale: drop.scale, link: drop.target.link, target: { kind: 'fill', nodeIds: [nodeId] }, drop: drop.id });
+}
+/** Main refused the drop (a connection change, an insert running); false when the error belongs to another operation. */
+export function failDrop(requestId: number, message: string): boolean {
+  if (pendingDrop?.id !== requestId) return false;
+  endDrop();
+  setStatus('');
+  showInsertError(message);
+  return true;
+}
+
+/** Main inserted, filled, or replaced, and said so in a toast; the status region repeats it. */
 export function inserted(message: Extract<MainMessage, { type: 'inserted' }>): void {
   const operation = pendingInsert;
   if (!operation || operation.id !== message.requestId || operation.generation !== message.connectionGeneration) return;
   pendingInsert = null;
   state.ops.inserting = false;
-  const fileKnown = hasCurrentSelection() && Boolean(state.selection.fileKey);
-  setStatus(message.linked && operation.environment
-    ? `Inserted ${message.node.name} from ${environmentLabel(operation.environment)}.${fileKnown ? '' : ' Paste this file’s link on the Send tab to enable Sync.'}`
-    : `Inserted ${message.node.name}.`);
+  setStatus(sentence(message.notice));
+  // The first insert (or drop) retires the hint for good.
+  if (!state.prefs.hintSeen) { state.prefs.hintSeen = true; savePreferences(); }
   scheduleRender();
 }
 
@@ -635,15 +934,18 @@ export function failInsert(requestId: number, message: string): boolean {
   pendingInsert = null;
   state.ops.inserting = false;
   setStatus('');
-  showError(message);
+  showInsertError(message);
   scheduleRender();
   return true;
 }
 
 export function resetInsert(): void {
-  artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null;
+  artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
   state.ops.loadingList = null; loadingQuery = ''; listError = null; listDeferred = false; listTicket += 1;
   state.ops.inserting = false;
+  // Main removes a drop's placeholder itself when the connection changes.
+  if (pendingDrop) window.clearTimeout(pendingDrop.timer);
+  pendingDrop = null; dragging = null; downloads = new Map();
   if (searchTimer !== null) { window.clearTimeout(searchTimer); searchTimer = null; }
   resetThumbnails();
   scheduleRender(true);
@@ -653,6 +955,7 @@ function setBrowse(next: Preferences['browse']): void {
   if (state.prefs.browse === next) return;
   state.prefs.browse = next;
   selected = null;
+  activeKey = null;
   if (!actionsBlocked()) setStatus('');
   savePreferences();
   scheduleRender(true);
@@ -683,11 +986,134 @@ function clearSearch(): void {
   scheduleRender();
 }
 
+/** Enter or a double-click on a row or tile: choose it, then Insert; when Insert can't use it, say why (the footer shows it). */
+function insertFrom(key: string): void {
+  choose(key);
+  const target = insertTarget();
+  if (target && !target.ready && !actionsBlocked() && !pendingInsert) { setStatus(target.note); return; }
+  void beginInsert();
+}
+/** Nothing chosen: the footer goes, and focus stays where it is. Not while an insert runs, whose footer says so. */
+function clearSelection(): void {
+  selected = null;
+  updateSelected();
+  if (!actionsBlocked()) setStatus('');
+  clearError();
+  scheduleRender();
+}
+/** Esc in the search or the list: clears the search, then the choice. */
+function escape(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (searchInput.value) { event.preventDefault(); clearSearch(); return; }
+  if (selected && !state.ops.inserting) { event.preventDefault(); clearSelection(); }
+}
+/** `/` or Cmd+F: the search field, with its text selected so typing replaces it. */
+export function focusSearch(): void {
+  flushRender();
+  if (searchInput.disabled) return;
+  searchInput.focus();
+  searchInput.select();
+}
+/** The grid's columns, as laid out: the tiles before the first one on a lower row. */
+function columns(items: HTMLElement[]): number {
+  const top = items[0]?.getBoundingClientRect().top ?? 0;
+  const below = items.findIndex(item => item.getBoundingClientRect().top > top + 1);
+  return below > 0 ? below : Math.max(items.length, 1);
+}
+/**
+ * Type-ahead: the next row whose name starts with the letters typed less than half a second apart. The same letter again
+ * moves on to the next row it starts; more letters keep the current row while it still matches.
+ */
+function typeAhead(char: string, index: number, keys: string[]): string | undefined {
+  const now = Date.now();
+  typed = { text: (now - typed.at < 500 ? typed.text : '') + char.toLowerCase(), at: now };
+  const repeated = [...typed.text].every(letter => letter === typed.text[0]);
+  const prefix = repeated ? typed.text.slice(0, 1) : typed.text;
+  const start = repeated ? index + 1 : index;
+  for (let step = 0; step < keys.length; step += 1) {
+    const key = keys[(start + step) % keys.length]!;
+    if (rowNames.get(key)?.startsWith(prefix)) return key;
+  }
+  return undefined;
+}
+/**
+ * The list's keys, on the focused row or tile. ↑ and ↓ (in the grid ← and → too, and ↑ and ↓ by a row of tiles), Home,
+ * End, and type-ahead move focus and the choice together; Space chooses the focused row; Enter inserts it.
+ */
+function listKeydown(event: KeyboardEvent): void {
+  const keys = [...rows.keys()];
+  const current = keyOf(event.target as Element | null);
+  const index = current !== null && rows.get(current) === event.target ? keys.indexOf(current) : -1;
+  if (index < 0 || current === null || event.altKey || event.ctrlKey || event.metaKey) return;
+  const grid = state.prefs.browse === 'images';
+  const last = keys.length - 1;
+  let next: string | undefined;
+  switch (event.key) {
+    case 'ArrowDown': {
+      const step = grid ? columns([...rows.values()]) : 1;
+      // From the second-last row of tiles, ↓ reaches the last tile even when the row below is short.
+      next = keys[index + step] ?? (Math.floor(index / step) < Math.floor(last / step) ? keys[last] : undefined);
+      break;
+    }
+    case 'ArrowUp': next = keys[index - (grid ? columns([...rows.values()]) : 1)]; break;
+    case 'ArrowRight': if (!grid) return; next = keys[index + 1]; break;
+    case 'ArrowLeft': if (!grid) return; next = keys[index - 1]; break;
+    case 'Home': next = keys[0]; break;
+    case 'End': next = keys[last]; break;
+    // A held Enter inserts once, not once per repeat.
+    case 'Enter': event.preventDefault(); if (!event.repeat) insertFrom(current); return;
+    case 'Escape': escape(event); return;
+    default: {
+      // Space inside a type-ahead is a letter of the name; otherwise it chooses the focused row.
+      if (event.key === ' ' && Date.now() - typed.at >= 500) { event.preventDefault(); choose(current); return; }
+      // `/` belongs to the search shortcut (main.ts).
+      if (event.key.length !== 1 || event.key === '/') return;
+      event.preventDefault();
+      next = typeAhead(event.key, index, keys);
+      if (next === undefined) return;
+    }
+  }
+  // At either end the key does nothing, and the list does not scroll instead.
+  event.preventDefault();
+  const row = next === undefined ? undefined : rows.get(next);
+  if (!row || next === undefined) return;
+  row.focus({ preventScroll: true });
+  choose(next);
+  row.scrollIntoView({ block: 'nearest' });
+}
+
 export function initInsert(goToSend: () => void): void {
   element('browse-placements').addEventListener('click', () => setBrowse('placements'));
   element('browse-images').addEventListener('click', () => setBrowse('images'));
   for (const name of ENVIRONMENTS) element(`env-${name}`).addEventListener('click', () => setEnvironment(name));
   scaleButtons.forEach((button, index) => button.addEventListener('click', () => setScale((index + 1) as 1 | 2 | 3)));
+  // Each segmented control is a radio group with one tab stop; the arrow keys choose within it.
+  arrowKeys(element('browse-group'), browseButtons, 'radios');
+  arrowKeys(element('env-group'), environmentButtons, 'radios');
+  environmentSelect.addEventListener('change', () => {
+    setEnvironment(environmentSelect.value as EnvironmentName);
+    // A choice it keeps nothing of (nothing published there) shows the current one again.
+    scheduleRender();
+  });
+  // The window crossing 400 px swaps the radios and the dropdown, and Chrome drops focus from the one it hides, before
+  // any resize event: focus moves to the other, never to the page.
+  document.addEventListener('focusout', event => {
+    const from = event.target as HTMLElement;
+    if (event.relatedTarget || (from !== environmentSelect && !environmentButtons.includes(from as HTMLButtonElement))) return;
+    const visible = (item: HTMLElement | undefined) => Boolean(item && typeof item.checkVisibility === 'function' && item.checkVisibility());
+    const to = from === environmentSelect ? environmentButtons.find(item => item.tabIndex === 0) : environmentSelect;
+    if (to && !visible(from) && visible(to)) to.focus({ preventScroll: true });
+  });
+  arrowKeys(element('scale-group'), scaleButtons, 'radios');
+  for (const box of [element('insert-list'), element('image-grid')]) {
+    box.addEventListener('keydown', listKeydown);
+    // A row focused by any means holds the tab stop, so Tab leaves the list and Shift+Tab comes back to it.
+    box.addEventListener('focusin', event => {
+      const key = keyOf(event.target as Element | null);
+      if (key !== null && key !== activeKey && rows.get(key) === event.target) { activeKey = key; updateSelected(); }
+    });
+  }
+  searchInput.addEventListener('keydown', escape);
   searchInput.addEventListener('input', () => {
     scheduleRender();
     if (state.prefs.browse === 'placements') { scheduleRender(true); return; }
@@ -709,4 +1135,14 @@ export function initInsert(goToSend: () => void): void {
     });
   }
   insertButton.addEventListener('click', () => { void beginInsert(); });
+  insertNewButton.addEventListener('click', () => { void beginInsert(true); });
+  // A held Enter or Space clicks a button once per repeat: Insert runs once.
+  for (const button of [insertButton, insertNewButton]) {
+    button.addEventListener('keydown', event => { if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault(); });
+  }
+  element('hint-close').addEventListener('click', () => {
+    state.prefs.hintSeen = true;
+    savePreferences();
+    scheduleRender();
+  });
 }

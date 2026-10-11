@@ -7,7 +7,7 @@ import {
 import type { Connection, Placement } from '../shared/index.js';
 import { DISCONNECTED } from '../shared/protocol.js';
 import type { MainMessage } from '../shared/protocol.js';
-import { announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, setStatus, setUnavailable } from './dom.js';
+import { announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, setBusy, setStatus, setUnavailable } from './dom.js';
 import { identify, readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
 import { clearPlacements, clearRememberedSelection, showPlacements } from './send.js';
@@ -24,6 +24,8 @@ const idFields = element('id-fields');
 const connectButton = element<HTMLButtonElement>('connect');
 const disconnectButton = element<HTMLButtonElement>('disconnect');
 const connectionError = element('connection-error');
+const connectionForm = element('connection-form');
+const updateButton = element<HTMLButtonElement>('update-token');
 const fields = { origin, orgId, appId, token } as const;
 
 // The save-connection request awaiting main; its error belongs under the token field. If main refuses it, the
@@ -36,7 +38,12 @@ let pendingDisconnect: number | null = null;
 let identifyTicket = 0;
 // The console (its origin) that answered GET /api/token with 404 or without CORS in this session: it needs the
 // organization and app IDs, so the form shows them and uses them while that console is chosen. Disconnect forgets it.
+// `idsUnsure`: the answer was a network failure, which an older console's missing CORS headers and a dropped connection
+// look the same as, so a Connect with the ID fields empty asks GET /api/token again.
 let idsOrigin: string | null = null;
+let idsUnsure = false;
+// With a working connection the account panel is a menu; Update token (or a token that needs attention) shows the form.
+let formOpened = false;
 // A connection the person saved in this session: when its test passes, a toast says so.
 let announceConnected = false;
 // True from a failed read until a successful one: the chip shows a warning.
@@ -72,9 +79,9 @@ const CHIP_FONT = '500 11px "Instrument Sans"';
 /**
  * A shortened workspace name ends in an ellipsis, but its box keeps the room the grid gave it, so up to a glyph's width
  * would sit unused before the "·" and the spaces either side of it would differ. This sizes the box to the shortened
- * text. The room depends only on the chip's 160 px cap, the app's name, the warning glyph, and the font, never the
- * window, so it is measured again only when one of those changes (or until the chip has a box: the first run hides
- * it, and a narrow window hides the workspace).
+ * text. The room depends on the chip's cap (320 px, or what the window leaves beside the tabs), the app's name, the
+ * warning glyph, and the font, so it is measured again only when one of those changes (or until the chip has a box: the
+ * first run hides it, and a narrow window hides the workspace).
  */
 function fitWorkspace(workspace: HTMLElement, key: string): void {
   if (workspaceFit.key !== key) {
@@ -124,27 +131,34 @@ export function renderConnection(): void {
     // No-break spaces: a grid item drops ordinary spaces at its edges.
     const workspace = span('chip-workspace', connection.workspaceName);
     name.replaceChildren(workspace, span('chip-sep', '\u00a0·\u00a0'), span('chip-app', connection.appName));
-    fitWorkspace(workspace, `${connection.workspaceName}\n${connection.appName}\n${attention}\n${document.fonts?.check(CHIP_FONT)}`);
+    fitWorkspace(workspace, `${connection.workspaceName}\n${connection.appName}\n${attention}\n${document.fonts?.check(CHIP_FONT)}\n${window.innerWidth}`);
   } else if (connection) {
     // Without names (a console that can't read them for a token), the chip names the app by the start of its ID.
     name.replaceChildren(span('chip-app', appShortName(connection)));
   } else name.replaceChildren(span('chip-app', 'Connection'));
   settingsSummary.title = attention ? `${label} needs attention` : label || 'Connection';
-  // The panel names the workspace and app; without names, the app as the chip does, with both IDs in full on hover.
+  // The panel names the app, whole (the chip may shorten it), and the workspace on the line below; without names, the
+  // app as the chip does, with both IDs in full on hover.
   const title = element('account-title');
-  title.textContent = connection ? (connection.appName ? label : appShortName(connection)) : '';
+  title.textContent = connection ? appShortName(connection) : '';
   title.title = connection ? `Organization ${connection.orgId} · App ${connection.appId}` : '';
-  element('token-prefix').textContent = connection ? `Connected with token ${tokenPrefix(connection.token)}` : '';
+  element('token-prefix').textContent = connection
+    ? [connection.workspaceName, `Connected with token ${tokenPrefix(connection.token)}`].filter(Boolean).join(' · ') : '';
   element<HTMLAnchorElement>('open-console').href = connection ? consoleLink(connection, 'overview') : `${chosenOrigin()}/`;
   element<HTMLAnchorElement>('first-run-console').href = `${chosenOrigin()}/`;
   idFields.hidden = !idsShown();
   // The account's own controls exist only with a connection (ui.html also hides the account block on the first run).
   disconnectButton.hidden = !connection;
   element('open-console').hidden = !connection;
+  // A working connection's panel is a menu: the form shows on the first run, when the connection needs attention or the
+  // form has something to say, after Update token, and while it holds a typed token.
+  const form = !connection || attention || formOpened || connectionErrorKind !== null || idsShown() || Boolean(token.value);
+  connectionForm.hidden = !form;
+  updateButton.hidden = !connection || form;
   // One primary per view: Connect is the first run's primary, and the account panel's while the connection needs
-  // attention; otherwise the footer's Insert or Send is, and Connect is secondary.
+  // attention; otherwise the footer's Insert or Send is, and the form's button is secondary.
   connectButton.className = !connection || attention ? 'primary wide' : 'secondary wide';
-  connectButton.textContent = state.ops.connecting ? 'Connecting…' : 'Connect';
+  setBusy(connectButton, state.ops.connecting ? 'Connecting…' : connection && !attention ? 'Save token' : 'Connect', state.ops.connecting);
   setUnavailable(connectButton, actionsBlocked());
   setUnavailable(disconnectButton, actionsBlocked() || pendingDisconnect !== null);
 }
@@ -183,6 +197,10 @@ function closeSettings(): void {
  */
 export function openSettings(): void {
   settings.open = true;
+  formOpened = true;
+  // The form shows before its field takes focus.
+  scheduleRender();
+  flushRender();
   token.focus();
   token.scrollIntoView({ block: 'nearest' });
   scheduleRender();
@@ -201,10 +219,11 @@ function clearConnectionError(): void {
  * is the next step, not a mistake: the ID fields show under a neutral notice in place of the error, no field is marked
  * invalid, the status region says it, and the organization ID field takes focus.
  */
-function askForIds(): void {
+function askForIds(unsure: boolean): void {
   clearConnectionError();
   connectionErrorKind = 'form';
   idsOrigin = chosenOrigin();
+  idsUnsure = unsure;
   idFields.hidden = false;
   connectionError.className = 'info';
   connectionError.textContent = OLDER_CONSOLE;
@@ -230,7 +249,7 @@ function showConnectionError(message: string, field: keyof typeof fields | null,
   connectionError.textContent = message;
   connectionError.hidden = false;
   // The ID fields show only for an older console; an error in one of them shows them.
-  if (field === 'orgId' || field === 'appId') idsOrigin = chosenOrigin();
+  if (field === 'orgId' || field === 'appId') { idsOrigin = chosenOrigin(); idsUnsure = false; }
   idFields.hidden = !idsShown();
   const input = field ? fields[field] : null;
   input?.setAttribute('aria-invalid', 'true');
@@ -372,6 +391,7 @@ export function applyConnection(message: Extract<MainMessage, { type: 'connectio
     // Disconnected: the first-run screen, with nothing left from the connection, not even an older console's ID fields.
     announceConnected = false;
     idsOrigin = null;
+    idsUnsure = false;
     orgId.value = ''; appId.value = '';
     if (pendingDisconnect !== null) { pendingDisconnect = null; setStatus(DISCONNECTED); }
   }
@@ -436,12 +456,14 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
   try {
     if (result.status === 200) {
       const identity = parseTokenIdentity(result.payload);
+      // This console names a token's app, so it needs no IDs after all.
+      if (idsOrigin === chosen) { idsOrigin = null; idsUnsure = false; }
       if (!identity.scopes.includes('draft')) throw fieldError(TOKEN_SCOPE, 'token');
       return { origin: chosen, orgId: identity.orgId, appId: identity.appId, token: value,
         ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}), ...(identity.appName ? { appName: identity.appName } : {}) };
     }
     // A console from before GET /api/token answers 404, or nothing a cross-origin page can read: it needs the IDs.
-    if (result.kind === 'network' || (result.kind === 'http' && result.status === 404)) { askForIds(); return null; }
+    if (result.kind === 'network' || (result.kind === 'http' && result.status === 404)) { askForIds(result.kind === 'network'); return null; }
     // A revoked token answers 403 here, as an unknown one answers 401.
     if (result.status === 401 || result.status === 403) throw fieldError(TOKEN_REFUSED, 'token');
     throw new Error(readFailure(result, { origin: chosen, orgId: '', appId: '', token: '' }));
@@ -455,6 +477,8 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
 /** Connect: a pasted token is identified with GET /api/token; a blank one tests the saved connection again. */
 async function submit(): Promise<void> {
   if (actionsBlocked()) return;
+  // The form stays in view while what it started runs.
+  formOpened = true;
   clearError();
   clearConnectionError();
   const current = state.connection;
@@ -463,7 +487,9 @@ async function submit(): Promise<void> {
   try {
     const chosen = normalizeConsoleOrigin(origin.value);
     if (typed) checkTokenFormat(typed);
-    if (idsShown()) {
+    // After a network failure the IDs may not be needed after all: with their fields empty, the token is asked about again.
+    const askAgain = idsUnsure && Boolean(typed) && !orgId.value.trim() && !appId.value.trim();
+    if (idsShown() && !askAgain) {
       // An older console: the organization and app come from the form.
       const sameApp = current && current.origin === chosen && current.orgId === orgId.value.trim() && current.appId === appId.value.trim();
       next = validateConnection({ ...(sameApp && !typed ? current : {}), origin: chosen, orgId: orgId.value, appId: appId.value, token: typed || (sameApp ? current.token : '') });
@@ -483,6 +509,12 @@ export function initConnection(): void {
     event.preventDefault();
     void submit();
   });
+  updateButton.addEventListener('click', () => {
+    formOpened = true;
+    scheduleRender();
+    flushRender();
+    token.focus();
+  });
   disconnectButton.addEventListener('click', () => {
     if (actionsBlocked() || !state.connection || pendingDisconnect !== null) return;
     clearConnectionError();
@@ -495,8 +527,12 @@ export function initConnection(): void {
     if (connectionErrorKind === 'form') clearConnectionError();
     scheduleRender();
   });
-  // Opening or closing the settings moves a read failure between the token field and the view.
-  settings.addEventListener('toggle', () => scheduleRender());
+  // Opening or closing the settings moves a read failure between the token field and the view; closed, the menu is a
+  // menu again next time.
+  settings.addEventListener('toggle', () => {
+    if (!settings.open) formOpened = false;
+    scheduleRender();
+  });
   // Esc closes the open settings (not the first-run screen, which is all there is), and focus returns to the chip.
   settings.addEventListener('keydown', event => {
     if ((event as KeyboardEvent).key !== 'Escape' || !state.connection || !settings.open) return;

@@ -35,9 +35,21 @@ const ui = { ...options, entryPoints: ['src/ui/main.ts'], outfile: 'dist/ui.js',
 
 const uiUrl = new URL('../dist/ui.html', import.meta.url);
 
+/**
+ * A release build's template without its comments and indentation (about 8 KB of the budget); the two markers stay. The
+ * template has no <pre> or <textarea>, so a line's leading spaces never show.
+ */
+function compact(template) {
+  return template
+    .replace(/<style>[\s\S]*?<\/style>/, style => style.replace(/\/\*[\s\S]*?\*\//g, comment => comment === fontMarker ? comment : ''))
+    .replace(/<!--[\s\S]*?-->/g, comment => comment === marker ? comment : '')
+    .replace(/\n[ \t]*/g, '\n').replace(/\n{2,}/g, '\n');
+}
+
 /** Writes dist/ui.html; a release build over budget writes nothing and removes the previous one, so none is left to load. */
 async function writeUi(script) {
-  const [template, font] = await Promise.all([readFile(templateUrl, 'utf8'), readFile(fontUrl)]);
+  const [source, font] = await Promise.all([readFile(templateUrl, 'utf8'), readFile(fontUrl)]);
+  const template = dev ? source : compact(source);
   if (template.split(marker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${marker} marker.`);
   if (template.split(fontMarker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${fontMarker} marker.`);
   const face = `@font-face { font-family: 'Instrument Sans'; src: url(data:font/woff2;base64,${font.toString('base64')}) format('woff2'); font-weight: 400 700; font-style: normal; font-display: block; }`;

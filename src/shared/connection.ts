@@ -149,12 +149,54 @@ export function tokenPrefix(token: string): string {
 // A file link the plugin can't use: not Figma's, or not a design file's.
 export const FILE_LINK_INVALID = 'That isn’t a link to a Figma design file. In Figma, press Cmd+L to copy this file’s link, then paste it here.';
 
-export function parseFileKey(value: string): string {
+/**
+ * A Figma design file's link: its file key, and the file's name as the link spells it (its slug), which may be empty. A
+ * branch's link (`/design/{key}/branch/{branchKey}/{name}`) names the branch, a file of its own.
+ */
+export function parseFileLink(value: string): { fileKey: string; slug: string } {
   // Do not depend on the browser URL global: this helper also runs in Figma's sandbox.
   const input = value.trim();
   const host = /^https:\/\/(?:www\.)?figma\.com\//i.exec(input);
   if (!host) throw new Error(FILE_LINK_INVALID);
-  const match = /^(?:file|design)\/([^/?#]+)(?:\/[^?#]*)?(?:\?[^#]*)?(?:#.*)?$/.exec(input.slice(host[0].length));
-  if (!match || !validFileKey(match[1])) throw new Error(FILE_LINK_INVALID);
-  return match[1];
+  const match = /^(?:file|design)\/([^/?#]+)(?:\/branch\/([^/?#]+))?(?:\/([^/?#]*)[^?#]*)?(?:\?[^#]*)?(?:#.*)?$/.exec(input.slice(host[0].length));
+  const fileKey = match?.[2] ?? match?.[1];
+  if (!match || !validFileKey(match[1]) || !validFileKey(fileKey)) throw new Error(FILE_LINK_INVALID);
+  let slug = match[3] ?? '';
+  try { slug = decodeURIComponent(slug); } catch { /* compared as written */ }
+  return { fileKey, slug };
+}
+
+/**
+ * A file name or a link's slug reduced so the two compare: lower case, with one "-" for each run of spaces and
+ * punctuation. Letters of every script and digits stay, so a name with no Latin letters still compares; a name of
+ * spaces and punctuation alone reduces to "".
+ */
+export function slugify(value: string): string {
+  return value.toLowerCase().replace(/[\s!-\/:-@\[-`{-~\u00a0-\u00bf\u2000-\u206f\u3000-\u303f]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/**
+ * True only when the link names this file. A link without a name, or a name that reduces to nothing, can't be checked,
+ * so it is not a match: the person confirms it (Use anyway), as for another file's link.
+ */
+export function linkNamesFile(slug: string, fileName: string): boolean {
+  const link = slugify(slug);
+  return link !== '' && link === slugify(fileName);
+}
+
+/**
+ * The document's identity, saved on the document root (`assetlib.file.v1`) so everyone who opens the file shares it:
+ * Figma's own file key (`figma`), or one taken from a pasted link (`link`); `name` is the file's name when it was saved.
+ */
+export interface FileIdentity { v: 1; fileKey: string; source: 'figma' | 'link'; savedAt: string; name: string }
+
+/** Reads `assetlib.file.v1`. Never throws: an unreadable identity is none. */
+export function parseFileIdentity(raw: string): FileIdentity | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value) || value.v !== 1 || !validFileKey(value.fileKey) || (value.source !== 'figma' && value.source !== 'link')
+      || typeof value.savedAt !== 'string') return null;
+    return { v: 1, fileKey: value.fileKey, source: value.source, savedAt: value.savedAt, name: typeof value.name === 'string' ? value.name.slice(0, 200) : '' };
+  } catch { return null; }
 }

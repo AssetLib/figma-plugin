@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
-import { bundlePlugin, createHarness, descendants, pngSizeOf, textOf, waitFor } from '../tests/fakes.mjs';
+import { bundlePlugin, createHarness, dataTransfer, descendants, pngSizeOf, textOf, waitFor } from '../tests/fakes.mjs';
 
 const ORIGIN = 'http://localhost:3100';
 const PLACEMENT = 'travel.coast';
@@ -101,7 +101,8 @@ function expectedRendition(asset) {
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const app = createHarness({
-  ...(await bundlePlugin(root)), fetch: consoleFetch, fileKey: null, selection: [], exportBytes: exportPng,
+  // No file key, as a Community plugin runs: the first Sync asks for this file's link, whose name matches the document's.
+  ...(await bundlePlugin(root)), fetch: consoleFetch, fileKey: null, rootName: 'Assetlib plugin local e2e', selection: [], exportBytes: exportPng,
   storage: [],
   viewport: { center: { x: 0, y: 0 }, bounds: { x: -2000, y: -2000, width: 4000, height: 4000 } },
 });
@@ -122,6 +123,12 @@ const routeOf = request => request.url === identityUrl ? 'token' : request.url.s
 const lastJson = route => app.requests.filter(request => routeOf(request) === route && request.json).at(-1)?.json;
 const rowFor = key => descendants(el('insert-list')).find(item => item.getAttribute?.('data-key') === key);
 const lastSelection = () => app.mainMessages.filter(message => message.type === 'selection').at(-1)?.selection;
+// Insert makes a new frame only with nothing selected; with the last inserted frame selected it would replace its image.
+async function selectNothing() {
+  const count = app.mainMessages.length;
+  app.select([]);
+  await waitFor(() => app.mainMessages.length > count && lastSelection()?.insertTarget?.mode === 'new', { message: 'an empty selection' });
+}
 
 try {
   // 1. The first-run screen connects with the token alone: GET /api/token names its organization and app, the connection
@@ -163,6 +170,8 @@ try {
     el(`env-${environment}`).dispatch('click');
     rowFor(PLACEMENT).dispatch('click');
     assert.match(el('insert-meta').textContent, new RegExp(`^${environment[0].toUpperCase()}${environment.slice(1)}( · |$)`));
+    await selectNothing();
+    assert.equal(el('insert').textContent, 'Insert');
     const frames = app.frames.length;
     el('insert').dispatch('click');
     await settled(`the ${environment} insert`);
@@ -182,9 +191,10 @@ try {
     assert.deepEqual(JSON.parse(JSON.stringify(frame.documentationLinks)), [{ uri: `${ORIGIN}/w/${connection.orgId}/${connection.appId}/placements` }]);
     assert.ok(!frame.description.includes(token), 'the marker never holds the token');
     assert.equal(lastSelection().remembered?.insertedFrom?.environment, environment);
-    assert.equal(el('sync').hidden, false);
-    assert.equal(unavailable('sync'), true, 'Sync waits for the file URL');
-    assert.match(el('status').textContent, /Paste this file’s link on the Send tab to enable Sync\.$/);
+    assert.equal(el('selection-bar').hidden, false);
+    assert.equal(el('sync-title').textContent, `Linked to ${PLACEMENT}`);
+    assert.equal(unavailable('sync'), false, 'Sync is ready; it asks for the file link when chosen');
+    assert.deepEqual(frame.getRelaunchData(), { sync: `${PLACEMENT}, from ${environment[0].toUpperCase()}${environment.slice(1)}. Sync sends edits to its draft.` });
     inserted[environment] = frame;
     ok(`Insert ${PLACEMENT} from ${environment}: ${frame.width} × ${frame.height} component with the placement description, ${rendition.mime} ${rendition.width} × ${rendition.height} (${asset.name})`);
   }
@@ -201,6 +211,7 @@ try {
   ok(`GET assets 200: ${page.assets.length} images on the first page; ${photos} WebP-only skipped (transcoding needs a browser)`);
   assert.ok(pick, 'an image with a PNG rendition exists');
   descendants(el('image-grid')).find(item => item.getAttribute?.('data-asset-id') === pick.id).dispatch('click');
+  await selectNothing();
   el('insert').dispatch('click');
   await settled('the image insert');
   const imageFrame = app.frames.at(-1);
@@ -211,30 +222,64 @@ try {
   assert.equal(el('sync').hidden, true);
   ok(`Insert image "${pick.name}": ${imageFrame.width} × ${imageFrame.height} frame, not linked`);
 
+  // 3b. Drag the placement from Draft onto the canvas: main makes a placeholder where it lands, which the download fills
+  // and links, in one undo step. A download Insert made in the last minute is reused.
+  el('browse-placements').dispatch('click');
+  await settled('the placements');
+  el('env-draft').dispatch('click');
+  await selectNothing();
+  const dragged = rowFor(PLACEMENT);
+  assert.equal(dragged.draggable, true);
+  const draftRendition = expectedRendition(before.assets[base0.draft.assetId]);
+  const fetchesBefore = app.requests.filter(request => request.url.endsWith(`/renditions/${draftRendition.sha256}`)).length;
+  const [framesBefore, commitsBefore] = [app.frames.length, app.undoCommits.length];
+  assert.equal(dragged.dispatch('dragstart', { dataTransfer: dataTransfer() }).defaultPrevented, false);
+  dragged.dispatch('dragend', { view: { length: 1 }, clientX: -120, clientY: 200 });
+  assert.equal(app.dropOnCanvas({ absoluteX: 3000, absoluteY: 3000 }), false);
+  const placeholder = app.frames.at(-1);
+  assert.equal(app.frames.length, framesBefore + 1);
+  assert.equal(placeholder.name, `${PLACEMENT} · loading`);
+  await settled('the drop');
+  assert.equal(placeholder.name, PLACEMENT);
+  assert.deepEqual([placeholder.width, placeholder.height, placeholder.fills.length, placeholder.fills[0].type], [contract.width, contract.height, 1, 'IMAGE']);
+  assert.deepEqual([placeholder.absoluteBoundingBox.x + contract.width / 2, placeholder.absoluteBoundingBox.y + contract.height / 2].map(Math.round), [3000, 3000]);
+  const dropLink = JSON.parse(placeholder.getPluginData('assetlib.link.v1'));
+  assert.deepEqual([dropLink.placementKey, dropLink.environment, dropLink.assetId, dropLink.nodeId], [PLACEMENT, 'draft', base0.draft.assetId, placeholder.id]);
+  assert.equal(app.undoCommits.length, commitsBefore + 1, 'one undo step for the placeholder and its image');
+  const fetched = app.requests.filter(request => request.url.endsWith(`/renditions/${draftRendition.sha256}`)).length - fetchesBefore;
+  ok(`Drag ${PLACEMENT} onto the canvas: a placeholder at the drop point, filled and linked in one undo step (${fetched ? 'downloaded' : 'the insert download reused'})`);
+
   // 4. Round trip: Sync the draft frame, then read the artwork again. This rebinds the app's draft travel.coast,
-  // so the image it showed before is printed for restoring it in the console.
+  // so the image it showed before is printed for restoring it in the console. Without a file key, the Sync asks for
+  // the file's link first, saves it in the document, and then runs.
   log(`note - draft ${PLACEMENT} shows ${base0.draft ? `image ${base0.draft.assetId}` : 'no image'} before this run; rebind it in the console to restore it`);
   const selections = app.mainMessages.length;
   app.select([inserted.draft]);
   await waitFor(() => app.mainMessages.length > selections && lastSelection()?.node?.id === inserted.draft.id, { message: 'the selection report' });
-  el('tab-send').dispatch('click');
+  await waitFor(() => !unavailable('sync'), { message: 'Sync to be ready' });
+  assert.equal(el('sync-meta').textContent, 'from Draft');
+  el('sync').dispatch('click');
+  assert.equal(el('file-fallback').hidden, false, 'the first Sync asks for the file link');
+  assert.equal(app.drafts().length, 0);
   el('file-url').value = FILE_URL;
   el('file-form').dispatch('submit');
-  await settled('the file URL');
-  await waitFor(() => !unavailable('sync'), { message: 'Sync to be enabled' });
-  assert.equal(el('sync').textContent, `Sync to ${PLACEMENT}`);
-  assert.match(el('sync-note').textContent, /Inserted from Draft\. Sync sends this layer to that cell/);
-  el('sync').dispatch('click');
+  await waitFor(() => app.drafts().length > 0, { message: 'the Sync that asked for the file link' });
   await settled('Sync', 120000);
+  assert.deepEqual([JSON.parse(app.figma.root.getPluginData('assetlib.file.v1')).fileKey, JSON.parse(app.figma.root.getPluginData('assetlib.file.v1')).source],
+    ['AssetlibPluginE2E', 'link'], 'the document keeps the file key');
   const draft = app.requests.filter(request => routeOf(request) === 'drafts').at(-1);
   assert.equal(draft.status, 201);
   assert.deepEqual(draft.body.bind, { slotKey: PLACEMENT, state: null, appearance: null, arm: null });
   assert.equal(draft.body.rebind, true);
   assert.deepEqual(draft.json.bound, { slotKey: PLACEMENT, state: null, appearance: null, arm: null });
   const created = draft.json.asset;
+  assert.equal(draft.body.source.fileKey, 'AssetlibPluginE2E');
   assert.equal(el('status').textContent, `Synced ${PLACEMENT} to draft`);
   assert.equal(app.notifications.at(-1).message, `Synced ${PLACEMENT} to draft`);
-  ok(`Sync POST drafts 201: asset ${created.id} ${created.width} × ${created.height}, bound to ${PLACEMENT}, ${draft.json.rebound.length} reference(s) rebound`);
+  // The synced layer's link now names the draft's new image, for every device and teammate.
+  const relinked = JSON.parse(inserted.draft.getPluginData('assetlib.link.v1'));
+  assert.deepEqual([relinked.environment, relinked.assetId, relinked.nodeId], ['draft', created.id, inserted.draft.id]);
+  ok(`Sync POST drafts 201 after linking the file once: asset ${created.id} ${created.width} × ${created.height}, bound to ${PLACEMENT}, ${draft.json.rebound.length} reference(s) rebound; the layer's link names it`);
 
   el('tab-insert').dispatch('click');
   el('browse-placements').dispatch('click');

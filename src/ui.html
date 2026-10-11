@@ -64,6 +64,10 @@
     .icon-button:hover { background: var(--bg-hover); }
     /* Actions that can't run yet keep focus (aria-disabled); other controls use disabled. Both look disabled. */
     .primary[aria-disabled="true"], .primary:disabled { background: var(--bg-disabled); color: var(--text-disabled); cursor: default; }
+    /* A running action keeps its ink, with a spinner, so it never reads as an unavailable one. */
+    .primary[aria-busy="true"] { background: color-mix(in srgb, var(--text) 80%, var(--bg)); color: var(--bg); cursor: progress; }
+    .primary[aria-busy="true"]::before { content: ''; flex: none; width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid currentColor;
+      border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
     button[aria-disabled="true"]:not(.primary), button:disabled:not(.primary), input:disabled, select:disabled { color: var(--text-disabled); cursor: default; }
     .secondary[aria-disabled="true"]:hover, .secondary:disabled:hover { background: var(--bg-secondary); }
 
@@ -73,6 +77,10 @@
     input::placeholder { color: var(--al-text-meta); opacity: 1; }
     input:hover:not(:focus-visible), select:hover:not(:focus-visible) { border-color: var(--border); }
     input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--figma-color-border-danger-strong, #b3261e); }
+    /* Focused, the ring stands for the field; its callout and aria-invalid carry the error, so no red border doubles it. */
+    input[aria-invalid="true"]:focus-visible, select[aria-invalid="true"]:focus-visible { border-color: transparent; }
+    /* Instrument Sans draws the mask's bullets as a dotted hairline at 12 px. */
+    input[type="password"]:not(:placeholder-shown) { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; letter-spacing: 1px; }
     .field { display: grid; gap: 4px; min-width: 0; color: var(--al-text-meta); }
     .field > input, .field > select { color: var(--text); }
     .help { color: var(--al-text-meta); }
@@ -91,14 +99,15 @@
     .notice::after { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M7.25 6h1.5v4h-1.5zM8 10.9a.85.85 0 1 1 0 1.7.85.85 0 0 1 0-1.7z'/%3E%3C/svg%3E"); background: var(--figma-color-icon-onwarning, rgba(0, 0, 0, .9)); }
     .error::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7'/%3E%3C/svg%3E"); background: var(--figma-color-icon-danger, #b3261e); }
     .error::after { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M7.25 4h1.5v5h-1.5zM8 10.15a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8z'/%3E%3C/svg%3E"); background: var(--figma-color-icon-ondanger, #fff); }
-    .notice .small, .error .small { margin-top: 8px; }
+    .notice .small, .error .small, .info .small { margin-top: 8px; }
     /* Controls inside a callout sit on the panel's own surface with a border: on the callout's bg-secondary, a field or a
        secondary button in bg-secondary would read as plain text. */
-    .notice input, .notice select, .notice .secondary, .error .secondary { background: var(--bg); border: 1px solid var(--border); }
-    .notice input:hover:not(:focus-visible), .notice select:hover:not(:focus-visible) { border-color: var(--al-border-hover); }
-    .notice input[aria-invalid="true"] { border-color: var(--figma-color-border-danger-strong, #b3261e); }
-    .notice .secondary:hover, .error .secondary:hover { background: var(--bg-tertiary); }
-    .notice .secondary[aria-disabled="true"]:hover, .error .secondary[aria-disabled="true"]:hover { background: var(--bg); }
+    .notice input, .notice select, .notice .secondary, .error .secondary, .info input, .info .secondary { background: var(--bg); border: 1px solid var(--border); }
+    .notice input:hover:not(:focus-visible), .notice select:hover:not(:focus-visible), .info input:hover:not(:focus-visible) { border-color: var(--al-border-hover); }
+    .notice input[aria-invalid="true"], .info input[aria-invalid="true"] { border-color: var(--figma-color-border-danger-strong, #b3261e); }
+    .notice input[aria-invalid="true"]:focus-visible, .info input[aria-invalid="true"]:focus-visible { border-color: transparent; }
+    .notice .secondary:hover, .error .secondary:hover, .info .secondary:hover { background: var(--bg-tertiary); }
+    .notice .secondary[aria-disabled="true"]:hover, .error .secondary[aria-disabled="true"]:hover, .info .secondary[aria-disabled="true"]:hover { background: var(--bg); }
 
     /* App shell: fixed bars, and only the list (or the Send form) scrolls. */
     .app { position: relative; display: flex; flex-direction: column; height: 100%; min-width: 0; }
@@ -111,7 +120,8 @@
 
     /* The account chip is the connection settings' summary, drawn in the top bar; the settings open below it. */
     .settings { flex: none; }
-    .chip { position: absolute; top: 8px; right: 12px; display: flex; align-items: center; gap: 4px; max-width: 160px; height: 24px; padding: 0 4px 0 8px;
+    /* At most 320 px, and never over the tabs (which end at 109 px). */
+    .chip { position: absolute; top: 8px; right: 12px; display: flex; align-items: center; gap: 4px; max-width: min(320px, calc(100% - 136px)); height: 24px; padding: 0 4px 0 8px;
       border-radius: 5px; font-size: 11px; font-weight: 500; cursor: pointer; list-style: none; user-select: none; transition: background-color 120ms; }
     .chip::-webkit-details-marker { display: none; }
     .chip:hover, .settings[open] > .chip { background: var(--bg-secondary); }
@@ -124,13 +134,16 @@
     .panel { display: grid; gap: 12px; max-height: 70vh; overflow: auto; padding: 4px 12px 12px; border-bottom: 1px solid var(--border); }
     .account { display: grid; gap: 2px; }
     .account-actions { display: flex; gap: 12px; margin-top: 4px; }
+    /* Disconnect forgets the token, so it stands apart from the actions beside it. */
+    #disconnect { margin-left: auto; }
     .connection-form { display: grid; gap: 8px; }
     .first-run, .guide { display: none; }
 
     /* First run: no tabs and no list, one centered column. */
     .app[data-view="first-run"] .topbar, .app[data-view="first-run"] .chip, .app[data-view="first-run"] .account { display: none; }
     .app[data-view="first-run"] .settings { flex: 1; min-height: 0; overflow: auto; }
-    .app[data-view="first-run"] .panel { max-width: 324px; max-height: none; margin: 0 auto; padding: 32px 12px 16px; border: 0; overflow: visible; }
+    .app[data-view="first-run"] .panel { max-width: 324px; max-height: none; min-height: 100vh; align-content: center; margin: 0 auto; padding: 32px 12px 16px;
+      border: 0; overflow: visible; }
     .app[data-view="first-run"] .first-run { display: grid; gap: 8px; margin-bottom: 4px; }
     .app[data-view="first-run"] .guide { display: block; justify-self: start; }
     .lockup { display: block; height: 24px; width: auto; margin-bottom: 8px; color: var(--text); }
@@ -147,7 +160,7 @@
     .search input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
     .search .icon-button { position: absolute; right: 4px; top: 4px; }
     .search .icon-button:hover { background: var(--bg-tertiary); }
-    .scopebar { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; min-height: 32px; padding: 0 12px 8px;
+    .scopebar { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; min-height: 32px; padding: 4px 12px 8px;
       border-bottom: 1px solid var(--border); }
     .segmented { display: inline-flex; flex: none; height: 24px; padding: 2px; border-radius: 5px; background: var(--bg-secondary); }
     .segmented button { height: 20px; padding: 0 8px; border: 1px solid transparent; border-radius: 4px; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--al-text-meta); }
@@ -159,12 +172,21 @@
     .list-region { position: relative; flex: 1; min-height: 0; overflow: auto; scroll-padding-top: 28px; }
     .group { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; height: 28px; padding: 0 12px; background: var(--bg);
       color: var(--al-text-meta); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .placement { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; height: 48px; padding: 8px 12px; text-align: left; }
+    /* Rows and tiles are options of a listbox (one tab stop; the arrow keys move), not buttons. */
+    .placement, .tile { cursor: pointer; user-select: none; transition: background-color 120ms; }
+    .placement { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; height: 48px; padding: 8px 12px; }
     .placement:hover { background: var(--bg-hover); }
-    .placement[aria-pressed="true"] { background: var(--bg-tertiary); }
-    .placement:focus-visible, .tile:focus-visible { outline-offset: -2px; }
+    .placement[aria-selected="true"] { background: var(--bg-tertiary); }
+    /* A row's ring sits inside it, so the scroll region never clips it; a tile's sits 2 px out, clear of its name, in the
+       grid's 8 px gap. A focused selected tile's ring takes the selection ring's place. */
+    .placement:focus-visible { outline-offset: -2px; }
+    .tile:focus-visible { outline-offset: 2px; }
+    .tile[aria-selected="true"]:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus); }
+    /* What drags onto the canvas says so. */
+    .placement[draggable="true"], .tile[draggable="true"] { cursor: grab; }
+    .placement[draggable="true"]:active, .tile[draggable="true"]:active { cursor: grabbing; }
     /* Inside the ring, a 1 px band of the panel background: dark mode's vermilion on the selected row's fill is under 3:1. */
-    .placement[aria-pressed="true"]:focus-visible { box-shadow: inset 0 0 0 3px var(--bg); }
+    .placement[aria-selected="true"]:focus-visible { box-shadow: inset 0 0 0 3px var(--bg); }
     .row-text { display: grid; min-width: 0; }
     .key { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .size { color: var(--al-text-meta); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -173,7 +195,8 @@
     .tag::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
     .tag.blocking { color: var(--text); }
     .tag.blocking::before { width: 12px; height: 12px; border-radius: 0; -webkit-mask: var(--warning-glyph) center / 12px 12px no-repeat; mask: var(--warning-glyph) center / 12px 12px no-repeat; }
-    .thumb { position: relative; display: block; width: 32px; height: 32px; border-radius: 4px; overflow: hidden;
+    /* Not positioned, as nothing inside a row or tile may be: a positioned child paints over the focus ring. */
+    .thumb { display: block; width: 32px; height: 32px; border-radius: 4px; overflow: hidden;
       background: repeating-conic-gradient(var(--bg-secondary) 0 25%, var(--bg-tertiary) 0 50%) 0 0 / 8px 8px; }
     .thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .thumb img:not([src]) { visibility: hidden; }
@@ -182,13 +205,13 @@
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 8px 12px; }
     /* An empty grid takes no room, so its empty state sits where the placements' does. */
     .grid:empty { padding: 0; }
-    .tile { display: grid; align-content: start; gap: 2px; min-width: 0; padding: 0; border-radius: 6px; text-align: left; }
+    .tile { display: grid; align-content: start; gap: 2px; min-width: 0; border-radius: 6px; }
     .tile .thumb { width: 100%; height: auto; aspect-ratio: 1; border-radius: 6px; }
     /* The selected tile: a 2 px ink ring around the whole tile, 2 px out. */
-    .tile[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+    .tile[aria-selected="true"] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
     /* Two lines at most, then an ellipsis. Layer names such as onboarding_hero_dark_final_v2 have no break opportunity,
        so they may break anywhere; otherwise one line is cut at the tile's edge with no ellipsis. */
-    .tile .name { margin-top: 4px; font-weight: 500; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .tile .name { min-height: 32px; margin-top: 4px; font-weight: 500; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
     #images-more { display: flex; width: calc(100% - 24px); margin: 0 12px 12px; }
     .skeleton { pointer-events: none; }
     .skeleton .block, .skeleton .bar { display: block; border-radius: 4px; background: var(--bg-secondary); }
@@ -198,7 +221,7 @@
     .skeleton .bar + .bar { width: 35%; }
     .skeleton .bar:first-child { width: 60%; }
     .skeleton.tile .block { width: 100%; aspect-ratio: 1; border-radius: 6px; }
-    .empty { display: grid; justify-items: start; gap: 8px; padding: 24px 16px; }
+    .empty { display: grid; justify-items: start; gap: 8px; padding: 24px 12px; }
     /* A list state or Send's reason takes focus on its own when a read fails; like the list, it shows no ring for it. */
     .empty:focus, #send-problem:focus { outline: none; }
     .empty-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -208,6 +231,10 @@
     /* One column as wide as the panel: an auto column would grow to the longest unbreakable text and widen the form. */
     .send-scroll { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 12px; padding: 4px 12px 12px; }
     .selection-card { display: grid; gap: 2px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+    /* Nothing to send: a dashed slot saying why, not a filled card. */
+    .selection-card.empty { border-style: dashed; }
+    .selection-card.empty .title { color: var(--al-text-meta); font-weight: 400; }
+    #export-note:empty { display: none; }
     .inline-form { display: flex; align-items: end; gap: 8px; margin-top: 8px; }
     .inline-form .field { flex: 1; }
     /* Each label sits 4 px from its own select and 12 px from the next picker, so the groups read apart. */
@@ -221,7 +248,7 @@
     /* Placement keys run up to 120 characters with no spaces. */
     .result li { overflow-wrap: anywhere; }
 
-    /* Fixed bottom: the error line, the selection bar slot (A.7), and the footer of the view in front. */
+    /* Fixed bottom: the error line, the selection bar slot (A.7), the hint bar, and the footer of the view in front. */
     .messages { flex: none; padding: 0 12px; }
     .messages > .error { margin: 8px 0; }
     /* The error line takes focus on its text; the ring is drawn around the whole callout. */
@@ -229,16 +256,40 @@
     .error:has(> #error:focus-visible) { outline: 2px solid var(--focus); outline-offset: 1px; }
     .error > .small { display: flex; width: max-content; }
     .messages:not(:has(> :not([hidden]))) { display: none; }
-    .selection-bar { flex: none; height: 48px; border-top: 1px solid var(--border); }
+    /* The Sync bar: 48 px, its actions wrapping under the text when the window is too narrow for both. */
+    .selection-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 48px; padding: 8px 12px; border-top: 1px solid var(--border); }
+    /* Focused itself (opened from Sync to Assetlib with nothing to press), its ring sits inside it. */
+    .selection-bar:focus:not(:focus-visible) { outline: none; }
+    .selection-bar:focus-visible { outline-offset: -2px; }
+    .bar-text { flex: 1 1 120px; display: grid; min-width: 0; }
+    /* Why it can't sync (a ratio, with what Match ratio makes of it; a copy) takes up to three lines rather than be cut short. */
+    .bar-text .meta { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+    .bar-actions { display: flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; }
+    /* The wrong-file line under the file link field, and the file the document is linked to. */
+    .file-mismatch { display: grid; justify-items: start; gap: 8px; margin-top: 8px; }
+    .file-line { display: grid; gap: 2px; }
+    /* How to insert, in place of the footer until the first insert; a narrow window wraps it rather than cut it short. */
+    .hint-bar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 12px; border-top: 1px solid var(--border);
+      color: var(--al-text-meta); }
+    .hint-bar p { flex: 1; min-width: 0; padding: 2px 0; }
+    .hint-narrow { display: none; }
     .footer { flex: none; display: grid; gap: 0; padding: 0 12px; border-top: 1px solid var(--border); background: var(--bg); }
     .footer > .pickers { min-height: 32px; padding-top: 8px; }
     .footer-row { display: flex; align-items: center; gap: 8px; height: 48px; min-width: 0; }
-    .footer-text { flex: 1; display: grid; min-width: 0; }
+    /* The item's name keeps room to be read: the primary shortens first. */
+    .footer-text { flex: 1; display: grid; min-width: 88px; }
     .footer-text .meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .footer-row .primary { flex: none; min-width: 72px; }
+    /* "Insert into {name}" and "Fill {name}" shorten with an ellipsis (its title has the whole label); a block, as an
+       ellipsis never shows inside a flex button. */
+    #insert { display: block; flex: 0 1 auto; min-width: 104px; max-width: 40%; line-height: 32px; }
+    /* A block, so its spinner sits inline before the label. */
+    #insert[aria-busy="true"]::before { display: inline-block; margin-right: 6px; vertical-align: -2px; }
     .footer-note { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; margin-top: -4px; }
     .footer-note:not(:has(> :not([hidden]))) { display: none; }
     .footer-note p { flex: 1; color: var(--al-text-meta); }
+    /* Insert as new frame, the one secondary action, sits under the primary. */
+    #insert-new { flex: none; margin-left: auto; }
     .footer-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0; }
     .footer-actions > button { flex: 1 1 0; max-width: 220px; }
     /* The primary action sits on the right, whichever of Send and Sync it is. */
@@ -250,16 +301,42 @@
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; }
       .spinner, #insert-refresh[data-busy="true"] svg { animation: none; }
+      /* The running label ends in "…" already. */
+      .primary[aria-busy="true"]::before { display: none !important; }
       .spinner { border: 0; width: auto; height: auto; } .spinner::after { content: '…'; }
     }
-    /* Narrow windows: the chip keeps the app name, and segmented labels stay whole. */
-    @media (max-width: 399px) { .chip-workspace, .chip-sep { display: none; } }
+    /* The Environment dropdown, in place of its radios in a narrow window. */
+    .env-select { display: none; width: auto; height: 24px; padding: 0 4px; }
+    /* The resize grip: the window's bottom-right corner, over the 12 px side padding of whatever sits there. */
+    .grip { position: fixed; right: 0; bottom: 0; z-index: 3; width: 12px; height: 12px; color: var(--al-text-meta); cursor: nwse-resize; touch-action: none; user-select: none; }
+    .grip svg { display: block; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; }
+    /* Narrow windows: the chip keeps the app name, the Environment radios become a dropdown, and the footer's pickers
+       show their values only (each select keeps its name in aria-label). */
+    @media (max-width: 399px) {
+      .chip-workspace, .chip-sep { display: none; }
+      #env-group { display: none; }
+      .env-select { display: block; }
+      .picker-word { display: none; }
+      /* The footer's name and size keep their room: the selected row shows the image already. */
+      #insert-preview { display: none; }
+      #insert { max-width: 50%; }
+      .hint-wide { display: none; }
+      .hint-narrow { display: inline; }
+    }
+    /* Wide windows: a row's meta moves to a right-aligned column before its tag, whose column fits "Needs re-upload". */
+    @media (min-width: 560px) {
+      /* The key keeps most of the room: a long meta line stops at 40% and shortens. */
+      .placement { grid-template-columns: 32px minmax(96px, 1fr) fit-content(40%) minmax(max-content, 104px); }
+      .placement .row-text { display: contents; }
+      .placement .size { text-align: right; }
+      .placement .tag { justify-self: end; }
+    }
   </style>
 </head>
 <body>
   <div id="app" class="app" data-view="shell">
     <header class="topbar">
-      <div class="tabs" role="tablist" aria-label="Assetlib">
+      <div id="tabs" class="tabs" role="tablist" aria-label="Assetlib">
         <button id="tab-insert" type="button" role="tab" aria-selected="true" aria-controls="panel-insert">Insert</button>
         <button id="tab-send" type="button" role="tab" aria-selected="false" aria-controls="panel-send">Send</button>
       </div>
@@ -287,6 +364,7 @@
           <p id="token-prefix" class="meta"></p>
           <div class="account-actions">
             <a id="open-console" class="text-action" href="https://console.assetlib.dev/" target="_blank" rel="noopener noreferrer">Open console</a>
+            <button id="update-token" class="text-action" type="button" hidden>Update token</button>
             <button id="disconnect" class="text-action" type="button">Disconnect</button>
           </div>
         </div>
@@ -294,11 +372,12 @@
           <label class="field">Console<select id="origin"><option value="https://console.assetlib.dev">console.assetlib.dev</option><option value="http://localhost:3100">localhost:3100 (development)</option></select></label>
           <label class="field">Draft token<input id="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="alk_…" aria-describedby="token-help connection-error"></label>
           <p id="token-help" class="help">From Settings › Tokens in the Assetlib console. It’s an Assetlib token, not a Figma token.</p>
+          <!-- Under the token field, and above the ID fields an older console's notice introduces. -->
+          <p id="connection-error" class="error" tabindex="-1" hidden></p>
           <div id="id-fields" class="pair" hidden>
             <label class="field">Organization ID<input id="org-id" autocomplete="off" spellcheck="false"></label>
             <label class="field">App ID<input id="app-id" autocomplete="off" spellcheck="false"></label>
           </div>
-          <p id="connection-error" class="error" tabindex="-1" hidden></p>
           <button id="connect" class="primary wide" type="submit">Connect</button>
         </form>
         <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide" target="_blank" rel="noopener noreferrer">Read the guide</a>
@@ -315,7 +394,7 @@
         <button id="insert-refresh" class="icon-button" type="button" aria-label="Refresh" title="Refresh"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.75 8A4.75 4.75 0 1 1 11.3 4.6"/><path d="M11.75 2.25v2.75H9"/></svg></button>
       </div>
       <div class="scopebar">
-        <div class="segmented" role="radiogroup" aria-label="Browse">
+        <div id="browse-group" class="segmented" role="radiogroup" aria-label="Browse">
           <button id="browse-placements" type="button" role="radio" aria-checked="true">Placements</button>
           <button id="browse-images" type="button" role="radio" aria-checked="false">Images</button>
         </div>
@@ -324,6 +403,11 @@
           <button id="env-staging" type="button" role="radio" aria-checked="false">Staging</button>
           <button id="env-production" type="button" role="radio" aria-checked="false">Production</button>
         </div>
+        <select id="env-select" class="env-select" aria-label="Environment">
+          <option id="env-option-draft" value="draft">Draft</option>
+          <option id="env-option-staging" value="staging">Staging</option>
+          <option id="env-option-production" value="production">Production</option>
+        </select>
       </div>
       <p id="env-note" class="note" hidden></p>
       <div id="list-region" class="list-region">
@@ -346,15 +430,18 @@
 
     <main id="panel-send" class="view" role="tabpanel" aria-labelledby="tab-send" hidden>
       <div class="send-scroll">
-        <section class="selection-card" aria-labelledby="selection-title">
+        <section id="selection-card" class="selection-card" aria-labelledby="selection-title">
           <h2 id="selection-title" class="visually-hidden">Selected layer</h2>
           <p id="selection-name" class="title">Reading selection…</p>
           <p id="selection-meta" class="meta"></p>
         </section>
-        <div id="file-fallback" class="notice" hidden>
-          <p>Paste this file’s link so Assetlib can trace art back to it. In Figma, press Cmd+L to copy the link. The plugin asks again each time it opens.</p>
-          <form id="file-form" class="inline-form"><label class="field">File link<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off" spellcheck="false"></label><button class="secondary" type="submit">Link file</button></form>
+        <!-- Asked for once per document, at its first Send or Sync, when Figma doesn't give the plugin the file's key. -->
+        <div id="file-fallback" class="info" hidden>
+          <p>Link this file once so Assetlib can trace art back to it. In Figma, press <span id="copy-link-key">Cmd+L</span> to copy the file’s link, then paste it here.</p>
+          <form id="file-form" class="inline-form"><label class="field">File link<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off" spellcheck="false" aria-describedby="file-mismatch"></label><button class="secondary" type="submit">Link file</button></form>
+          <div id="file-mismatch-box" class="file-mismatch" hidden><p id="file-mismatch"></p><button id="file-anyway" class="secondary small" type="button">Use anyway</button></div>
         </div>
+        <div id="file-line" class="file-line" hidden><p class="meta"><span id="file-name"></span> · <button id="file-change" class="text-action" type="button">Change</button></p><p id="file-session" class="meta" hidden></p></div>
         <!-- Why Send has no placements: the connection test failed. Shown here only while the connection settings are closed. -->
         <div id="send-problem" class="error" tabindex="-1" hidden><p id="send-problem-text"></p><button id="send-retry" class="secondary small" type="button" hidden>Try again</button><button id="send-token" class="secondary small" type="button" hidden>Update token</button></div>
         <label class="field">Placement<select id="placement" disabled><option value="">Choose placement…</option></select></label>
@@ -365,21 +452,34 @@
         </div>
         <p id="export-note" class="meta"></p>
         <div id="aspect-warning" class="notice" hidden><p id="aspect-text"></p><button id="match-ratio" class="secondary small" type="button">Match ratio</button></div>
-        <p id="sync-note" class="meta" hidden></p>
         <div id="result" class="result" hidden></div>
-        <p class="meta">Drafts don’t go live until someone publishes in the Assetlib console.</p>
+        <p id="send-footnote" class="meta">Drafts don’t go live until someone publishes in the Assetlib console.</p>
       </div>
     </main>
 
     <div id="messages" class="messages">
       <div id="error-box" class="error" hidden><p id="error" tabindex="-1" hidden></p><button id="error-action" class="secondary small" type="button" hidden></button></div>
     </div>
-    <div id="selection-bar" class="selection-bar" hidden></div>
+    <!-- The selected layer's link, on both tabs: Sync it to its cell's draft, or why it can't be. -->
+    <section id="selection-bar" class="selection-bar" tabindex="-1" aria-labelledby="sync-title" hidden>
+      <span id="sync-preview" class="thumb"><img id="sync-thumb" alt=""></span>
+      <div class="bar-text"><p id="sync-title" class="title"></p><p id="sync-meta" class="meta"></p></div>
+      <div class="bar-actions">
+        <a id="sync-console" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a>
+        <button id="sync-match" class="secondary small" type="button" hidden>Match ratio</button>
+        <button id="sync-send" class="secondary small" type="button" hidden></button>
+        <button id="sync" class="primary" type="button" aria-disabled="true" hidden>Sync to draft</button>
+      </div>
+    </section>
+    <div id="hint-bar" class="hint-bar" hidden>
+      <p><span class="hint-wide">Drag onto the canvas, or select an item and press Enter.</span><span class="hint-narrow">Drag onto the canvas or press Enter.</span></p>
+      <button id="hint-close" class="icon-button" type="button" aria-label="Close hint" title="Close"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg></button>
+    </div>
     <footer id="insert-bar" class="footer" hidden>
       <div class="pickers">
-        <label id="insert-state-label" class="picker" hidden>State<select id="insert-state"></select></label>
-        <label id="insert-appearance-label" class="picker" hidden>Appearance<select id="insert-appearance"></select></label>
-        <label id="insert-arm-label" class="picker" hidden>A/B arm<select id="insert-arm"></select></label>
+        <label id="insert-state-label" class="picker" hidden><span class="picker-word">State</span><select id="insert-state" aria-label="State" title="State"></select></label>
+        <label id="insert-appearance-label" class="picker" hidden><span class="picker-word">Appearance</span><select id="insert-appearance" aria-label="Appearance" title="Appearance"></select></label>
+        <label id="insert-arm-label" class="picker" hidden><span class="picker-word">A/B arm</span><select id="insert-arm" aria-label="A/B arm" title="A/B arm"></select></label>
       </div>
       <div class="footer-row">
         <span id="insert-preview" class="thumb"><img id="insert-thumb" alt=""></span>
@@ -391,11 +491,15 @@
         </div>
         <button id="insert" class="primary" type="button" aria-disabled="true">Insert</button>
       </div>
-      <div class="footer-note"><p id="insert-note" hidden></p><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a></div>
+      <div class="footer-note"><p id="insert-note" hidden></p><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new frame</button></div>
     </footer>
     <footer id="send-bar" class="footer" hidden>
-      <div class="footer-actions"><button id="sync" class="secondary" type="button" aria-disabled="true" hidden></button><button id="send" class="primary" type="button" aria-disabled="true">Send to draft</button></div>
+      <div class="footer-actions"><button id="send" class="primary" type="button" aria-disabled="true">Send to draft</button></div>
     </footer>
+    <!-- Drag to resize the window; double-click for the default size. Pointer only, so hidden from assistive technology. -->
+    <div id="resize-grip" class="grip" title="Drag to resize. Double-click for the default size." aria-hidden="true">
+      <svg viewBox="0 0 12 12"><path d="M10.5 4 4 10.5M10.5 7.5 7.5 10.5"/></svg>
+    </div>
     <!-- One status and one alert region, fixed in the DOM: every toast, result, and error is announced through them. -->
     <p id="status" class="visually-hidden" role="status" aria-live="polite"></p>
     <p id="alert" class="visually-hidden" role="alert"></p>

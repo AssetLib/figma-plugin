@@ -182,6 +182,8 @@ export function thumbnailFrame(asset: LibraryAsset | null, slot = false): HTMLEl
   frame.className = slot ? 'thumb slot' : 'thumb';
   const img = document.createElement('img');
   img.alt = '';
+  // The row or tile is what drags onto the canvas, never its preview's data: URL.
+  img.draggable = false;
   frame.append(img);
   listImages.push(img);
   showThumbnail(img, asset, true);

@@ -1,140 +1,120 @@
+// The main thread in Figma's sandbox: routes the UI's messages, keeps the connection, exports for Send, and watches the
+// selection. Selection reporting is in main/selection.ts, and Insert and drops on the canvas in main/insert.ts.
 import {
-  DEVICE_STORAGE, LEGACY_PRODUCTION_ORIGIN, MAX_IMAGE_BYTES, MAX_INSERT_PIXELS, NO_AREA, PRODUCTION_ORIGIN, SELECTION_CHANGED, chooseExportSettings, defaultPreferences,
-  environmentLabel, isConsoleLink, isUint8Array, linkMatches, loadSavedConnection, mapHttpError, matchedHeight, parseFileKey, parsePlacements,
-  parsePreferences, parseStoredLink, placementMarker, pngSize, sanitizeName, validateBinding, validateConnection, validateInsertLink,
+  DEVICE_STORAGE, MAX_IMAGE_BYTES, SELECTION_CHANGED, chooseExportSettings, clampWindow, defaultPreferences, defaultWindowSize, isConsoleLink, linkNamesFile,
+  loadSavedConnection, mapHttpError, matchedHeight, parseFileLink, parsePlacements, parsePreferences, validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
-import type { Connection, NodeSelection, Preferences, StoredLink } from './shared/index.js';
+import type { Connection, InsertLink, Preferences } from './shared/index.js';
 import { DISCONNECTED, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
-import type { MainMessage, RememberedTarget, UiMessage } from './shared/protocol.js';
+import type { UiMessage } from './shared/protocol.js';
+import { currentFileKey, linkFile } from './main/identity.js';
+import { discardDrops, discardPlaceholder, drop, dropPending, insert, retireUndo, retireUndoOnEdit, writeMarker } from './main/insert.js';
+import { describeNode, reportSelection, selectedNode, storeTarget, writeLink } from './main/selection.js';
+import type { StoredTarget } from './main/selection.js';
+import { SELECTION_MOVED, main, post } from './main/state.js';
 
 const CONNECTION_KEY = 'assetlib.connection.v1';
 const FILE_URL_KEY = 'assetlib.file-url.v1';
 const PREFERENCES_KEY = 'assetlib.preferences.v1';
-// pluginData on an inserted frame: the cell it came from, never the token.
-const LINK_KEY = 'assetlib.link.v1';
-// A transcoded 2048 px PNG fits.
-const MAX_INSERT_BYTES = 24 * 1024 * 1024;
-let connection: Connection | null = null;
-let connectionGeneration = 0;
 let savedFileUrl = '';
-// Without the public file key, a saved URL must be confirmed for each run:
-// node IDs and page IDs alone cannot identify a file across documents.
-let fallbackFileKey: string | null = null;
-let selectionRevision = 0;
-let exporting = false;
-let importing = false;
 let preferences: Preferences = defaultPreferences();
-// Client storage targets keep their original shape; insertedFrom is only ever derived from a link.
-type StoredTarget = Omit<RememberedTarget, 'fileKey' | 'insertedFrom'> & { fileKey: string };
-const exported = new Map<number, { storageKey: string; target: StoredTarget }>();
-
-function post(message: MainMessage): void { figma.ui.postMessage(message); }
-function currentFileKey(): string | null {
-  try { return figma.fileKey || fallbackFileKey; }
-  catch { return fallbackFileKey; }
-}
-function targetKey(config: Connection, fileKey: string, nodeId: string): string {
-  return `assetlib.target.v1:${JSON.stringify([config.origin, config.orgId, config.appId, fileKey, nodeId])}`;
-}
-// Sync targets remembered before the console moved hosts stay keyed by the legacy origin.
-function targetKeys(config: Connection, fileKey: string, nodeId: string): string[] {
-  const keys = [targetKey(config, fileKey, nodeId)];
-  if (config.origin === PRODUCTION_ORIGIN) keys.push(targetKey({ ...config, origin: LEGACY_PRODUCTION_ORIGIN }, fileKey, nodeId));
-  return keys;
-}
-function selectedNode(): SceneNode | null {
-  return figma.currentPage.selection.length === 1 ? figma.currentPage.selection[0] ?? null : null;
-}
-function describeNode(node: SceneNode): NodeSelection {
-  return { id: node.id, name: node.name, width: node.width, height: node.height, type: node.type };
-}
-function isRemembered(value: unknown, fileKey: string, nodeId: string): value is StoredTarget {
-  if (!value || typeof value !== 'object') return false;
-  const item = value as Partial<StoredTarget>;
-  return item.fileKey === fileKey && item.nodeId === nodeId && typeof item.placementKey === 'string'
-    && (item.state === null || typeof item.state === 'string')
-    && (item.appearance === null || item.appearance === 'light' || item.appearance === 'dark')
-    && (item.arm === null || typeof item.arm === 'string');
-}
-async function reportSelection(): Promise<void> {
-  const revision = ++selectionRevision;
-  // Client storage can resolve after a different app or token has been saved.
-  const generation = connectionGeneration;
-  const config = connection;
-  const node = selectedNode();
-  const fileKey = currentFileKey();
-  let reason: string | null = null;
-  let remembered: RememberedTarget | null = null;
-  if (!node) reason = figma.currentPage.selection.length === 0 ? 'Select a frame or layer to send.' : 'Select one layer. Sending several at once isn’t supported yet.';
-  else if (node.width <= 0 || node.height <= 0) reason = NO_AREA;
-  if (node && fileKey && config) {
-    try {
-      for (const key of targetKeys(config, fileKey, node.id)) {
-        const value: unknown = await figma.clientStorage.getAsync(key);
-        if (isRemembered(value, fileKey, node.id)) { remembered = { ...value, insertedFrom: null }; break; }
-      }
-    } catch { /* A storage read failure must not prevent a new send. */ }
-  }
-  if (!remembered && node && config) {
-    // An inserted frame names its cell in pluginData. A copy keeps the data but not the node id, so it is ignored.
-    let raw = '';
-    try { raw = node.getPluginData(LINK_KEY); } catch { raw = ''; }
-    const link = parseStoredLink(raw);
-    if (link && linkMatches(link, config, node.id)) remembered = { fileKey, nodeId: node.id, placementKey: link.placementKey,
-      state: link.state, appearance: link.appearance, arm: link.arm, insertedFrom: { environment: link.environment, assetId: link.assetId } };
-  }
-  if (revision !== selectionRevision || generation !== connectionGeneration) return;
-  post({ type: 'selection', connectionGeneration: generation, selection: { node: node ? describeNode(node) : null, reason, fileKey, remembered } });
-}
+// An export waiting for its draft: the connection, the target to remember, the layer, and its placement's declared size.
+type Exported = { config: Connection; target: StoredTarget; node: SceneNode; frame: { width: number; height: number } };
+const exported = new Map<number, Exported>();
 
 const initialized = (async () => {
   let stored: unknown;
   try {
     stored = await figma.clientStorage.getAsync(CONNECTION_KEY);
-    if (stored) connection = loadSavedConnection(stored);
-  } catch { connection = null; }
-  if (connection && connection.origin !== (stored as Connection).origin) {
+    if (stored) main.connection = loadSavedConnection(stored);
+  } catch { main.connection = null; }
+  if (main.connection && main.connection.origin !== (stored as Connection).origin) {
     // Persist the moved origin; if this fails, the same move repeats on the next load.
-    try { await figma.clientStorage.setAsync(CONNECTION_KEY, connection); } catch { /* keep the loaded connection */ }
+    try { await figma.clientStorage.setAsync(CONNECTION_KEY, main.connection); } catch { /* keep the loaded connection */ }
   }
   try {
     const stored: unknown = await figma.clientStorage.getAsync(FILE_URL_KEY);
-    if (typeof stored === 'string') { parseFileKey(stored); savedFileUrl = stored; }
+    if (typeof stored === 'string') { parseFileLink(stored); savedFileUrl = stored; }
   } catch { savedFileUrl = ''; }
   try { preferences = parsePreferences(await figma.clientStorage.getAsync(PREFERENCES_KEY)); }
   catch { preferences = defaultPreferences(); }
 })();
 
+/** The last file link pasted on this device, to fill in the field, only when its name matches this file's. */
+function fileUrlForThisFile(): string {
+  try { return savedFileUrl && linkNamesFile(parseFileLink(savedFileUrl).slug, figma.root.name) ? savedFileUrl : ''; } catch { return ''; }
+}
+function postConnection(): void {
+  post({ type: 'connection', connectionGeneration: main.connectionGeneration, connection: main.connection, savedFileUrl: fileUrlForThisFile(), preferences });
+}
+
+/**
+ * A sent layer names the cell its draft now shows, as inserted art does, so Sync finds it on every device and for every
+ * teammate connected to the app, and it gets the Sync to Assetlib button; a component's marker names that placement too.
+ * One undo step of its own. A layer Figma keeps no data on (inside an instance), or a draft that wasn't bound, stays as
+ * it was; this device's target still applies.
+ */
+function linkSent(pending: Exported, assetId: string | null): void {
+  if (assetId === null || pending.node.removed) return;
+  const { placementKey, state, appearance, arm } = pending.target;
+  let link: InsertLink;
+  try { link = validateInsertLink({ placementKey, state, appearance, arm, environment: 'draft', assetId }); } catch { return; }
+  // A fill's Undo would take back the link instead of the fill.
+  retireUndo();
+  if (!writeLink(pending.node, pending.config, link)) return;
+  writeMarker(pending.node, pending.config, placementKey, pending.frame);
+  commitOwnStep();
+}
+
+/** Ends a plugin edit as an undo step of its own, unless a drop's placeholder waits: that drop's insert commits both. */
+function commitOwnStep(): void {
+  if (!dropPending()) figma.commitUndo();
+}
+
 async function handleMessage(message: UiMessage): Promise<void> {
   await initialized;
   switch (message.type) {
     case 'init':
-      post({ type: 'connection', connectionGeneration, connection, savedFileUrl, preferences });
+      // Opened from a linked layer's Sync to Assetlib button: the UI focuses the Sync bar. It never syncs by itself.
+      if (figma.command === 'sync') post({ type: 'launch', command: 'sync' });
+      postConnection();
       await reportSelection();
       break;
     case 'save-connection': {
       const next = validateConnection(message.connection);
       try { await figma.clientStorage.setAsync(CONNECTION_KEY, next); }
       catch { throw new Error(DEVICE_STORAGE); }
-      connection = next;
-      connectionGeneration += 1;
-      post({ type: 'connection', connectionGeneration, connection, savedFileUrl, preferences });
+      main.connection = next;
+      main.connectionGeneration += 1;
+      // A drop's image from the old connection won't come.
+      discardDrops();
+      postConnection();
       await reportSelection();
       break;
     }
     case 'save-file-url': {
-      const fileKey = parseFileKey(message.url);
-      try { await figma.clientStorage.setAsync(FILE_URL_KEY, message.url); }
-      catch { throw new Error(DEVICE_STORAGE); }
-      fallbackFileKey = fileKey;
-      savedFileUrl = message.url;
-      post({ type: 'file-saved', requestId: message.requestId, fileKey });
+      const { fileKey, slug } = parseFileLink(message.url);
+      // A link to another file, or one that doesn't name its file, would trace this file's art to the wrong one: say so,
+      // unless the person chose Use anyway.
+      if (!message.force && !linkNamesFile(slug, figma.root.name)) {
+        post({ type: 'file-mismatch', requestId: message.requestId, slug, name: figma.root.name });
+        break;
+      }
+      // A fill's Undo would take back the file link instead of the fill.
+      retireUndo();
+      const where = linkFile(fileKey);
+      // Saved in the document: an edit of its own, so a later plugin edit's undo step never takes it back.
+      if (where === 'document') commitOwnStep();
+      // This device's last link fills in the field for this file next time; the document holds the key itself.
+      try { await figma.clientStorage.setAsync(FILE_URL_KEY, message.url); savedFileUrl = message.url; } catch { /* not needed to send */ }
+      post({ type: 'file-saved', requestId: message.requestId, fileKey, session: where === 'session' });
       await reportSelection();
       break;
     }
     case 'export': {
-      if (exporting || importing) throw new Error('An export is already in progress.');
-      if (!connection) throw new Error('Connect to Assetlib first.');
+      if (main.exporting || main.importing || dropPending()) throw new Error('An export is already in progress.');
+      const config = main.connection;
+      if (!config) throw new Error('Connect to Assetlib first.');
       const node = selectedNode();
       const fileKey = currentFileKey();
       if (!node || node.id !== message.node.id || fileKey !== message.fileKey) throw new Error(SELECTION_CHANGED);
@@ -146,11 +126,11 @@ async function handleMessage(message: UiMessage): Promise<void> {
       const bind = validateBinding(placement, message.bind);
       const snapshot = describeNode(node);
       const settings = chooseExportSettings(snapshot, placement);
-      exporting = true;
+      main.exporting = true;
       let bytes: Uint8Array;
       try { bytes = await node.exportAsync(settings); }
       catch { throw new Error('Figma couldn’t export this layer. Try again, or flatten it first.'); }
-      finally { exporting = false; }
+      finally { main.exporting = false; }
       if (node.removed || node.width !== snapshot.width || node.height !== snapshot.height || node.name !== snapshot.name) {
         await reportSelection();
         throw new Error(SELECTION_CHANGED);
@@ -158,7 +138,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error(mapHttpError(413, null));
       exported.clear();
       exported.set(message.requestId, {
-        storageKey: targetKey(connection, fileKey, snapshot.id),
+        config, node, frame: { width: placement.width, height: placement.height },
         target: { fileKey, nodeId: snapshot.id, placementKey: bind.slotKey, state: bind.state, appearance: bind.appearance, arm: bind.arm },
       });
       post({ type: 'exported', requestId: message.requestId, node: snapshot, fileKey, settings, bytes });
@@ -167,9 +147,10 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'remember': {
       const pending = exported.get(message.requestId);
       if (!pending) throw new Error('The draft was sent, but its sync target is no longer available.');
-      try { await figma.clientStorage.setAsync(pending.storageKey, pending.target); }
+      try { await storeTarget(pending.config, pending.target); }
       catch { throw new Error('The draft was sent, but Figma couldn’t save its sync target on your device. Send again to remember it.'); }
       exported.delete(message.requestId);
+      linkSent(pending, message.assetId ?? null);
       post({ type: 'remembered', requestId: message.requestId });
       await reportSelection();
       break;
@@ -180,89 +161,55 @@ async function handleMessage(message: UiMessage): Promise<void> {
       try { await figma.clientStorage.setAsync(PREFERENCES_KEY, preferences); } catch { /* keep the in-memory value */ }
       break;
     }
-    case 'insert': {
-      if (importing || exporting) throw new Error('An image is already being inserted or exported.');
-      if (!connection || message.connectionGeneration !== connectionGeneration) throw new Error('The connection changed. Choose the image again.');
-      const { bytes, frame, scale } = message;
-      if (!isUint8Array(bytes) || bytes.byteLength === 0 || bytes.byteLength > MAX_INSERT_BYTES) throw new Error('The console returned an image Figma cannot use. Refresh and try again.');
-      const size = pngSize(bytes);
-      if (!size || size.width > MAX_INSERT_PIXELS || size.height > MAX_INSERT_PIXELS) throw new Error('The console returned an image Figma cannot use. Refresh and try again.');
-      if (![1, 2, 3].includes(scale) || !frame || typeof frame !== 'object' || !Number.isInteger(frame.width) || !Number.isInteger(frame.height)
-        || frame.width < 1 || frame.height < 1 || frame.width > MAX_INSERT_PIXELS || frame.height > MAX_INSERT_PIXELS) throw new Error('Choose a valid size.');
-      const link = message.link ? validateInsertLink(message.link) : null;
-      const name = sanitizeName(message.name);
-      importing = true;
-      try {
-        let image: Image;
-        try { image = figma.createImage(bytes); } catch { throw new Error('Figma could not read this image. Refresh and try again.'); }
-        const width = Math.round((frame.width / scale) * 100) / 100;
-        const height = Math.round((frame.height / scale) * 100) / 100;
-        // Not a rectangle: designers can add layers inside without changing the node id. A placement's art is a
-        // component, whose description Figma's MCP server passes to coding agents; any other image, or a placement
-        // key outside the catalog's grammar, is a frame.
-        const marker = link ? placementMarker(connection, link.placementKey, frame) : null;
-        const component = marker ? figma.createComponent() : null;
-        const node: ComponentNode | FrameNode = component ?? figma.createFrame();
-        node.name = name;
-        node.resize(width, height);
-        node.fills = [{ type: 'IMAGE', imageHash: image.hash, scaleMode: 'FILL' }];
-        node.clipsContent = true;
-        const center = figma.viewport.center;
-        node.x = Math.round(center.x - width / 2);
-        node.y = Math.round(center.y - height / 2);
-        if (component && marker) {
-          component.description = marker.description;
-          // The description is what agents need; a link Figma refuses must not cost the insert.
-          if (marker.documentationUrl) try { component.documentationLinks = [{ uri: marker.documentationUrl }]; } catch { /* description only */ }
-        }
-        if (link) {
-          const stored: StoredLink = { v: 1, origin: connection.origin, orgId: connection.orgId, appId: connection.appId,
-            ...link, nodeId: node.id, insertedAt: new Date().toISOString() };
-          node.setPluginData(LINK_KEY, JSON.stringify(stored));
-        }
-        // Select only after the link is written, so the selection report finds it.
-        figma.currentPage.selection = [node];
-        const bounds = figma.viewport.bounds;
-        if (node.x < bounds.x || node.y < bounds.y || node.x + width > bounds.x + bounds.width || node.y + height > bounds.y + bounds.height) {
-          figma.viewport.scrollAndZoomIntoView([node]);
-        }
-        figma.notify(toastText(link ? `Inserted ${name} from ${environmentLabel(link.environment)}` : `Inserted ${name}`));
-        post({ type: 'inserted', requestId: message.requestId, connectionGeneration, node: describeNode(node), linked: Boolean(link) });
-      } finally { importing = false; }
-      // selectionchange is asynchronous and coalesced; report the new selection now.
-      await reportSelection();
+    case 'insert':
+      await insert(message);
       break;
-    }
+    case 'discard-placeholder':
+      discardPlaceholder(message.nodeId);
+      break;
     case 'clear-connection': {
       // Disconnect: this device forgets the token. It keeps working elsewhere until an owner revokes it in the console.
+      const previous = main.connection;
       try { await figma.clientStorage.deleteAsync(CONNECTION_KEY); }
       catch { throw new Error(DEVICE_STORAGE); }
-      connection = null;
-      connectionGeneration += 1;
-      post({ type: 'connection', connectionGeneration, connection, savedFileUrl, preferences });
-      figma.notify(DISCONNECTED);
+      main.connection = null;
+      main.connectionGeneration += 1;
+      discardDrops();
+      postConnection();
+      // Only an owner can create another token, so the toast can put this one back while nothing else was saved.
+      figma.notify(DISCONNECTED, previous ? { timeout: 6000, button: { text: 'Undo', action: () => { void reconnect(previous); } } } : undefined);
       await reportSelection();
       break;
     }
     case 'notify': {
       const { button } = message;
       // Only a link into the connected app's console; any other button is dropped, and the toast still shows.
-      const action = button && isConsoleLink(button.url, connection) ? { text: toastText(button.text).slice(0, 24), action: () => { figma.openExternal(button.url); } } : null;
+      const action = button && isConsoleLink(button.url, main.connection) ? { text: toastText(button.text).slice(0, 24), action: () => { figma.openExternal(button.url); } } : null;
       figma.notify(toastText(message.text), action ? { button: action } : undefined);
       break;
     }
+    case 'resize': {
+      const { width, height } = clampWindow(message.width, message.height);
+      resizeWindow(width, height);
+      break;
+    }
+    case 'reset-size': {
+      const { width, height } = defaultWindow();
+      resizeWindow(width, height);
+      break;
+    }
     case 'match-ratio': {
-      if (exporting || importing) throw new Error('Wait for the current export or insert to finish, then match the ratio.');
+      if (main.exporting || main.importing || dropPending()) throw new Error('Wait for the current export or insert to finish, then match the ratio.');
       const node = selectedNode();
-      if (!node || node.id !== message.nodeId) throw new Error('The selection changed. Check it and try again.');
+      if (!node || node.id !== message.nodeId) throw new Error(SELECTION_MOVED);
       const placement = { width: message.width, height: message.height };
       if (![placement.width, placement.height].every(value => typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new Error('Choose a valid placement.');
       if (!('resize' in node) || node.width <= 0) throw new Error('Figma can’t resize this layer. Resize it on the canvas, then send.');
       const width = node.width;
       const height = matchedHeight(width, placement);
       const sizing = 'layoutSizingVertical' in node ? node.layoutSizingVertical : null;
-      // Earlier uncommitted plugin edits (an Insert, say) become their own undo step, so Cmd+Z undoes only the resize.
-      figma.commitUndo();
+      // A fill's Undo would now take back the resize instead.
+      retireUndo();
       try {
         // A hug or fill height would undo the resize; matching the ratio needs a fixed height.
         if ('layoutSizingVertical' in node && sizing !== 'FIXED') node.layoutSizingVertical = 'FIXED';
@@ -272,7 +219,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
         try { if ('layoutSizingVertical' in node && sizing && node.layoutSizingVertical !== sizing) node.layoutSizingVertical = sizing; } catch { /* already as it was, or gone */ }
         throw new Error('Figma couldn’t resize this layer. Resize it on the canvas, then send.');
       }
-      // One undo step for the resize.
+      // One undo step for the resize. Every other plugin edit commits its own, so nothing earlier joins it.
       figma.commitUndo();
       await reportSelection();
       break;
@@ -280,7 +227,41 @@ async function handleMessage(message: UiMessage): Promise<void> {
   }
 }
 
-figma.showUI(__html__, { width: 420, height: 720, themeColors: true });
+/** Disconnect's Undo: the connection comes back, unless another was saved meanwhile. */
+async function reconnect(previous: Connection): Promise<void> {
+  await initialized;
+  if (main.connection) return;
+  try { await figma.clientStorage.setAsync(CONNECTION_KEY, previous); }
+  catch { figma.notify(DEVICE_STORAGE); return; }
+  if (main.connection) return;
+  main.connection = previous;
+  main.connectionGeneration += 1;
+  postConnection();
+  await reportSelection();
+}
+
+/** The default window for the canvas as it is on screen now (its height in canvas units times the zoom). */
+function defaultWindow(): { width: number; height: number } {
+  let canvasHeight = Number.NaN;
+  try { canvasHeight = figma.viewport.bounds.height * figma.viewport.zoom; } catch { /* the default's own height */ }
+  return defaultWindowSize(canvasHeight);
+}
+function resizeWindow(width: number, height: number): void {
+  // A convenience only: a size Figma refuses leaves the window as it is.
+  try { figma.ui.resize(width, height); } catch { /* keep the current size */ }
+}
+
+// The window opens hidden, then shows at the size the person last dragged it to, or the default for this canvas, once
+// the preferences are read; the UI loads meanwhile.
+figma.showUI(__html__, { width: 420, height: 720, themeColors: true, visible: false });
+const showWindow = () => {
+  try {
+    const { width, height } = preferences.window ?? defaultWindow();
+    resizeWindow(width, height);
+  } finally { figma.ui.show(); }
+};
+// Shown whatever happens: a window left hidden would look as if the plugin never opened.
+void initialized.then(showWindow, showWindow);
 figma.ui.onmessage = (value: unknown) => {
   // Anything but an object (a null pluginMessage, say) is not for this handler.
   if (!value || typeof value !== 'object') return;
@@ -296,12 +277,23 @@ figma.ui.onmessage = (value: unknown) => {
     if (message.type === 'save-connection') void reportSelection();
   });
 };
-figma.on('selectionchange', () => { void initialized.then(reportSelection); });
+// A row or tile dragged out of the panel arrives as a drop; any other drop (a file from the desktop) is Figma's.
+// Figma's samples return nothing for a drop they leave alone; only false stops Figma's own handling.
+figma.on('drop', drop as (event: DropEvent) => boolean);
+// A placeholder whose image is still downloading would stay grey and named "· loading".
+figma.on('close', discardDrops);
+figma.on('selectionchange', () => {
+  // A fill's Undo is for the layers it filled, while they are what the person is looking at.
+  retireUndo();
+  void initialized.then(reportSelection);
+});
 
-// A resize or rename on the canvas fires no selectionchange, so the selected node's changes are watched on its page.
+// A resize or rename on the canvas fires no selectionchange, so the selected node's changes are watched on its page,
+// as are edits to the layers a fill's Undo would take back.
 let nodeChangeTimer: ReturnType<typeof setTimeout> | null = null;
 let watchedPage: PageNode | null = null;
 function onNodeChange(event: NodeChangeEvent): void {
+  retireUndoOnEdit(event);
   if (nodeChangeTimer !== null) return;
   const node = selectedNode();
   if (!node || !event.nodeChanges.some(change => change.type === 'PROPERTY_CHANGE' && change.id === node.id)) return;
@@ -317,4 +309,9 @@ function watchCurrentPage(): void {
   } catch { watchedPage = null; /* Sizes then refresh on the next selection change. */ }
 }
 watchCurrentPage();
-figma.on('currentpagechange', () => { watchCurrentPage(); void initialized.then(reportSelection); });
+figma.on('currentpagechange', () => {
+  // The filled layers are out of sight, and edits on the new page aren't watched for the toast.
+  retireUndo();
+  watchCurrentPage();
+  void initialized.then(reportSelection);
+});

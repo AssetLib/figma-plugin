@@ -5,13 +5,14 @@ import {
   MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
   apiUrl, artworkAsset, aspectMismatch, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
   cellOptions, chooseExportSettings, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
-  insertRendition, insertUnavailable, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
-  normalizeConsoleOrigin, parseArtwork, parseAssetPage, parseDraftResponse, parseFileKey, parsePlacements, parsePngDimensions,
+  insertRendition, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
+  normalizeConsoleOrigin, parseArtwork, parseAssetPage, parseDraftResponse, parsePlacements, parsePngDimensions,
   parsePreferences, parseStoredLink, placementMarker, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
   utf8Length, validArm, validateBinding, validateConnection, validateInsertLink,
   appUrl, assetsPath, renditionPath, mapTimeoutError, parseRetryAfter, requestTimeoutMs, retryDelayMs,
   OLDER_CONSOLE, TOKEN_REFUSED, TOKEN_SCOPE, appearanceLabel, checkTokenFormat, connectionLabel, consoleLink, isConsoleLink, parseTokenIdentity,
-  placementMeta, serverError, tokenUrl,
+  placementMeta, serverError, tokenUrl, classifyInsertTarget, fillRendition, insideInstance, isPlacementMarker,
+  linkInApp, linkNamesFile, parseFileIdentity, parseFileLink, slugify, syncDescription, WINDOW_LIMITS, clampWindow, defaultWindowSize,
 } from '../.test-build/shared/index.js';
 import { UNREADABLE_MESSAGE, messageRequestId, parseUiMessage, toastText } from '../.test-build/shared/protocol.js';
 
@@ -31,14 +32,14 @@ const result = {
 
 test('file URL fallback accepts both file and design links and excludes non-Figma URLs', () => {
   for (const route of ['file', 'design']) {
-    assert.equal(parseFileKey(`https://www.figma.com/${route}/Abc_123-xyz/Coast?node-id=12-34`), 'Abc_123-xyz');
-    assert.equal(parseFileKey(` https://figma.com/${route}/abc123 `), 'abc123');
+    assert.equal(parseFileLink(`https://www.figma.com/${route}/Abc_123-xyz/Coast?node-id=12-34`).fileKey, 'Abc_123-xyz');
+    assert.equal(parseFileLink(` https://figma.com/${route}/abc123 `).fileKey, 'abc123');
   }
   for (const url of ['abc123', 'http://figma.com/design/abc/title', 'https://figma.com.evil.test/file/abc/',
     'https://user:secret@figma.com/file/abc/', 'https://figma.com:444/file/abc/',
     'https://figma.com/proto/abc/', 'https://figma.com/file/a%2Fb/', 'https://figma.com/design//',
     `https://figma.com/file/${'x'.repeat(129)}/`]) {
-    assert.throws(() => parseFileKey(url), /^Error: That isn’t a link to a Figma design file\. In Figma, press Cmd\+L to copy this file’s link, then paste it here\.$/);
+    assert.throws(() => parseFileLink(url), /^Error: That isn’t a link to a Figma design file\. In Figma, press Cmd\+L to copy this file’s link, then paste it here\.$/);
   }
 });
 
@@ -233,8 +234,8 @@ test('the ratio gate blocks above two percent, and a matched height keeps the wi
   assert.equal(ratioLabel(banner), '2.44\u00a0:\u00a01', 'no-break spaces: it never wraps at the colon');
   assert.equal(ratioLabel({ width: 1000, height: 1000 }), '1\u00a0:\u00a01');
   assert.equal(ratioLabel({ width: 390, height: 844 }), '0.46\u00a0:\u00a01');
-  assert.equal(sizeLabel({ width: 390, height: 844 }), '390 × 844');
-  assert.equal(sizeLabel({ width: 333.3333, height: 120.5 }), '333.33 × 120.5');
+  assert.equal(sizeLabel({ width: 390, height: 844 }), '390\u00a0×\u00a0844', 'no-break spaces: a sentence never wraps inside a size');
+  assert.equal(sizeLabel({ width: 333.3333, height: 120.5 }), '333.33\u00a0×\u00a0120.5');
 });
 
 test('connection validation errors name their field', () => {
@@ -256,7 +257,7 @@ test('base64 is browser-portable and matches Node for all remainder lengths', ()
     assert.equal(decodedBase64Length(bytesToBase64(bytes)), length);
   }
   assert.throws(() => bytesToBase64(new Uint8Array()), /couldn’t export this layer/);
-  assert.throws(() => bytesToBase64(new Uint8Array(MAX_IMAGE_BYTES + 1)), /4 MiB/);
+  assert.throws(() => bytesToBase64(new Uint8Array(MAX_IMAGE_BYTES + 1)), /over 3\.3 MB as a PNG/);
   for (const bad of ['', 'abc', 'a===', '=abc', 'aa=a', 'ab==', 'aab=', 'AA==\n', 'data:image/png;base64,AA==', '____']) {
     // The plugin encodes the export itself, so a bad encoding is a failed export to the person.
     assert.throws(() => decodedBase64Length(bad), /^Error: Figma couldn’t export this layer\. Try again, or flatten it first\.$/);
@@ -293,13 +294,15 @@ test('decoded upload and UTF-8 JSON body limits are bounded independently', () =
   assert.equal(makeBody({ bytesBase64: fitting }).imageBase64.length, fitting.length);
   const maximumImage = Buffer.alloc(MAX_IMAGE_BYTES).toString('base64');
   assert.equal(decodedBase64Length(maximumImage), MAX_IMAGE_BYTES);
-  // Within the decoded bound, but its base64 JSON body is above Vercel's 4.5 MB request limit.
-  assert.throws(() => makeBody({ bytesBase64: maximumImage }), /4\.5 MB/);
-  assert.throws(() => makeBody({ bytesBase64: Buffer.alloc(MAX_IMAGE_BYTES + 1).toString('base64') }), /4 MiB/);
+  // Within the decoded bound, but its base64 JSON body is above Vercel's 4.5 MB request limit: every limit says the same
+  // thing, the PNG size that always fits.
+  assert.throws(() => makeBody({ bytesBase64: maximumImage }), /over 3\.3 MB as a PNG/);
+  assert.throws(() => makeBody({ bytesBase64: Buffer.alloc(MAX_IMAGE_BYTES + 1).toString('base64') }), /over 3\.3 MB as a PNG/);
+  assert.doesNotThrow(() => makeBody({ bytesBase64: Buffer.alloc(3_300_000).toString('base64') }), 'a PNG under 3.3 MB fits');
   assert.equal(utf8Length('abcéท🙂'), Buffer.byteLength('abcéท🙂'));
   assertDraftBodyLimit('a'.repeat(MAX_BODY_BYTES - 2));
-  assert.throws(() => assertDraftBodyLimit('a'.repeat(MAX_BODY_BYTES - 1)), /4\.5 MB/);
-  assert.throws(() => assertDraftBodyLimit('🙂'.repeat(MAX_BODY_BYTES / 4)), /4\.5 MB/);
+  assert.throws(() => assertDraftBodyLimit('a'.repeat(MAX_BODY_BYTES - 1)), /over 3\.3 MB as a PNG/);
+  assert.throws(() => assertDraftBodyLimit('🙂'.repeat(MAX_BODY_BYTES / 4)), /over 3\.3 MB as a PNG/);
 });
 
 test('successful draft results retain returned dimensions and remembered source details', () => {
@@ -329,7 +332,7 @@ test('errors explain token scopes, payload size, console conflicts, and the call
   assert.equal(TOKEN_REFUSED, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
   assert.equal(mapHttpError(403, null), TOKEN_SCOPE);
   assert.equal(TOKEN_SCOPE, 'This token can’t send drafts. Create a token with Draft permission.');
-  assert.equal(mapHttpError(413, null), 'This export is too large for Assetlib (over 4 MiB). Reduce its detail or size and try again.');
+  assert.equal(mapHttpError(413, null), 'This export is too large for Assetlib (over 3.3 MB as a PNG). Reduce its detail or size and try again.');
   assert.equal(mapHttpError(429, null), 'Assetlib is busy. Try again in a minute.');
   assert.match(mapHttpError(409, null), /couldn’t put this image in the chosen cell/);
   assert.equal(mapHttpError(409, { error: { message: 'Canvas does not match.' } }), 'Canvas does not match.');
@@ -341,7 +344,7 @@ test('errors explain token scopes, payload size, console conflicts, and the call
   assert.equal(mapNetworkError(PRODUCTION_ORIGIN), 'Can’t reach Assetlib. Check your internet connection.');
   assert.equal(mapNetworkError(DEVELOPMENT_ORIGIN), 'Can’t reach the console at localhost:3100. Check that it’s running.');
   // Developer-facing wording from before A.3 is gone from every message.
-  for (const text of [mapHttpError(401, null), mapHttpError(403, null), mapHttpError(500, null), mapNetworkError(PRODUCTION_ORIGIN), insertUnavailable(PRODUCTION_ORIGIN)]) {
+  for (const text of [mapHttpError(401, null), mapHttpError(403, null), mapHttpError(500, null), mapNetworkError(PRODUCTION_ORIGIN)]) {
     assert.doesNotMatch(text, /manifest|HTTP \d|Update the console|IHDR/, text);
   }
 });
@@ -518,8 +521,6 @@ test('insert errors explain the read scope and an older console, and send errors
   assert.equal(mapHttpError(401, null, 'insert'), mapHttpError(401, null));
   assert.equal(mapHttpError(429, null, 'insert'), mapHttpError(429, null));
   assert.equal(mapHttpError(400, { error: 'Invalid cursor.' }, 'insert'), 'Invalid cursor.');
-  assert.equal(insertUnavailable(DEVELOPMENT_ORIGIN), 'This console doesn’t support Insert yet, or localhost:3100 couldn’t be reached. Send still works.');
-  assert.equal(insertUnavailable(PRODUCTION_ORIGIN), 'This console doesn’t support Insert yet, or Assetlib couldn’t be reached. Send still works.');
 });
 
 test('default tab is insert', () => {
@@ -540,6 +541,22 @@ test('preferences fall back field by field to Insert, Placements, Draft, and 1×
     { ...defaultPreferences(), window: { width: 420, height: 640 }, hintSeen: true });
   for (const window of [{ width: 319, height: 640 }, { width: 420, height: 1001 }, { width: 420.5, height: 640 }, { width: '420', height: 640 }, [420, 640], null]) {
     assert.deepEqual(parsePreferences({ window, hintSeen: 'yes' }), defaultPreferences(), JSON.stringify(window));
+  }
+});
+
+test('the window opens at 420 by the canvas height less 64, within 480 to 720, and the grip sizes it within 320–900 × 480–1000', () => {
+  assert.deepEqual(WINDOW_LIMITS, { minWidth: 320, maxWidth: 900, minHeight: 480, maxHeight: 1000 });
+  // A 13-inch laptop's canvas (about 700 px on screen), a small one, a large one, and one that can't be read.
+  for (const [canvas, height] of [[700, 636], [783.6, 720], [784.4, 720], [500, 480], [544.4, 480], [544.6, 481], [1400, 720], [Number.NaN, 720], [Infinity, 720]]) {
+    assert.deepEqual(defaultWindowSize(canvas), { width: 420, height }, String(canvas));
+  }
+  for (const [width, height, expected] of [[100, 100, [320, 480]], [2000, 2000, [900, 1000]], [420.4, 720.5, [420, 721]], [899.6, 479.6, [900, 480]], [-5, 0, [320, 480]]]) {
+    assert.deepEqual(clampWindow(width, height), { width: expected[0], height: expected[1] }, `${width} × ${height}`);
+  }
+  // Every size the grip gives is one the preferences keep.
+  for (const [width, height] of [[100, 100], [2000, 2000], [640.4, 899.5]]) {
+    const window = clampWindow(width, height);
+    assert.deepEqual(parsePreferences({ window }).window, window);
   }
 });
 
@@ -605,13 +622,21 @@ test('main reads only well-formed messages from the UI', () => {
     { type: 'save-file-url', requestId: 2, url: 'https://www.figma.com/design/abc/x' },
     { type: 'export', requestId: 3, node, fileKey: 'abc', placement: {}, bind: {}, rebind: false },
     { type: 'remember', requestId: 4 },
+    { type: 'remember', requestId: 4, assetId: null },
+    { type: 'remember', requestId: 4, assetId: '00000000-0000-4000-8000-000000000001' },
+    { type: 'save-file-url', requestId: 2, url: 'https://www.figma.com/design/abc/x', force: true },
     // Main checks the bytes, frame, and scale itself, with messages of their own.
-    { type: 'insert', requestId: 5, connectionGeneration: 0, bytes: [1], name: 'x', frame: null, scale: 4, link: null },
+    { type: 'insert', requestId: 5, connectionGeneration: 0, bytes: [1], name: 'x', frame: null, scale: 4, link: null, target: { kind: 'new' } },
+    { type: 'insert', requestId: 5, connectionGeneration: 0, name: 'x', link: null, target: { kind: 'into', nodeId: '1:2' } },
+    { type: 'insert', requestId: 5, connectionGeneration: 0, name: 'x', link: null, target: { kind: 'fill', nodeIds: ['1:2', 'I1:3;4:5'] } },
     { type: 'save-preferences', preferences: null },
     { type: 'match-ratio', requestId: 6, nodeId: '1:2', width: 1, height: 1 },
     { type: 'clear-connection', requestId: 7 },
     { type: 'notify', text: 'Synced hero.artwork to draft' },
     { type: 'notify', text: 'Sent', button: { text: 'Review', url: 'https://console.assetlib.dev/w/o/a/releases' } },
+    // Main clamps the size itself.
+    { type: 'resize', width: 1, height: 99999.5 },
+    { type: 'reset-size' },
   ];
   for (const message of good) assert.equal(parseUiMessage(message), message, message.type);
   const bad = [
@@ -622,9 +647,15 @@ test('main reads only well-formed messages from the UI', () => {
     { type: 'save-file-url', requestId: 9 }, { type: 'export', requestId: 10, node, fileKey: 'abc', placement: {}, bind: {} },
     { type: 'export', requestId: 10, node: { ...node, width: '10' }, fileKey: 'abc', placement: {}, bind: {}, rebind: true },
     { type: 'remember' }, { type: 'insert', requestId: 11, connectionGeneration: '0', name: 'x', link: null },
-    { type: 'insert', requestId: 11, connectionGeneration: 0, name: 'x', link: 'cell' }, { type: 'save-preferences' },
+    { type: 'insert', requestId: 11, connectionGeneration: 0, name: 'x', link: 'cell', target: { kind: 'new' } }, { type: 'save-preferences' },
+    // Where the insert goes is required, and an into or a fill names its layers.
+    ...[undefined, null, 'new', { kind: 'replace' }, { kind: 'into' }, { kind: 'into', nodeId: 5 }, { kind: 'fill', nodeIds: [] }, { kind: 'fill', nodeIds: '1:2' },
+      { kind: 'fill', nodeIds: ['1:2', 3] }].map(target => ({ type: 'insert', requestId: 11, connectionGeneration: 0, name: 'x', link: null, target })),
     { type: 'match-ratio', requestId: 12, nodeId: 5, width: 1, height: 1 },
     { type: 'clear-connection' }, { type: 'notify' }, { type: 'notify', text: 'x', button: { text: 'Review' } }, { type: 'notify', text: 'x', button: 'Review' },
+    { type: 'remember', requestId: 4, assetId: 5 }, { type: 'save-file-url', requestId: 2, url: 'https://www.figma.com/design/abc/x', force: 'yes' },
+    { type: 'resize' }, { type: 'resize', width: 500 }, { type: 'resize', width: '500', height: 600 }, { type: 'resize', width: Number.NaN, height: 600 },
+    { type: 'resize', width: 500, height: -Infinity },
   ];
   for (const message of bad) assert.throws(() => parseUiMessage(message), { message: UNREADABLE_MESSAGE }, JSON.stringify(message));
   assert.equal(messageRequestId({ type: 'x', requestId: 7 }), 7);
@@ -707,4 +738,118 @@ test('placementMarker names the placement for coding agents and links the consol
   assert.ok(placementMarker(connection, 'H'.repeat(120), placement), 'a catalog-length key is fine');
   for (const size of [{ width: 1.5, height: 2 }, { width: 0, height: 2 }, { width: 2, height: Number.NaN }])
     assert.equal(placementMarker(connection, 'hero.art', size), null);
+});
+
+// ---- A.5: fill selection, insert into a container, replace ----
+test('fillRendition picks the smallest sufficient rendition', () => {
+  const png300 = item(11, 'image/png', 300, 225);
+  const webp600 = item(12, 'image/webp', 600, 450);
+  const png600 = item(13, 'image/png', 600, 450);
+  const png1200 = item(14, 'image/png', 1200, 900);
+  const svg = item(15, 'image/svg+xml', 900, 675);
+  const bigPng = item(16, 'image/png', 2048, 1536, MAX_INSERT_DOWNLOAD + 1);
+  const asset = { width: 2400, renditions: [png1200, webp600, png300, png600, svg, bigPng] };
+  // At least three times the layer's width: enough for a @3x screen, and no more.
+  assert.deepEqual(fillRendition(asset, 100), png300);
+  assert.deepEqual(fillRendition(asset, 101), png600, 'the next size up; PNG wins a tie with WebP');
+  assert.deepEqual(fillRendition({ ...asset, renditions: [png1200, webp600, png300] }, 150), webp600);
+  assert.deepEqual(fillRendition(asset, 400), png1200);
+  // Never more than the original: a layer wider than a third of it takes the largest the console has.
+  assert.deepEqual(fillRendition({ width: 600, renditions: [png300, png600, png1200] }, 1000), png600);
+  assert.deepEqual(fillRendition(asset, 2000), png1200, 'nothing wide enough: the largest Figma can take (insertRendition)');
+  assert.deepEqual(fillRendition(asset, 0), png300);
+  assert.deepEqual(fillRendition(asset, Number.NaN), png300);
+  assert.equal(fillRendition({ width: 900, renditions: [svg, bigPng] }, 100), null, 'SVG and over the cap are never chosen');
+  // A fill covers its layer: a layer proportionally taller than the 4:3 art draws it wider than the layer.
+  const tall = { ...asset, height: 1800 };
+  assert.deepEqual(fillRendition(tall, 100, 60), png300, 'wider than the art: the width decides');
+  assert.deepEqual(fillRendition(tall, 100, 100), png600, '100 px tall draws the art 133 px wide: 400 px');
+  assert.deepEqual(fillRendition(tall, 100, 1000), png1200, 'drawn 1333 px wide: the largest');
+  assert.deepEqual(fillRendition({ width: 600, height: 450, renditions: [png300, png600] }, 100, 1000), png600, 'still never more than the original');
+});
+
+test('classifyInsertTarget: replace a linked layer, insert into a container, fill shapes, else a new frame', () => {
+  const layer = (id, type, extra = {}) => ({ id, name: `Layer ${id}`, type, width: 100, height: 50, children: 0, linked: false, ...extra });
+  const only = node => classifyInsertTarget([node]);
+  assert.deepEqual(classifyInsertTarget([]), { mode: 'new', label: 'Insert', count: 0, nodeIds: [] });
+  assert.deepEqual(only(layer('1:1', 'COMPONENT', { linked: true, children: 2, width: 390 })),
+    { mode: 'replace', label: 'Replace image', count: 1, nodeIds: ['1:1'], name: 'Layer 1:1', containerWidth: 390, containerHeight: 50 }, 'a link wins, even with children');
+  assert.deepEqual(only(layer('2:1', 'FRAME', { children: 3, width: 375 })),
+    { mode: 'into', label: 'Insert into Layer 2:1', count: 1, nodeIds: ['2:1'], name: 'Layer 2:1', containerWidth: 375 });
+  // Placement art is a component, which Figma puts in no component, component set, or instance: main says so.
+  assert.deepEqual(only(layer('2:2', 'COMPONENT', { children: 1, inComponent: true })),
+    { mode: 'into', label: 'Insert into Layer 2:2', count: 1, nodeIds: ['2:2'], name: 'Layer 2:2', containerWidth: 100, insideComponent: true });
+  assert.equal(only(layer('2:5', 'FRAME', { children: 1, inComponent: true })).insideComponent, true, 'a frame inside a component');
+  // Figma gives an instance, or anything inside one, no new children.
+  assert.equal(only(layer('2:3', 'INSTANCE', { children: 2 })).mode, 'new');
+  assert.equal(only(layer('I2:4;5:6', 'FRAME', { children: 2 })).mode, 'new');
+  for (const type of ['RECTANGLE', 'ELLIPSE', 'POLYGON', 'STAR', 'VECTOR', 'BOOLEAN_OPERATION', 'FRAME', 'COMPONENT', 'INSTANCE']) {
+    assert.deepEqual(only(layer('3:1', type, { width: 120, inComponent: true })),
+      { mode: 'fill', label: 'Fill Layer 3:1', count: 1, nodeIds: ['3:1'], name: 'Layer 3:1', containerWidth: 120, containerHeight: 50 }, type);
+  }
+  for (const type of ['TEXT', 'LINE', 'GROUP', 'SECTION', 'SLICE', 'CONNECTOR']) assert.equal(only(layer('4:1', type)).mode, 'new', type);
+  assert.deepEqual(classifyInsertTarget([layer('5:1', 'TEXT'), layer('5:2', 'RECTANGLE', { width: 80, height: 300 }), layer('I5:3;1:1', 'ELLIPSE', { width: 240 }),
+    layer('5:4', 'GROUP', { children: 2 }), layer('5:5', 'FRAME', { children: 1 })]),
+  { mode: 'fill', label: 'Fill 2 layers', count: 2, nodeIds: ['5:2', 'I5:3;1:1'], containerWidth: 240, containerHeight: 300 },
+  'text, groups, and frames with children are skipped; the widest and the tallest filled layer size the download');
+  assert.equal(classifyInsertTarget([layer('6:1', 'TEXT'), layer('6:2', 'LINE')]).mode, 'new');
+  // A sent text, group, or line carries a link too, but takes no image: Insert makes a new frame beside it.
+  for (const type of ['TEXT', 'GROUP', 'LINE', 'SECTION']) assert.equal(only(layer('6:3', type, { linked: true })).mode, 'new', `a linked ${type}`);
+  assert.equal(only(layer('6:4', 'FRAME', { linked: true, children: 3 })).mode, 'replace', 'a linked frame with layers inside still swaps its image');
+  assert.equal(classifyInsertTarget([layer('7:1', 'RECTANGLE', { linked: true }), layer('7:2', 'RECTANGLE')]).label, 'Fill 2 layers', 'several layers are filled, linked or not');
+  assert.equal(only(layer('8:1', 'FRAME', { name: '  ', children: 1 })).label, 'Insert into this layer');
+  assert.equal(insideInstance('I1:2;3:4'), true);
+  assert.equal(insideInstance('1:2'), false);
+});
+
+test('a component description is rewritten only when the placement marker wrote it', () => {
+  const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token: 'alk_x' };
+  assert.equal(isPlacementMarker(placementMarker(connection, 'hero.art', { width: 10, height: 10 }).description), true);
+  for (const text of ['', 'Our hero image', 'assetlib placement hero', ' Assetlib placement hero']) assert.equal(isPlacementMarker(text), false, text);
+});
+
+// ---- A.7: file links and identity, links between apps, and the relaunch description ----
+test('a file link names its key and file; a file name and a slug compare however Figma spells them', () => {
+  assert.deepEqual(parseFileLink('https://www.figma.com/design/Abc_123-xyz/Roam-onboarding?node-id=12-34&t=x'), { fileKey: 'Abc_123-xyz', slug: 'Roam-onboarding' });
+  assert.deepEqual(parseFileLink('https://figma.com/file/abc123'), { fileKey: 'abc123', slug: '' });
+  assert.deepEqual(parseFileLink('https://figma.com/design/abc123/Caf%C3%A9-menu/extra#frag'), { fileKey: 'abc123', slug: 'Café-menu' });
+  assert.deepEqual(parseFileLink('https://figma.com/design/abc123/100%-done'), { fileKey: 'abc123', slug: '100%-done' }, 'a malformed escape is compared as written');
+  // A branch's link names the branch, a file of its own, and the slug after it.
+  assert.deepEqual(parseFileLink('https://www.figma.com/design/Main123/branch/Branch456/Roam-onboarding?node-id=1-2'), { fileKey: 'Branch456', slug: 'Roam-onboarding' });
+  assert.deepEqual(parseFileLink('https://www.figma.com/file/Main123/branch/Branch456'), { fileKey: 'Branch456', slug: '' });
+  assert.throws(() => parseFileLink('https://www.figma.com/design/Main123/branch/bad%2Fkey/Roam'), /isn’t a link to a Figma design file/);
+  assert.equal(slugify('  Roam — onboarding (v2)  '), 'roam-onboarding-v2');
+  // Letters of every script stay, so a name without Latin letters compares too.
+  assert.equal(slugify('设计稿'), '设计稿');
+  assert.equal(slugify('Café   menu!'), 'café-menu');
+  assert.equal(slugify(' — · — '), '');
+  assert.equal(linkNamesFile(parseFileLink('https://www.figma.com/design/k1/Roam-%E2%80%94-onboarding--v2-').slug, 'Roam — onboarding (v2)'), true);
+  assert.equal(linkNamesFile(parseFileLink('https://www.figma.com/design/k1/%E8%AE%BE%E8%AE%A1%E7%A8%BF').slug, '设计稿'), true);
+  assert.equal(linkNamesFile('Roam-onboarding', 'Roam onboarding (Copy)'), false, 'a duplicate’s name differs');
+  assert.equal(linkNamesFile('Coast-house', 'Roam onboarding'), false);
+  assert.equal(linkNamesFile('Coast-house', '设计稿'), false);
+  // What can't be compared isn't a match: the person confirms it with Use anyway.
+  assert.equal(linkNamesFile('', 'Roam onboarding'), false, 'a link without a name');
+  assert.equal(linkNamesFile('Roam', ' — '), false, 'a name of punctuation alone');
+});
+
+test('the document identity reads only a well-formed record', () => {
+  const identity = { v: 1, fileKey: 'abc123', source: 'figma', savedAt: '2026-10-11T00:00:00.000Z', name: 'Roam onboarding' };
+  assert.deepEqual(parseFileIdentity(JSON.stringify(identity)), identity);
+  assert.deepEqual(parseFileIdentity(JSON.stringify({ ...identity, name: undefined })), { ...identity, name: '' });
+  for (const bad of ['', '{', 'null', JSON.stringify({ ...identity, v: 2 }), JSON.stringify({ ...identity, fileKey: 'a/b' }), JSON.stringify({ ...identity, source: 'guess' }),
+    JSON.stringify({ ...identity, savedAt: 5 })]) assert.equal(parseFileIdentity(bad), null, bad);
+});
+
+test('a link is in the connected app on the legacy host too, and its relaunch description fits Figma’s 1000 characters', () => {
+  const link = parseStoredLink(JSON.stringify({ v: 1, origin: LEGACY_PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', placementKey: 'home.banner', state: null,
+    appearance: null, arm: null, environment: 'production', assetId: '00000000-0000-4000-8000-000000000001', nodeId: '1:2', insertedAt: '2026-10-11T00:00:00.000Z' }));
+  assert.equal(linkInApp(link, { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app' }), true);
+  assert.equal(linkInApp(link, { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'other' }), false);
+  assert.equal(linkMatches(link, { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app' }, '1:3'), false, 'a copy is in the app, but not matched');
+  assert.equal(syncDescription(link), 'home.banner, from Production. Sync sends edits to its draft.');
+  assert.equal(syncDescription({ placementKey: 'onboarding.hero', state: 'welcome', appearance: 'dark', arm: 'b', environment: 'staging' }),
+    'onboarding.hero · welcome · Dark · b, from Staging. Sync sends edits to its draft.');
+  const longest = syncDescription({ placementKey: `k${'x'.repeat(119)}`, state: `s${'x'.repeat(39)}`, appearance: 'light', arm: `a${'x'.repeat(19)}`, environment: 'production' });
+  assert.ok(longest.length <= 1000, String(longest.length));
 });

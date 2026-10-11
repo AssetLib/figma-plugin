@@ -5,5 +5,5 @@
     "types": ["@figma/plugin-typings"],
     "noEmit": true
   },
-  "include": ["src/code.ts", "src/shared/**/*.ts"]
+  "include": ["src/code.ts", "src/main/**/*.ts", "src/shared/**/*.ts"]
 }

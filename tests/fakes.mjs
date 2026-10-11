@@ -54,19 +54,22 @@ const selects = ['placement', 'state', 'appearance', 'arm', 'insert-state', 'ins
 // Tags of ui.html elements the UI tells apart: text fields and selects (focus there is never taken), and the settings.
 const staticTags = {
   input: ['org-id', 'app-id', 'token', 'file-url', 'insert-search'], select: [...selects, 'origin'],
-  details: ['settings'], summary: ['settings-summary'], form: ['connection-form', 'file-form'], a: ['open-console', 'first-run-console', 'insert-empty-link', 'insert-note-link'],
+  details: ['settings'], summary: ['settings-summary'], form: ['connection-form', 'file-form'],
+  a: ['open-console', 'first-run-console', 'insert-empty-link', 'insert-note-link', 'sync-console'],
 };
 // Where ui.html nests the connection settings (the account panel), so settings.contains() sees its controls.
 const staticParents = {
   'settings-summary': 'settings', 'connection-label': 'settings-summary', 'account-name': 'settings-summary', 'connection-form': 'settings',
   origin: 'connection-form', 'id-fields': 'connection-form', 'org-id': 'id-fields', 'app-id': 'id-fields', token: 'connection-form',
   'connection-error': 'connection-form', connect: 'connection-form', account: 'settings', 'account-title': 'account', 'token-prefix': 'account',
-  'open-console': 'account', disconnect: 'account', 'first-run': 'settings', 'first-run-console': 'first-run',
+  'open-console': 'account', 'update-token': 'account', disconnect: 'account', 'first-run': 'settings', 'first-run-console': 'first-run',
+  // The file link form, so a check for focus inside it sees its field and buttons.
+  'file-form': 'file-fallback', 'file-url': 'file-form', 'file-mismatch-box': 'file-fallback', 'file-anyway': 'file-mismatch-box',
 };
-export const controls = ['origin', 'org-id', 'app-id', 'token', 'connect', 'disconnect', 'placement', 'state', 'appearance', 'arm', 'send', 'sync', 'match-ratio',
+export const controls = ['origin', 'org-id', 'app-id', 'token', 'connect', 'update-token', 'disconnect', 'placement', 'state', 'appearance', 'arm', 'send', 'sync', 'match-ratio',
   'file-url', 'tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'search-clear', 'scale-1', 'scale-2', 'scale-3', 'env-draft',
   'env-staging', 'env-production', 'insert-refresh', 'images-more', 'insert-clear', 'insert-retry', 'insert-token', 'insert-go-send', 'insert-state',
-  'insert-appearance', 'insert-arm', 'insert'];
+  'insert-appearance', 'insert-arm', 'insert', 'insert-new', 'hint-close', 'sync-match', 'sync-send', 'file-anyway', 'file-change'];
 
 export class Element {
   constructor(id = '', tag = '') {
@@ -92,16 +95,24 @@ export class Element {
     return false;
   }
   addEventListener(type, callback) { this.listeners.set(type, callback); }
-  dispatch(type) { this.listeners.get(type)?.({ preventDefault() {} }); }
+  /** Calls this element's listener for `type` with an event targeting it (or `init.target`); returns the event. */
+  dispatch(type, init = {}) {
+    const event = { type, target: this, defaultPrevented: false, preventDefault() { event.defaultPrevented = true; }, ...init };
+    this.listeners.get(type)?.(event);
+    return event;
+  }
+  click() { this.dispatch('click'); }
+  select() { this.selectedText = this.value; }
   replaceChildren(...children) {
     for (const child of this.children) if (child.parentElement === this) child.parentElement = null;
     for (const child of children) child.parentElement = this;
     this.children = children;
     if (selects.includes(this.id)) this.value = children[0]?.value ?? '';
   }
-  // Appending moves a child, as in the DOM, so tests can see where the UI placed it.
+  // Appending moves a child, as in the DOM, so tests can see where the UI placed it. A string is text, added to textContent.
   append(...children) {
     for (const child of children) {
+      if (typeof child !== 'object') { this.textContent += child; continue; }
       if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(item => item !== child);
       child.parentElement = this;
     }
@@ -115,10 +126,20 @@ export class Element {
   getBoundingClientRect() { return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }; }
   // The harness sets focusState, so document.activeElement follows focus() as in the DOM.
   focus() { if (this.focusState) this.focusState.active = this; }
+  // Pointer capture, as the resize grip uses it.
+  setPointerCapture(pointerId) { this.capture = pointerId; }
+  hasPointerCapture(pointerId) { return this.capture === pointerId; }
+  releasePointerCapture(pointerId) { if (this.capture === pointerId) this.capture = undefined; }
 }
 
 export class Option {
   constructor(text, value) { this.textContent = text; this.value = value; }
+}
+
+/** A DataTransfer for a dragstart: records the data, the allowed effect, and the drag image. */
+export function dataTransfer() {
+  return { effectAllowed: 'uninitialized', data: {}, image: null,
+    setData(type, value) { this.data[type] = value; }, setDragImage(image, x, y) { this.image = { image, x, y }; } };
 }
 
 export function descendants(root) {
@@ -246,8 +267,8 @@ function abortError() { return Object.assign(new Error('The operation was aborte
  */
 export function createHarness({
   mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', selection = [], exportBytes = () => new Uint8Array(0),
-  createImageBitmap, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 } },
-  command = '', manualFrames = false,
+  createImageBitmap, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, zoom: 1 },
+  command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false,
 }) {
   const elements = new Map();
   const element = id => {
@@ -287,7 +308,11 @@ export function createHarness({
   const undoTriggers = [];
   const externalUrls = [];
   const uiResizes = [];
+  // showUI's options, and when the window showed: each entry counts the ui.resize calls made before it.
+  const uiShown = { options: null, shows: [] };
   const relaunches = [];
+  // What the UI posted as pluginDrop, which Figma turns into a drop event (dropOnCanvas), not a plugin message.
+  const pluginDrops = [];
   const focusState = { active: null };
   // Identities GET /api/token answers for tokens saveConnection typed, as the console knows its own tokens.
   const identities = new Map();
@@ -299,37 +324,71 @@ export function createHarness({
   let connectionWrite = null;
   let exportGate = null;
   let timerId = 0;
+  // The UI's window: its size follows figma.ui.resize, and its resize listener runs when it changes.
+  const windowListeners = new Map();
   const window = {
+    innerWidth: 420, innerHeight: 720,
     setTimeout(callback, delay) { timerId += 1; timers.set(timerId, { callback, delay }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
+    addEventListener(type, callback) { windowListeners.set(type, callback); },
   };
-  const parent = { postMessage({ pluginMessage }) {
+  const parent = { postMessage({ pluginMessage, pluginDrop }) {
+    if (pluginDrop) { pluginDrops.push(clone(pluginDrop)); return; }
     const message = clone(pluginMessage);
     uiMessages.push(message);
     figma.ui.onmessage(message);
   } };
   const deliver = message => window.onmessage({ source: parent, data: { pluginMessage: clone(message) } });
-  const makeNode = ({ pluginData = {}, ...spec }) => {
+  // A node from a plain spec. `children` (specs) become child nodes; x and y are relative to a parent frame, as in Figma,
+  // and absoluteBoundingBox adds the parents'. Like Figma, a layer inside an instance (an id with ";") refuses plugin
+  // data, an instance or a layer inside one refuses children, and a component refuses to go inside a component, a
+  // component set, or an instance, or any layer inside one; `refusePluginData` and `refuseChildren` make any other node
+  // refuse them too.
+  const makeNode = ({ pluginData = {}, children, ...spec }, parent = null) => {
     const data = new Map(Object.entries(pluginData));
-    return {
+    const item = {
       removed: false,
+      parent,
       resize(width, height) { resizes.push({ id: this.id, width, height, layoutSizingVertical: this.layoutSizingVertical }); this.width = width; this.height = height; },
       ...spec,
+      get absoluteBoundingBox() {
+        const base = this.parent && this.parent.type !== 'PAGE' ? this.parent.absoluteBoundingBox : { x: 0, y: 0 };
+        return { x: base.x + (this.x ?? 0), y: base.y + (this.y ?? 0), width: this.width, height: this.height };
+      },
       async exportAsync(settings) {
         exports.push(clone(settings));
         if (exportGate) await exportGate.promise;
         return exportBytes(this, settings);
       },
       getPluginData(key) { return data.get(key) ?? ''; },
-      setPluginData(key, value) { data.set(key, String(value)); },
+      setPluginData(key, value) {
+        if (this.refusePluginData || String(this.id).includes(';')) throw new Error('Cannot set plugin data on a node inside an instance');
+        data.set(key, String(value));
+      },
       setRelaunchData(value) { relaunches.push({ id: this.id, data: clone(value) }); this.relaunchData = clone(value); },
       getRelaunchData() { return clone(this.relaunchData ?? {}); },
+      appendChild(child) {
+        if (this.refuseChildren || this.type === 'INSTANCE' || String(this.id).includes(';')) throw new Error('Cannot move node. New parent is an instance or is inside of an instance');
+        for (let item = child.type === 'COMPONENT' ? this : null; item && item.type !== 'PAGE'; item = item.parent) {
+          if (['COMPONENT', 'COMPONENT_SET', 'INSTANCE'].includes(item.type)) throw new Error('Cannot move node. A component can’t be inside a component, a component set, or an instance');
+        }
+        if (child.parent?.children) child.parent.children = child.parent.children.filter(other => other !== child);
+        child.parent = this;
+        (this.children ??= []).push(child);
+      },
+      remove() {
+        this.removed = true;
+        if (this.parent?.children) this.parent.children = this.parent.children.filter(other => other !== this);
+        this.parent = null;
+      },
     };
+    if (children) item.children = children.map(child => makeNode(child, item));
+    return item;
   };
   // A page with nodechange listeners, as PageNode.on and off. Its children are the given nodes plus created frames.
   const makePage = nodes => {
     const listeners = new Set();
-    return { type: 'PAGE', selection: nodes, children: [...nodes], listeners, on(type, callback) { if (type === 'nodechange') listeners.add(callback); },
+    const page = { type: 'PAGE', selection: nodes, children: [...nodes], listeners, on(type, callback) { if (type === 'nodechange') listeners.add(callback); },
       off(type, callback) { if (type === 'nodechange') listeners.delete(callback); },
       // As PageNode.findAllWithCriteria: by types, and by plugin data keys that are set.
       findAllWithCriteria({ types, pluginData } = {}) {
@@ -339,11 +398,15 @@ export function createHarness({
         return found.filter(item => (!types || types.includes(item.type))
           && (!pluginData?.keys || pluginData.keys.some(key => item.getPluginData?.(key))));
       } };
+    for (const item of nodes) if (!item.parent) item.parent = page;
+    return page;
   };
-  const rootData = new Map();
+  // The document root's plugin data; `readOnlyRoot` refuses writes to it, as a file the person can only view would.
+  const rootData = new Map(Object.entries(rootPluginData));
   // Frames and components the plugin creates, in order, in `frames` and on the current page.
   const insertable = (type, extra) => {
-    const node = makeNode({ id: `${200 + frames.length}:7`, name: type === 'FRAME' ? 'Frame' : 'Component', type, width: 100, height: 100, x: 0, y: 0, fills: [], clipsContent: false, ...extra });
+    const node = makeNode({ id: `${200 + frames.length}:7`, name: type === 'FRAME' ? 'Frame' : 'Component', type, width: 100, height: 100, x: 0, y: 0, fills: [], clipsContent: false, ...extra },
+      figma.currentPage);
     node.resize = function resize(width, height) { this.width = width; this.height = height; };
     frames.push(node);
     figma.currentPage.children.push(node);
@@ -352,15 +415,18 @@ export function createHarness({
   const figma = {
     fileKey,
     command,
-    currentPage: makePage(selection.map(makeNode)),
+    currentPage: makePage(selection.map(spec => makeNode(spec))),
     root: {
-      type: 'DOCUMENT', name: 'Untitled',
+      type: 'DOCUMENT', name: rootName,
       getPluginData(key) { return rootData.get(key) ?? ''; },
-      setPluginData(key, value) { rootData.set(key, String(value)); },
-      setRelaunchData(value) { relaunches.push({ id: '0:0', data: clone(value) }); this.relaunchData = clone(value); },
+      setPluginData(key, value) { if (readOnlyRoot) throw new Error('Cannot write to a read-only document'); rootData.set(key, String(value)); },
+      setRelaunchData(value) {
+        if (readOnlyRoot) throw new Error('Cannot write to a read-only document');
+        relaunches.push({ id: '0:0', data: clone(value) }); this.relaunchData = clone(value);
+      },
       getRelaunchData() { return clone(this.relaunchData ?? {}); },
     },
-    viewport: { center: { ...viewport.center }, bounds: { ...viewport.bounds }, scrollAndZoomIntoView(nodes) { scrolls.push([...nodes].map(item => item.id)); } },
+    viewport: { center: { ...viewport.center }, bounds: { ...viewport.bounds }, zoom: viewport.zoom ?? 1, scrollAndZoomIntoView(nodes) { scrolls.push([...nodes].map(item => item.id)); } },
     clientStorage: {
       async getAsync(key) {
         if (delayTargets && key.startsWith('assetlib.target.v1:')) {
@@ -390,13 +456,33 @@ export function createHarness({
     createFrame() { return insertable('FRAME', {}); },
     createComponent() { return insertable('COMPONENT', { description: '', documentationLinks: [] }); },
     // notices keeps the text of each toast; notifications keeps its options (a button, a timeout) too.
-    notify(message, options) { notices.push(message); notifications.push({ message, options }); return { cancel() {} }; },
+    // A toast's handler records when the plugin cancels it.
+    notify(message, options) {
+      const entry = { message, options, cancelled: false };
+      notices.push(message);
+      notifications.push(entry);
+      return { cancel() { entry.cancelled = true; } };
+    },
     commitUndo() { undoCommits.push(resizes.length); },
     triggerUndo() { undoTriggers.push(undoCommits.length); },
     openExternal(url) { externalUrls.push(url); },
-    showUI() {},
+    showUI(html, options) {
+      uiShown.options = clone(options);
+      if (options?.visible !== false) uiShown.shows.push(uiResizes.length);
+      window.innerWidth = options?.width ?? 100;
+      window.innerHeight = options?.height ?? 100;
+    },
     on(type, callback) { events.set(type, callback); },
-    ui: { postMessage(message) { mainMessages.push(clone(message)); deliver(message); }, resize(width, height) { uiResizes.push({ width, height }); } },
+    ui: {
+      postMessage(message) { mainMessages.push(clone(message)); deliver(message); },
+      resize(width, height) {
+        uiResizes.push({ width, height });
+        window.innerWidth = width;
+        window.innerHeight = height;
+        windowListeners.get('resize')?.({ type: 'resize' });
+      },
+      show() { uiShown.shows.push(uiResizes.length); },
+    },
   };
   // Main and the UI share the fake timers; fireTimers(delay) runs either side's.
   vm.runInNewContext(mainSource, { figma, __html__: '', setTimeout: window.setTimeout, clearTimeout: window.clearTimeout }, { filename: 'code.bundle.js' });
@@ -409,7 +495,10 @@ export function createHarness({
     canvases.push(item);
     return item;
   }
-  const document = { getElementById: element, querySelectorAll: () => controls.map(element), createElement, get activeElement() { return focusState.active; } };
+  // Document listeners (the search shortcut's keydown); keydown() calls them as a key press that reached the document.
+  const documentListeners = new Map();
+  const document = { getElementById: element, querySelectorAll: () => controls.map(element), createElement, get activeElement() { return focusState.active; },
+    addEventListener(type, callback) { documentListeners.set(type, callback); } };
   // Animation frames: queued callbacks run together, as one browser frame; a frame asked for during one runs after it.
   const animationFrames = [];
   let frameDepth = 0;
@@ -429,7 +518,7 @@ export function createHarness({
     if (index >= 0) animationFrames.splice(index, 1);
   };
   vm.runInNewContext(uiSource, {
-    parent, window, AbortController, Blob, Option, IntersectionObserver: intersections.IntersectionObserver, document,
+    parent, window, AbortController, Blob, Option, IntersectionObserver: intersections.IntersectionObserver, document, navigator: { platform: 'MacIntel' },
     requestAnimationFrame, cancelAnimationFrame,
     ...(createImageBitmap ? { createImageBitmap } : {}),
     async fetch(url, options = {}) {
@@ -451,18 +540,39 @@ export function createHarness({
   }, { filename: 'ui.bundle.js' });
   return {
     figma, document, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers,
-    canvases, resizes, undoCommits, notifications, undoTriggers, externalUrls, uiResizes, relaunches,
+    canvases, resizes, undoCommits, notifications, undoTriggers, externalUrls, uiResizes, uiShown, relaunches, pluginDrops, window,
     observers: intersections.observers, setVisible: intersections.setVisible,
     activeElement: () => focusState.active,
     /** Runs the animation frames the UI asked for (with `manualFrames`); returns how many ran. */
     runFrames() { const count = animationFrames.length; runFrames(); return count; },
     pendingFrames: () => animationFrames.length,
+    /**
+     * A key press on the focused element, as the DOM delivers it: to `listener` (the element whose keydown listener
+     * handles it, such as the list for a row), then, unless that prevented it, to the document. Returns the event.
+     */
+    keydown(init, listener = focusState.active) {
+      const event = listener ? listener.dispatch('keydown', { target: focusState.active, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...init })
+        : { target: null, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, defaultPrevented: false, preventDefault() { event.defaultPrevented = true; }, ...init };
+      if (!event.defaultPrevented) documentListeners.get('keydown')?.(event);
+      return event;
+    },
     /** Calls the plugin's drop handler, as Figma does for a drop on the canvas, and returns its result. */
     drop(event) { return events.get('drop')?.(event); },
+    /**
+     * Figma's drop event for the UI's last pluginDrop, landing on `node` (the page unless given; Figma names the frame,
+     * group, or section under the pointer) at the page point (absoluteX, absoluteY). Returns the handler's result.
+     */
+    dropOnCanvas({ node = figma.currentPage, absoluteX = 0, absoluteY = 0 } = {}) {
+      const { files, dropMetadata } = pluginDrops.at(-1);
+      const origin = node.type === 'PAGE' ? { x: 0, y: 0 } : node.absoluteBoundingBox;
+      return events.get('drop')?.({ node, x: absoluteX - origin.x, y: absoluteY - origin.y, absoluteX, absoluteY, items: [], files, dropMetadata });
+    },
+    /** Figma closing the plugin. */
+    close() { events.get('close')?.(); },
     /** Fires the current page's nodechange listeners. */
     nodeChange(nodeChanges) { for (const listener of [...figma.currentPage.listeners]) listener({ nodeChanges }); },
     /** Switches to a new page holding `nodes` (plain specs), as Figma's currentpagechange. */
-    changePage(nodes = []) { figma.currentPage = makePage(nodes.map(makeNode)); events.get('currentpagechange')(); return figma.currentPage; },
+    changePage(nodes = []) { figma.currentPage = makePage(nodes.map(spec => makeNode(spec))); events.get('currentpagechange')(); return figma.currentPage; },
     drafts: () => requests.filter(request => request.method === 'POST'),
     exportMessages: () => uiMessages.filter(message => message.type === 'export'),
     insertMessages: () => uiMessages.filter(message => message.type === 'insert'),

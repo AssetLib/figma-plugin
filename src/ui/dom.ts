@@ -1,4 +1,4 @@
-import type { UiMessage } from '../shared/protocol.js';
+import type { DropMetadata, UiMessage } from '../shared/protocol.js';
 
 export function element<T extends HTMLElement = HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -7,8 +7,19 @@ export function element<T extends HTMLElement = HTMLElement>(id: string): T {
 }
 
 export function post(message: UiMessage): void { parent.postMessage({ pluginMessage: message }, '*'); }
+/** The modifier of Figma's shortcuts here: Cmd on Apple platforms, Ctrl elsewhere (where Ctrl+F moves the caret on a Mac). */
+export const COMMAND = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+/**
+ * A row or tile dropped outside the plugin window: Figma turns `pluginDrop` into a drop event for main at that point on
+ * the canvas (the coordinates are the drag's, relative to this window), carrying `dropMetadata`.
+ */
+export function postDrop(drop: { clientX: number; clientY: number; files: File[]; dropMetadata: DropMetadata }): void {
+  parent.postMessage({ pluginDrop: drop }, '*');
+}
 /** The status live region (visually hidden): progress, results, and every toast's words. */
 export function setStatus(text: string): void { element('status').textContent = text; }
+/** The text as a sentence: trimmed, and ending in a full stop unless it ends in other punctuation. */
+export const sentence = (text: string): string => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
 /** The alert live region (visually hidden): every error, wherever it is shown, is announced here once. */
 export function announceError(text: string): void { element('alert').textContent = text; }
 /** A Figma toast for a finished operation, mirrored in the status region. */
@@ -41,7 +52,9 @@ export function inField(item: Element | null): boolean {
  * that arrives while the person works in a field (a token, a file link, a search) never takes focus from it or scrolls
  * it out of view; the alert region announces it either way. `action` adds the one button that helps.
  */
-export function showError(message: string, action?: ErrorAction): void {
+export function showError(text: string, action?: ErrorAction): void {
+  // Main's words name Figma's shortcuts as on a Mac.
+  const message = text.replace(/\bCmd\+/g, `${COMMAND}+`);
   const error = element('error');
   const button = element('error-action');
   error.textContent = message;
@@ -70,6 +83,42 @@ export function errorText(error: unknown): string { return error instanceof Erro
 export function setUnavailable(control: HTMLElement, unavailable: boolean): void {
   if (unavailable) control.setAttribute('aria-disabled', 'true');
   else control.removeAttribute('aria-disabled');
+}
+/**
+ * The action this button runs is running: it says so in its label ("Inserting…"), and `aria-busy` draws a spinner and
+ * keeps the ink (ui.html), so a running action never looks like an unavailable one.
+ */
+export function setBusy(button: HTMLElement, label: string, busy: boolean): void {
+  if (button.textContent !== label) button.textContent = label;
+  if (busy) button.setAttribute('aria-busy', 'true');
+  else button.removeAttribute('aria-busy');
+}
+
+// ---- Keyboard ----
+/**
+ * The WAI-ARIA arrow keys of a tab list or a radio group: ← and → (in a radio group ↑ and ↓ too; in a tab list Home and
+ * End) move to the next enabled item, wrapping, and choose it, as a click would. `rovingStops` keeps one tab stop.
+ */
+export function arrowKeys(container: HTMLElement, items: readonly HTMLButtonElement[], kind: 'tabs' | 'radios'): void {
+  const steps: Record<string, number> = kind === 'tabs' ? { ArrowLeft: -1, ArrowRight: 1 } : { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1 };
+  container.addEventListener('keydown', event => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const enabled = items.filter(item => !item.disabled && !item.hidden);
+    const index = enabled.indexOf(event.target as HTMLButtonElement);
+    const step = steps[event.key];
+    const next = index < 0 ? undefined : step ? enabled[(index + step + enabled.length) % enabled.length]
+      : kind === 'tabs' && event.key === 'Home' ? enabled[0] : kind === 'tabs' && event.key === 'End' ? enabled[enabled.length - 1] : undefined;
+    if (!next) return;
+    event.preventDefault();
+    next.focus();
+    next.click();
+  });
+}
+/** One tab stop per tab list or radio group: the chosen item (aria-selected or aria-checked), else the first enabled one. */
+export function rovingStops(items: readonly HTMLButtonElement[]): void {
+  const chosen = (item: HTMLButtonElement) => item.getAttribute('aria-checked') === 'true' || item.getAttribute('aria-selected') === 'true';
+  const stop = items.find(item => chosen(item) && !item.disabled) ?? items.find(item => !item.disabled);
+  for (const item of items) item.setAttribute('tabindex', item === stop ? '0' : '-1');
 }
 
 // ---- Rendering ----
@@ -107,7 +156,8 @@ export function flushRender(): void {
 
 export function preferFocus(key: string): void { preferredKey = key; }
 
-function keyOf(item: Element | null): string | null {
+/** A row's placement key or a tile's asset id. */
+export function keyOf(item: Element | null): string | null {
   return item?.getAttribute('data-key') ?? item?.getAttribute('data-asset-id') ?? null;
 }
 

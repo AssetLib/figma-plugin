@@ -14,8 +14,8 @@ function consoleMessage(payload: unknown): string | null {
   return null;
 }
 
-// A console without the Insert routes answers 404. When it sends no CORS headers the
-// iframe sees a network error instead, which insertUnavailable() explains.
+// A console without the Insert routes answers 404. (One without their CORS headers looks like a network failure, which is
+// said as one: the hosted console and the local one serve them.)
 export const MISSING_INSERT = 'This console doesn’t support Insert yet. Send still works.';
 
 // A rendition that disappears between the listing and the download; the console itself supports Insert.
@@ -34,6 +34,9 @@ export const SELECTION_CHANGED = 'The selection changed while sending. Check it 
 // Main could not write to figma.clientStorage.
 export const DEVICE_STORAGE = 'Figma couldn’t save this on your device. Try again.';
 export const BUSY = 'Assetlib is busy. Try again in a minute.';
+// An export Assetlib can't take, whichever limit it met: 4 MiB of PNG, Vercel's 4.5 MB request (a base64 PNG over about
+// 3.37 MB), or the console's 413. Every PNG under 3.3 MB fits, so the one number says what to aim for.
+export const EXPORT_TOO_LARGE = 'This export is too large for Assetlib (over 3.3 MB as a PNG). Reduce its detail or size and try again.';
 
 export function serverError(status: number): string {
   return `Assetlib had a problem (${status}). Try again in a minute.`;
@@ -44,7 +47,7 @@ export function mapHttpError(status: number, payload: unknown, action: 'send' | 
   if (status === 403 && action === 'insert') return 'This token can’t read this app’s images. Create a token with Draft permission.';
   if (status === 403) return TOKEN_SCOPE;
   if (status === 404 && action === 'insert') return MISSING_INSERT;
-  if (status === 413) return 'This export is too large for Assetlib (over 4 MiB). Reduce its detail or size and try again.';
+  if (status === 413) return EXPORT_TOO_LARGE;
   if (status === 409) return consoleMessage(payload) ?? 'Assetlib couldn’t put this image in the chosen cell. Check the placement and try again.';
   if (status === 429) return BUSY;
   if (status >= 500) return serverError(status);
@@ -56,13 +59,6 @@ export function mapNetworkError(origin: string): string {
   return origin === DEVELOPMENT_ORIGIN
     ? 'Can’t reach the console at localhost:3100. Check that it’s running.'
     : 'Can’t reach Assetlib. Check your internet connection.';
-}
-
-/** A network failure on an Insert read after the placements read succeeded on the same connection. */
-export function insertUnavailable(origin: string): string {
-  return origin === DEVELOPMENT_ORIGIN
-    ? 'This console doesn’t support Insert yet, or localhost:3100 couldn’t be reached. Send still works.'
-    : 'This console doesn’t support Insert yet, or Assetlib couldn’t be reached. Send still works.';
 }
 
 // A draft request that failed in transit may still have been saved.

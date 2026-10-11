@@ -34,9 +34,9 @@ export function matchedHeight(width: number, placement: Pick<Placement, 'width' 
   return Math.max(0.01, Math.round(exact * 100) / 100);
 }
 
-/** A size for people: at most two decimals, no trailing zeros. */
+/** A size for people: at most two decimals, no trailing zeros, and no-break spaces, so a sentence never wraps inside it. */
 export function sizeLabel(size: Pick<NodeSelection, 'width' | 'height'>): string {
-  return `${Number(size.width.toFixed(2))} × ${Number(size.height.toFixed(2))}`;
+  return `${Number(size.width.toFixed(2))}\u00a0×\u00a0${Number(size.height.toFixed(2))}`;
 }
 
 /** The placement's ratio as "2.44 : 1", with no-break spaces, so a narrow window never wraps it at the colon. */

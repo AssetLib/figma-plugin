@@ -1,12 +1,16 @@
-// The Send tab: the selection, the placement and cell pickers, the ratio gate, Send, Sync, and the file link.
+// The Send tab: the selection, the placement and cell pickers, the ratio gate, Send, and the file link; and Sync, which
+// the Sync bar (syncbar.ts) shows on both tabs from what `syncBar()` says about the selection.
 import {
   DRAFT_MAY_HAVE_ARRIVED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
-  consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, parseDraftResponse, parsePngDimensions, ratioLabel, sizeLabel,
-  validateBinding,
+  consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel,
+  sizeLabel, validateBinding,
 } from '../shared/index.js';
-import type { Appearance, CellBinding, Connection, DraftResult, Placement } from '../shared/index.js';
-import type { MainMessage } from '../shared/protocol.js';
-import { announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, setStatus, setUnavailable, showError, toast } from './dom.js';
+import type { Appearance, CellBinding, Connection, DraftResult, InsertLink, Placement } from '../shared/index.js';
+import type { MainMessage, RememberedTarget } from '../shared/protocol.js';
+import {
+  announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, sentence, setBusy, setStatus, setUnavailable, showError,
+  toast,
+} from './dom.js';
 import { send } from './http.js';
 import { actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, state } from './state.js';
 import type { ReadProblem } from './state.js';
@@ -16,16 +20,25 @@ const statePicker = element<HTMLSelectElement>('state');
 const appearancePicker = element<HTMLSelectElement>('appearance');
 const armPicker = element<HTMLSelectElement>('arm');
 const sendButton = element<HTMLButtonElement>('send');
-const syncButton = element<HTMLButtonElement>('sync');
 const matchRatioButton = element<HTMLButtonElement>('match-ratio');
 const sendProblem = element('send-problem');
+const fileUrl = element<HTMLInputElement>('file-url');
 const CHOOSE_PLACEMENT = 'Choose placement…';
+export const VIEW_ONLY = 'This file is view-only, so the link lasts until you close the plugin.';
 
 let pending: { id: number; connection: Connection; placement: Placement; bind: CellBinding; rebind: boolean; result: DraftResult | null } | null = null;
 // The request id of the last Match ratio, so its error is shown.
 let pendingMatch: number | null = null;
-// The request id of the file link being saved.
-let pendingFile: number | null = null;
+// The file link being saved: its request id and the link, for Use anyway.
+let pendingFile: { id: number; url: string } | null = null;
+// The file link form shows: a Send or Sync found no file key, or Change was chosen.
+let fileAsked = false;
+// The Send or Sync that asked for the file link, which runs once the file is linked if the layer is still selected.
+let afterFile: { rebind: boolean; nodeId: string } | null = null;
+// Main said the pasted link names another file; Use anyway saves it regardless.
+let mismatch: { url: string; slug: string; name: string } | null = null;
+// Leaves the Send tab in front (main.ts), for the file link a Sync from the Insert tab asks for.
+let showSend: () => void = () => {};
 let selectionIdentity = '';
 // The connection generation the placement picker was filled for; a choice never carries over to another connection.
 let pickerGeneration: number | null = null;
@@ -107,27 +120,32 @@ function exportDescription(placement: Placement): string {
   return `Exports ${width} × ${height} PNG`;
 }
 /** True when the selected node's ratio is more than 2% off this placement's, which blocks Send or Sync to it. */
-function ratioBlocks(placement: Placement | undefined): placement is Placement {
+function ratioBlocks(placement: Placement | undefined | null): placement is Placement {
   const { node, reason } = state.selection;
   return Boolean(placement && node && !reason && aspectMismatch(node, placement));
 }
+/** Why the ratio blocks Send (the callout) or Sync (the bar, which also says what Match ratio makes of the layer). */
 function ratioText(placement: Placement, forSend: boolean): string {
   const node = state.selection.node!;
-  return forSend
-    ? `This frame is ${sizeLabel(node)}. ${placement.key} needs ${ratioLabel(placement)} (${placement.width} × ${placement.height}). Resize the frame or match the ratio.`
-    : `This frame is ${sizeLabel(node)}. ${placement.key} needs ${ratioLabel(placement)}.`;
+  if (forSend) {
+    return `This frame is ${sizeLabel(node)}. ${placement.key} needs ${ratioLabel(placement)} (${sizeLabel(placement)}). Resize the frame or match the ratio.`;
+  }
+  let matched = '';
+  try { matched = ` Match ratio makes it ${sizeLabel({ width: node.width, height: matchedHeight(node.width, placement) })}.`; } catch { /* no size to name */ }
+  return `This frame is ${sizeLabel(node)}; ${placement.key} is ${sizeLabel(placement)}.${matched}`;
 }
-/** The placement the ratio callout and Match ratio act on: the chosen one, else the remembered one Sync would use. */
-function ratioGate(): { placement: Placement; text: string } | null {
+/** The chosen placement when the layer's ratio is off from it: Send's callout says so, with Match ratio. */
+export function sendRatioPlacement(): Placement | null {
   const chosen = chosenPlacement();
-  if (ratioBlocks(chosen)) return { placement: chosen, text: ratioText(chosen, true) };
-  const target = rememberedBinding()?.placement;
-  return ratioBlocks(target) ? { placement: target, text: ratioText(target, false) } : null;
+  return ratioBlocks(chosen) ? chosen : null;
 }
-/** A connection, a current selection of one exportable node, a file key, and nothing else running. */
+/**
+ * A connection, a current selection of one exportable node, and nothing else running. A missing file key doesn't wait:
+ * Send or Sync asks for the file's link then (`askForFile`).
+ */
 function sendReady(): boolean {
-  const { node, reason, fileKey } = state.selection;
-  return Boolean(state.connection && hasCurrentSelection() && node && !reason && fileKey && !actionsBlocked());
+  const { node, reason } = state.selection;
+  return Boolean(state.connection && hasCurrentSelection() && node && !reason && !actionsBlocked());
 }
 /**
  * The placement Send (or Sync, with `rebind`) would use now, or null while its button is unavailable. The render and
@@ -139,8 +157,85 @@ function actionPlacement(rebind: boolean): Placement | null {
   // A ratio more than 2% off the placement's cannot be sent: the console would get art that does not fit.
   return placement && !ratioBlocks(placement) ? placement : null;
 }
+/** A cell as people read it: its placement and the axes the placement declares (all of them while its declaration is unknown). */
 function bindingLabel(bind: CellBinding): string {
-  return [bind.slotKey, bind.arm ?? 'Control', appearanceLabel(bind.appearance), bind.state ?? 'default state'].join(' · ');
+  const placement = state.placements.find(item => item.key === bind.slotKey);
+  const parts = placement ? cellLabel(placement, bind)
+    : [bind.state ?? 'default state', appearanceLabel(bind.appearance), bind.arm ?? 'Control'];
+  return [bind.slotKey, ...parts].join(' · ');
+}
+
+/**
+ * What the Sync bar says about the selected layer, or null to hide it: `linked` (a link or a target this device
+ * remembered: Sync to draft, unless `ratio` is off), `removed` (that placement or cell is gone from the app), `copy` (a
+ * Cmd+D copy of a linked layer), or `other` (linked to another console app).
+ */
+export type SyncBar =
+  | { kind: 'linked'; key: string; meta: string; detail: string; placement: Placement | null; ratio: string | null; assetId: string | null;
+    cell: Pick<CellBinding, 'state' | 'appearance' | 'arm'> }
+  | { kind: 'removed'; key: string; cell: boolean }
+  | { kind: 'copy'; key: string; link: InsertLink }
+  | { kind: 'other' };
+
+/** The cell as the bar names it: the axes the placement declares, or, before the placements load, those the target sets. */
+function cellLabel(placement: Placement | null, cell: Pick<RememberedTarget, 'state' | 'appearance' | 'arm'>): string[] {
+  if (!placement) return [cell.state, cell.appearance ? appearanceLabel(cell.appearance) : null, cell.arm].filter((part): part is string => part !== null);
+  const parts: string[] = [];
+  if (placement.states?.length) parts.push(cell.state ?? placement.defaultState ?? 'default');
+  if (placement.variants?.appearance?.length) parts.push(appearanceLabel(cell.appearance));
+  if (placement.variants?.arm?.length) parts.push(cell.arm ?? 'Control');
+  return parts;
+}
+
+export function syncBar(): SyncBar | null {
+  if (!state.connection || !hasCurrentSelection()) return null;
+  const { remembered, link } = state.selection;
+  if (remembered) {
+    const key = remembered.placementKey;
+    const target = rememberedBinding();
+    if (!target && state.placementsLoaded) {
+      return { kind: 'removed', key, cell: state.placements.some(item => item.key === key) };
+    }
+    const placement = target?.placement ?? null;
+    const environment = remembered.insertedFrom?.environment ?? 'draft';
+    const meta = [...cellLabel(placement, remembered), `from ${environmentLabel(environment)}`].join(' · ');
+    const detail = target ? `${bindingLabel(target.bind)}. Sync sends this layer to that cell in Draft and replaces draft references to its earlier sends.` : meta;
+    // Open in console names the image the layer's own link names, when that link is to this cell.
+    const sameCell = link?.kind === 'linked' && link.placementKey === key && link.state === remembered.state && link.appearance === remembered.appearance
+      && link.arm === remembered.arm;
+    return { kind: 'linked', key, meta, detail, placement, ratio: ratioBlocks(placement) ? ratioText(placement, false) : null,
+      assetId: sameCell ? link.assetId : null, cell: { state: remembered.state, appearance: remembered.appearance, arm: remembered.arm } };
+  }
+  if (link?.kind === 'copy') return { kind: 'copy', key: link.placementKey, link };
+  if (link?.kind === 'other') return { kind: 'other' };
+  return null;
+}
+/** Sync can run now: the bar's button is available. */
+export function syncAvailable(): boolean { return actionPlacement(true) !== null; }
+export function beginSync(): void { beginSend(true); }
+
+/** Match ratio for this placement: main keeps the width, sets the height to the placement's ratio, and reports the new size. */
+export function matchRatio(placement: Placement): void {
+  const node = state.selection.node;
+  if (actionsBlocked() || !hasCurrentSelection() || !node) return;
+  clearError();
+  pendingMatch = nextRequestId();
+  post({ type: 'match-ratio', requestId: pendingMatch, nodeId: node.id, width: placement.width, height: placement.height });
+}
+
+/** A copy's Send…: the placement and cell its link names are chosen, for a Send without rebind. */
+export function prefillSend(link: InsertLink): void {
+  const placement = state.placements.find(item => item.key === link.placementKey);
+  if (!placement) return;
+  placementPicker.value = placement.key;
+  let bind: CellBinding | undefined;
+  try { bind = validateBinding(placement, { slotKey: placement.key, state: link.state, appearance: link.appearance, arm: link.arm }); } catch { bind = undefined; }
+  updateCellPickers(bind);
+}
+/** A removed target's Send elsewhere…: nothing chosen, so the person picks a placement. */
+export function sendElsewhere(): void {
+  placementPicker.value = '';
+  updateCellPickers();
 }
 
 /**
@@ -163,38 +258,40 @@ export function renderSend(inSettings: boolean): void {
   const { selection } = state;
   const node = selection.node;
   element('selection-name').textContent = node && !selection.reason ? node.name : selection.reason ?? node?.name ?? 'Select a frame or layer to send.';
+  // Without a layer to send, the card is a dashed slot saying why, not a filled card that reads as an input.
+  element('selection-card').className = node && !selection.reason ? 'selection-card' : 'selection-card empty';
   // Whole pixels, and no node ID or type: what a designer reads off the canvas.
   element('selection-meta').textContent = node && !selection.reason ? `${Math.round(node.width)} × ${Math.round(node.height)}` : '';
-  element('file-fallback').hidden = Boolean(selection.fileKey);
+  // The file link, asked for at the first Send or Sync without a file key; once linked, the file it names, with Change.
+  const file = hasCurrentSelection() ? selection.file : undefined;
+  element('file-fallback').hidden = !fileAsked;
+  element('file-mismatch-box').hidden = !mismatch;
+  element('file-mismatch').textContent = !mismatch ? ''
+    : mismatch.slug ? `This link is for “${mismatch.slug}”, but this file is “${mismatch.name}”. Paste this file’s link.`
+      : `This link doesn’t name its file, so Assetlib can’t check that it’s “${mismatch.name}”. Paste this file’s link.`;
+  if (mismatch) fileUrl.setAttribute('aria-invalid', 'true'); else fileUrl.removeAttribute('aria-invalid');
+  setUnavailable(element('file-anyway'), pendingFile !== null);
+  const linked = Boolean(selection.fileKey && (file?.source === 'document' || file?.source === 'session'));
+  element('file-line').hidden = fileAsked || !linked;
+  element('file-name').textContent = `File: ${file?.name || 'this file'}`;
+  element('file-session').hidden = file?.source !== 'session';
+  element('file-session').textContent = file?.source === 'session' ? VIEW_ONLY : '';
   placementPicker.disabled = state.placements.length === 0;
   const placement = chosenPlacement();
   setUnavailable(sendButton, !actionPlacement(false));
   const validArea = node && !selection.reason;
-  element('export-note').textContent = placement && validArea ? exportDescription(placement) : '';
-  const gate = ratioGate();
-  element('aspect-text').textContent = gate?.text ?? '';
+  // The chosen placement's ratio; the Sync bar says Sync's, when it is another.
+  const gate = sendRatioPlacement();
+  // The export's size only when it can be sent: next to the ratio callout it would contradict it.
+  element('export-note').textContent = placement && validArea && !gate ? exportDescription(placement) : '';
+  element('aspect-text').textContent = gate ? ratioText(gate, true) : '';
   element('aspect-warning').hidden = !gate;
   setUnavailable(matchRatioButton, actionsBlocked());
-  const remembered = selection.remembered;
-  const target = rememberedBinding();
-  // A remembered target makes Sync the expected action.
-  syncButton.className = target ? 'primary' : 'secondary';
-  sendButton.className = target ? 'secondary' : 'primary';
-  syncButton.hidden = !remembered;
-  syncButton.textContent = state.ops.syncing ? 'Syncing…' : remembered ? `Sync to ${remembered.placementKey}` : '';
-  sendButton.textContent = state.ops.sending ? 'Sending…' : 'Send to draft';
-  setUnavailable(syncButton, !actionPlacement(true));
-  element('sync-note').hidden = !remembered;
-  // The export line and ratio callout above already describe the chosen placement, so the note repeats them only for another one.
-  const other = Boolean(validArea && target && target.placement.key !== placement?.key);
-  // The callout names one placement; when both are off, the note names Sync's.
-  const otherRatio = other && target && gate?.placement !== target.placement && ratioBlocks(target.placement) ? ratioText(target.placement, false) : '';
-  element('sync-note').textContent = !remembered ? '' : !target
-    ? 'The remembered placement or cell is unavailable. Test the connection to refresh, or choose a new placement and send.'
-    : [`${bindingLabel(target.bind)}.`, remembered.insertedFrom
-      ? `Inserted from ${environmentLabel(remembered.insertedFrom.environment)}. Sync sends this layer to that cell and replaces draft references to this layer’s earlier sends, if any.`
-      : 'Sync replaces every draft reference to the previous export of this layer in this app.',
-    other ? `${exportDescription(target.placement)}.` : '', otherRatio].filter(Boolean).join(' ');
+  // A usable link or remembered target makes the Sync bar's Sync the expected action.
+  sendButton.className = rememberedBinding() ? 'secondary' : 'primary';
+  setBusy(sendButton, state.ops.sending ? 'Sending…' : 'Send to draft', state.ops.sending);
+  // A result says where the draft went; the footnote about drafts would repeat it.
+  element('send-footnote').hidden = !element('result').hidden;
 }
 
 /** The connection test failed with Send in front: the form says why, announces it, and takes focus unless the person is in a field. */
@@ -221,7 +318,6 @@ export function applySelection(message: Extract<MainMessage, { type: 'selection'
 export function applyFileUrl(url: string): void { element<HTMLInputElement>('file-url').value = url; }
 
 const sameCell = (a: CellBinding, b: CellBinding) => a.slotKey === b.slotKey && a.state === b.state && a.appearance === b.appearance && a.arm === b.arm;
-const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
 function link(text: string, href: string): HTMLAnchorElement {
   const anchor = document.createElement('a');
   anchor.className = 'text-action';
@@ -242,9 +338,15 @@ function showResult(result: DraftResult, config: Connection, bind: CellBinding):
     : result.bindError ? `The image was uploaded, but Assetlib couldn’t put it in ${bind.slotKey}: ${sentence(result.bindError)} Check the console before sending again.`
       : `The image was uploaded, but Assetlib didn’t put it in ${bind.slotKey}. Check the console before sending again.`;
   const text = document.createElement('p');
-  text.className = done ? '' : 'notice';
   text.textContent = summary;
-  parts.push(text, done ? link('View in console', consoleLink(config, 'releases')) : link('Open image in console', imageLink(config, result.asset.id)));
+  if (done) parts.push(text, link('View in console', consoleLink(config, 'releases')));
+  else {
+    // The problem and where to check it, in one callout.
+    const notice = document.createElement('div');
+    notice.className = 'notice';
+    notice.append(text, link('Open image in console', imageLink(config, result.asset.id)));
+    parts.push(notice);
+  }
   const others = result.rebound.filter(cell => !sameCell(cell, result.bound ?? bind));
   if (others.length) {
     const also = document.createElement('p');
@@ -270,11 +372,26 @@ function endSend(): void {
   scheduleRender();
 }
 
+/**
+ * No file key yet: the Send tab asks for the file's link, once per document, and the Send or Sync runs when it is linked.
+ * Figma gives only private and development plugins the file key, so a Community plugin asks here.
+ */
+function askForFile(rebind: boolean, nodeId: string): void {
+  fileAsked = true;
+  afterFile = { rebind, nodeId };
+  showSend();
+  scheduleRender();
+  flushRender();
+  fileUrl.focus();
+  setStatus('Link this file once so Assetlib can trace art back to it.');
+}
+
 function beginSend(rebind: boolean): void {
   const { node, fileKey } = state.selection;
   // An unavailable button (aria-disabled keeps it clickable) does nothing; its look and the ratio callout say why.
   const placement = actionPlacement(rebind);
-  if (!placement || !state.connection || !node || !fileKey) return;
+  if (!placement || !state.connection || !node) return;
+  if (!fileKey) { askForFile(rebind, node.id); return; }
   clearError();
   try {
     const remembered = rebind ? rememberedBinding() : null;
@@ -318,7 +435,8 @@ export async function sendExport(message: Extract<MainMessage, { type: 'exported
     }
     operation.result = draft;
     setStatus(showResult(draft, operation.connection, operation.bind));
-    post({ type: 'remember', requestId: operation.id });
+    // The layer's link names the image the draft now shows in its cell, when the draft was put there.
+    post({ type: 'remember', requestId: operation.id, assetId: draft.bound && !draft.bindError ? draft.asset.id : null });
   } catch (error) {
     if (pending !== operation) return;
     endSend(); setStatus(''); showError(errorText(error));
@@ -336,17 +454,50 @@ export function remembered(message: Extract<MainMessage, { type: 'remembered' }>
   toast(operation.rebind ? `Synced ${key} to draft` : `Sent to ${key} draft`, { text: 'Review', url: consoleLink(operation.connection, 'releases') });
 }
 
+/** Main saved the file link (in the document, or for this session): the Send or Sync that asked for it runs now. */
 export function fileSaved(message: Extract<MainMessage, { type: 'file-saved' }>): void {
-  if (message.requestId !== pendingFile) return;
+  if (message.requestId !== pendingFile?.id) return;
   pendingFile = null;
-  // A running operation keeps the status line; the file form hiding says the same.
-  if (!actionsBlocked()) setStatus('File linked for this session.');
+  fileAsked = false;
+  mismatch = null;
+  const next = afterFile;
+  afterFile = null;
+  // Main reports the selection with it next; the key is known now, so the waiting action needn't wait for that.
+  if (hasCurrentSelection()) state.selection = { ...state.selection, fileKey: message.fileKey };
+  // A running operation keeps the status line.
+  if (!actionsBlocked()) setStatus(message.session ? VIEW_ONLY : 'File linked.');
+  const inForm = element('file-fallback').contains(document.activeElement);
+  scheduleRender();
+  flushRender();
+  // The form is gone: focus goes back to the action that asked for it, or to the file line.
+  if (inForm) element(next ? (next.rebind ? 'sync' : 'send') : 'file-change').focus();
+  if (next && state.selection.node?.id === next.nodeId) beginSend(next.rebind);
+}
+
+/** Main found that the link names another file: the form says so, and Use anyway saves it regardless. */
+export function fileMismatch(message: Extract<MainMessage, { type: 'file-mismatch' }>): void {
+  const pending = pendingFile;
+  if (!pending || message.requestId !== pending.id) return;
+  mismatch = { url: pending.url, slug: message.slug, name: message.name };
+  pendingFile = null;
+  if (!actionsBlocked()) setStatus('');
+  scheduleRender();
+  flushRender();
+  announceError(element('file-mismatch').textContent ?? '');
+}
+
+function saveFileUrl(url: string, force: boolean): void {
+  clearError();
+  if (!actionsBlocked()) setStatus('Linking file…');
+  pendingFile = { id: nextRequestId(), url };
+  post({ type: 'save-file-url', requestId: pendingFile.id, url, ...(force ? { force } : {}) });
+  scheduleRender();
 }
 
 /** Main's error for a Send, Sync, Match ratio, or file link request; false when it belongs to another operation. */
 export function failSend(requestId: number, message: string): boolean {
   if (requestId === pendingMatch) { pendingMatch = null; showError(message); return true; }
-  if (requestId === pendingFile) {
+  if (requestId === pendingFile?.id) {
     pendingFile = null;
     if (!actionsBlocked()) setStatus('');
     showError(message);
@@ -357,26 +508,27 @@ export function failSend(requestId: number, message: string): boolean {
   return true;
 }
 
-export function initSend(actions: { retry: () => void; updateToken: () => void }): void {
+export function initSend(actions: { retry: () => void; updateToken: () => void; showSend: () => void }): void {
+  showSend = actions.showSend;
   element('send-retry').addEventListener('click', () => { if (!actionsBlocked()) actions.retry(); });
   element('send-token').addEventListener('click', actions.updateToken);
   element<HTMLFormElement>('file-form').addEventListener('submit', event => {
     event.preventDefault();
-    clearError();
-    if (!actionsBlocked()) setStatus('Linking file…');
-    pendingFile = nextRequestId();
-    post({ type: 'save-file-url', requestId: pendingFile, url: element<HTMLInputElement>('file-url').value });
+    mismatch = null;
+    saveFileUrl(fileUrl.value, false);
+  });
+  element('file-anyway').addEventListener('click', () => { if (mismatch && pendingFile === null) saveFileUrl(mismatch.url, true); });
+  // An edited link is not the one the warning was about: Use anyway goes until it is linked again.
+  fileUrl.addEventListener('input', () => { if (mismatch) { mismatch = null; fileUrl.removeAttribute('aria-invalid'); scheduleRender(); } });
+  // Change: paste this file's own link, as a duplicated file needs to (it keeps its original's until then).
+  element('file-change').addEventListener('click', () => {
+    fileAsked = true;
+    afterFile = null;
+    scheduleRender();
+    flushRender();
+    fileUrl.focus();
   });
   placementPicker.addEventListener('change', () => updateCellPickers());
   sendButton.addEventListener('click', () => beginSend(false));
-  syncButton.addEventListener('click', () => beginSend(true));
-  matchRatioButton.addEventListener('click', () => {
-    const gate = ratioGate();
-    const node = state.selection.node;
-    if (actionsBlocked() || !gate || !hasCurrentSelection() || !node) return;
-    clearError();
-    pendingMatch = nextRequestId();
-    // Main keeps the width, sets the height to the placement's ratio, and reports the new size.
-    post({ type: 'match-ratio', requestId: pendingMatch, nodeId: node.id, width: gate.placement.width, height: gate.placement.height });
-  });
+  matchRatioButton.addEventListener('click', () => { const placement = sendRatioPlacement(); if (placement) matchRatio(placement); });
 }

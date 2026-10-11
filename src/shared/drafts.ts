@@ -1,18 +1,17 @@
 import type { CellBinding, DraftBody, DraftResult, ExportSettings, NodeSelection, Placement } from './types.js';
 import { EXPORT_FAILED, chooseExportSettings } from './export.js';
-import { SELECTION_CHANGED } from './errors.js';
+import { EXPORT_TOO_LARGE, SELECTION_CHANGED } from './errors.js';
 import { validateBinding } from './placements.js';
 import { boundedString, isRecord, positiveDimension, validArm, validFileKey, validNodeId, validState } from './validation.js';
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 // Vercel Functions refuse request bodies above 4.5 MB before the console runs.
 export const MAX_BODY_BYTES = 4_500_000;
-const TOO_LARGE = 'This export is too large for Assetlib (over 4 MiB). Reduce its detail or size and try again.';
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 export function bytesToBase64(bytes: Uint8Array): string {
   if (bytes.length === 0) throw new Error(EXPORT_FAILED);
-  if (bytes.length > MAX_IMAGE_BYTES) throw new Error(TOO_LARGE);
+  if (bytes.length > MAX_IMAGE_BYTES) throw new Error(EXPORT_TOO_LARGE);
   return encodeBase64(bytes);
 }
 
@@ -53,7 +52,7 @@ export function utf8Length(value: string): number {
 }
 
 export function assertDraftBodyLimit(value: unknown): void {
-  if (utf8Length(JSON.stringify(value)) > MAX_BODY_BYTES) throw new Error('This export is too large for Assetlib (its upload is over 4.5 MB). Reduce its detail or size and try again.');
+  if (utf8Length(JSON.stringify(value)) > MAX_BODY_BYTES) throw new Error(EXPORT_TOO_LARGE);
 }
 
 export function buildDraftBody(input: {
@@ -74,7 +73,7 @@ export function buildDraftBody(input: {
     || settings.constraint.type !== expected.constraint.type || settings.constraint.value !== expected.constraint.value) {
     throw new Error(SELECTION_CHANGED);
   }
-  if (decodedBase64Length(bytesBase64) > MAX_IMAGE_BYTES) throw new Error(TOO_LARGE);
+  if (decodedBase64Length(bytesBase64) > MAX_IMAGE_BYTES) throw new Error(EXPORT_TOO_LARGE);
   const body: DraftBody = {
     schemaVersion: 1,
     name: (node.name.trim() || placement.key).slice(0, 120),

@@ -1,10 +1,10 @@
 import type {
-  Appearance, ArtworkCell, ArtworkResponse, AssetPage, CellArtwork, Connection, EnvironmentName, InsertLink,
+  Appearance, ArtworkCell, ArtworkResponse, AssetPage, CanvasTarget, CellArtwork, Connection, EnvironmentName, InsertLink,
   LibraryAsset, Placement, PlacementArtwork, Preferences, RenditionInfo, StoredLink,
 } from './types.js';
 import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN } from './connection.js';
 import { parsePlacements } from './placements.js';
-import { boundedString, isRecord, validArm, validNodeId, validSha256, validState, validUuid } from './validation.js';
+import { boundedString, isRecord, validArm, validNodeId, validPlacementKey, validSha256, validState, validUuid } from './validation.js';
 
 // Below the hosted function response limit; renditions are at most 2048 px, which a transcoded PNG keeps.
 export const MAX_INSERT_DOWNLOAD = 4 * 1024 * 1024;
@@ -125,17 +125,92 @@ export function artworkAsset(artwork: Pick<ArtworkResponse, 'assets'>, art: Cell
   return art && Object.prototype.hasOwnProperty.call(artwork.assets, art.assetId) ? artwork.assets[art.assetId]! : null;
 }
 
-/** The largest PNG or WebP Figma can take within the download cap; PNG wins ties. */
+/** A PNG or WebP Figma can take, within the download cap. */
+function insertable(item: RenditionInfo): boolean {
+  return (item.mime === 'image/png' || item.mime === 'image/webp') && item.bytes <= MAX_INSERT_DOWNLOAD
+    && item.width <= MAX_INSERT_PIXELS && item.height <= MAX_INSERT_PIXELS;
+}
+
+/** The largest PNG or WebP Figma can take within the download cap; PNG wins ties. New frames use it. */
 export function insertRendition(asset: Pick<LibraryAsset, 'renditions'>): RenditionInfo | null {
   let best: RenditionInfo | null = null;
   for (const item of asset.renditions) {
-    if ((item.mime !== 'image/png' && item.mime !== 'image/webp') || item.bytes > MAX_INSERT_DOWNLOAD
-      || item.width > MAX_INSERT_PIXELS || item.height > MAX_INSERT_PIXELS) continue;
+    if (!insertable(item)) continue;
     const area = item.width * item.height;
     const bestArea = best ? best.width * best.height : -1;
     if (area > bestArea || (area === bestArea && item.mime === 'image/png' && best?.mime !== 'image/png')) best = item;
   }
   return best;
+}
+
+/**
+ * For a fill or a replace: the smallest PNG or WebP at least three times as wide as the image is drawn (PNG wins ties),
+ * enough for a @3x screen without downloading more than the layer shows; never wider than the original; else the
+ * largest (`insertRendition`). A fill covers its layer, so a layer proportionally taller than the art draws it wider
+ * than the layer: `max(width, height × art width / art height)`.
+ */
+export function fillRendition(asset: Pick<LibraryAsset, 'renditions' | 'width' | 'height'>, targetWidth: number, targetHeight = 0): RenditionInfo | null {
+  const positive = (value: number) => Number.isFinite(value) && value > 0 ? value : 0;
+  const drawn = Math.max(positive(targetWidth), asset.height > 0 ? positive(targetHeight) * asset.width / asset.height : 0);
+  const need = Math.min(3 * drawn, asset.width);
+  let best: RenditionInfo | null = null;
+  for (const item of asset.renditions) {
+    if (!insertable(item) || item.width < need) continue;
+    if (!best || item.width < best.width || (item.width === best.width && item.mime === 'image/png' && best.mime !== 'image/png')) best = item;
+  }
+  return best ?? insertRendition(asset);
+}
+
+/** One selected layer, as main describes it to `classifyInsertTarget`. */
+export interface InsertCandidate {
+  id: string;
+  name: string;
+  type: string;
+  width: number;
+  height: number;
+  /** How many children it has; 0 for a layer that can't have any. */
+  children: number;
+  /** It carries an `assetlib.link.v1` for its own id in the connected app (read for a single layer only). */
+  linked: boolean;
+  /** It is a component or sits inside a component, a component set, or an instance (read for a single layer only). */
+  inComponent?: boolean;
+}
+
+// Layers a fill paints: shapes, and frames, components, and instances without children (an inserted image, say).
+const SHAPES = ['RECTANGLE', 'ELLIPSE', 'POLYGON', 'STAR', 'VECTOR', 'BOOLEAN_OPERATION'];
+const FRAMES = ['FRAME', 'COMPONENT', 'INSTANCE'];
+
+/** A layer inside an instance (its id joins ids with `;`): it can be filled, but takes no children and no plugin data. */
+export function insideInstance(id: string): boolean { return id.includes(';'); }
+
+function fillable(node: InsertCandidate): boolean {
+  return SHAPES.includes(node.type) || (FRAMES.includes(node.type) && node.children === 0);
+}
+
+/**
+ * What Insert does with the selection: a matching linked shape, frame, component, or instance is replaced; a frame or
+ * component with children (never an instance or anything inside one, which Figma gives no new children) receives a
+ * child, noting a container that is or sits in a component, where placement art can't go; shapes and empty frames are
+ * filled, other layers skipped; with nothing to replace, fill, or insert into, a new frame.
+ */
+export function classifyInsertTarget(nodes: InsertCandidate[]): CanvasTarget {
+  const named = (node: InsertCandidate) => node.name.trim() || 'this layer';
+  if (nodes.length === 1) {
+    const node = nodes[0]!;
+    // A linked layer whose image can be swapped. A sent text, group, or line carries a link too, but takes no image.
+    if (node.linked && (SHAPES.includes(node.type) || FRAMES.includes(node.type))) {
+      return { mode: 'replace', label: 'Replace image', count: 1, nodeIds: [node.id], name: named(node), containerWidth: node.width, containerHeight: node.height };
+    }
+    if ((node.type === 'FRAME' || node.type === 'COMPONENT') && node.children > 0 && !insideInstance(node.id)) {
+      return { mode: 'into', label: `Insert into ${named(node)}`, count: 1, nodeIds: [node.id], name: named(node), containerWidth: node.width,
+        ...(node.inComponent ? { insideComponent: true as const } : {}) };
+    }
+  }
+  const layers = nodes.filter(fillable);
+  if (!layers.length) return { mode: 'new', label: 'Insert', count: 0, nodeIds: [] };
+  const one = layers.length === 1 ? layers[0]! : null;
+  return { mode: 'fill', label: one ? `Fill ${named(one)}` : `Fill ${layers.length} layers`, count: layers.length, nodeIds: layers.map(node => node.id),
+    ...(one ? { name: named(one) } : {}), containerWidth: Math.max(...layers.map(node => node.width)), containerHeight: Math.max(...layers.map(node => node.height)) };
 }
 
 /** The smallest WebP by area, else the smallest PNG, within the preview byte cap. */
@@ -173,7 +248,8 @@ export function sanitizeName(value: unknown): string {
 }
 
 export function validateInsertLink(value: unknown): InsertLink {
-  if (!isRecord(value) || !boundedString(value.placementKey, 120)
+  // The key reaches the layer's relaunch text, its name, and toasts, so it must be in the catalog's grammar, as the console's are.
+  if (!isRecord(value) || !validPlacementKey(value.placementKey)
     || (value.state !== null && !validState(value.state))
     || (value.appearance !== null && !appearanceValue(value.appearance))
     || (value.arm !== null && !validArm(value.arm))
@@ -196,10 +272,25 @@ export function parseStoredLink(raw: string): StoredLink | null {
   } catch { return null; }
 }
 
+/** A link written for this console app (the legacy host is production). */
+export function linkInApp(link: StoredLink, connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>): boolean {
+  const origin = link.origin === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : link.origin;
+  return origin === connection.origin && link.orgId === connection.orgId && link.appId === connection.appId;
+}
+
 /** A link applies only to the node it was written on (not a Cmd+D copy) and to the same console app. */
 export function linkMatches(link: StoredLink, connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>, nodeId: string): boolean {
-  const origin = link.origin === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : link.origin;
-  return origin === connection.origin && link.orgId === connection.orgId && link.appId === connection.appId && link.nodeId === nodeId;
+  return linkInApp(link, connection) && link.nodeId === nodeId;
+}
+
+/**
+ * The description under a linked layer's **Sync to Assetlib** button in Figma's properties panel: its cell (the axes it
+ * names) and where its art came from. Figma shows about three lines and refuses more than 1000 characters; a link's key,
+ * state, and arm are short, so this stays well under.
+ */
+export function syncDescription(link: Pick<InsertLink, 'placementKey' | 'state' | 'appearance' | 'arm' | 'environment'>): string {
+  const cell = [link.placementKey, link.state, link.appearance ? appearanceLabel(link.appearance) : null, link.arm].filter(part => part !== null).join(' · ');
+  return `${cell}, from ${environmentLabel(link.environment)}. Sync sends edits to its draft.`;
 }
 
 /** The plugin opens on Insert: its library is the first thing people look for. */
@@ -207,8 +298,23 @@ export function defaultPreferences(): Preferences {
   return { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1 };
 }
 
-// The window sizes the plugin can be resized to (A.8 adds the grip); a saved size outside them is ignored.
+// The window sizes the grip can drag the plugin to; a saved size outside them is ignored.
 export const WINDOW_LIMITS = { minWidth: 320, maxWidth: 900, minHeight: 480, maxHeight: 1000 } as const;
+
+/** A size the grip asks for, in whole pixels within the limits. */
+export function clampWindow(width: number, height: number): { width: number; height: number } {
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value)));
+  return { width: clamp(width, WINDOW_LIMITS.minWidth, WINDOW_LIMITS.maxWidth), height: clamp(height, WINDOW_LIMITS.minHeight, WINDOW_LIMITS.maxHeight) };
+}
+
+/**
+ * The window before the person sizes it: 420 wide, and the canvas's height on screen less 64 px, from 480 to 720, so it
+ * fits a 13-inch laptop's canvas and never covers more of a large one than it did. An unknown canvas height gives 720.
+ */
+export function defaultWindowSize(canvasHeight: number): { width: number; height: number } {
+  const height = Number.isFinite(canvasHeight) ? Math.round(canvasHeight) - 64 : 720;
+  return { width: 420, height: Math.min(720, Math.max(WINDOW_LIMITS.minHeight, height)) };
+}
 
 /** Each invalid or missing field falls back to its default; the optional fields are left out unless valid. */
 export function parsePreferences(value: unknown): Preferences {

@@ -14,6 +14,11 @@ export function validFileKey(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 
+/** A placement key in the catalog's grammar (`assetlib.catalog.json`, the CLI's codegen); the console's own keys are a subset. */
+export function validPlacementKey(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/.test(value);
+}
+
 export function validNodeId(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9:;-]{1,64}$/.test(value);
 }

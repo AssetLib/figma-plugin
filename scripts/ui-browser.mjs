@@ -14,6 +14,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { inflateSync } from 'node:zlib';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const uiUrl = pathToFileURL(join(root, 'dist/ui.html')).href;
@@ -270,13 +271,28 @@ function installFakes(config) {
   const received = [];
   const notices = [];
   const reply = message => window.postMessage({ pluginMessage: message }, '*');
-  const selection = () => ({ type: 'selection', connectionGeneration: generation, selection: config.selection });
+  // config.selection may leave out insertTarget: nothing selected for Insert, so a new frame.
+  const selection = () => ({ type: 'selection', connectionGeneration: generation,
+    selection: { insertTarget: { mode: 'new', label: 'Insert', count: 0, nodeIds: [] }, ...config.selection } });
+  // Where each insert went (message.target), and the version it downloaded, for the tests to read.
+  const targets = [];
+  // What the grip asked for (a size, or 'reset'), and each preferences save; a test resizes the page itself, as Figma would.
+  const resizes = [];
+  const saved = [];
+  // Each pluginDrop the UI posted (Figma's, not a plugin message), and the drop each insert names (null for none).
+  const drops = [];
+  const insertDrops = [];
   function handle(message) {
     received.push(message.type);
     switch (message.type) {
       case 'init':
-        reply({ type: 'connection', connectionGeneration: generation, connection: config.connection, savedFileUrl: '', preferences: config.preferences });
-        reply(selection());
+        // config.command: opened from a relaunch button (sync), as code.ts says before the connection.
+        if (config.command) reply({ type: 'launch', command: config.command });
+        // delays.connection: main's client storage reads take that long before the connection message.
+        setTimeout(() => {
+          reply({ type: 'connection', connectionGeneration: generation, connection: config.connection, savedFileUrl: '', preferences: config.preferences });
+          reply(selection());
+        }, delays.connection ?? 0);
         break;
       case 'save-connection':
         // As code.ts does when client storage refuses the write: the error, then the selection again.
@@ -290,7 +306,17 @@ function installFakes(config) {
         reply({ type: 'connection', connectionGeneration: generation, connection: message.connection, savedFileUrl: '', preferences: config.preferences });
         reply(selection());
         break;
-      case 'save-file-url': reply({ type: 'file-saved', requestId: message.requestId, fileKey: 'abc123' }); break;
+      case 'save-file-url':
+        // As code.ts does: config.fileName names this file, so a link to another (slug) is questioned until Use anyway;
+        // config.viewOnly keeps the key for the session only. Then the selection again, with the file key.
+        if (config.fileName && !message.force && !/\/design\/[^/]+\/Roam-onboarding/.test(message.url)) {
+          reply({ type: 'file-mismatch', requestId: message.requestId, slug: message.url.split('/')[5]?.split('?')[0] ?? '', name: config.fileName });
+          break;
+        }
+        config.selection = { ...config.selection, fileKey: 'abc123', file: { source: config.viewOnly ? 'session' : 'document', name: config.fileName ?? 'Untitled' } };
+        reply({ type: 'file-saved', requestId: message.requestId, fileKey: 'abc123', session: Boolean(config.viewOnly) });
+        reply(selection());
+        break;
       case 'export': {
         const { width, height } = message.placement;
         reply({ type: 'exported', requestId: message.requestId, node: message.node, fileKey: message.fileKey,
@@ -299,24 +325,47 @@ function installFakes(config) {
       }
       case 'remember': reply({ type: 'remembered', requestId: message.requestId }); reply(selection()); break;
       case 'notify': notices.push(message.text); break;
+      case 'resize': resizes.push({ width: message.width, height: message.height }); break;
+      case 'reset-size': resizes.push('reset'); break;
+      case 'save-preferences': saved.push(message.preferences); break;
       case 'clear-connection':
         generation += 1;
         config.connection = null;
         reply({ type: 'connection', connectionGeneration: generation, connection: null, savedFileUrl: '', preferences: config.preferences });
         reply(selection());
         break;
-      case 'insert':
-        frames += 1;
-        reply({ type: 'inserted', requestId: message.requestId, connectionGeneration: generation, linked: Boolean(message.link),
+      case 'insert': {
+        targets.push(message.target);
+        insertDrops.push(message.drop ?? null);
+        // A drop's placeholder is filled as a new layer.
+        const kind = message.drop ? 'new' : message.target.kind;
+        // As main/insert.ts words its toasts; a fill of one linked layer is a replace.
+        const mode = kind === 'fill' && config.selection.insertTarget?.mode === 'replace' ? 'replace' : kind;
+        const notice = mode === 'replace' ? `Replaced image in ${config.selection.insertTarget.name}`
+          : mode === 'fill' ? `Filled ${message.target.nodeIds.length} layers with ${message.link?.placementKey ?? message.name}`
+            : message.link ? `Inserted ${message.name} from Draft` : `Inserted ${message.name}`;
+        if (kind !== 'fill') frames += 1;
+        reply({ type: 'inserted', requestId: message.requestId, connectionGeneration: generation, linked: Boolean(message.link), mode, notice,
           node: { id: `200:${frames}`, name: message.name, type: 'FRAME', width: message.frame.width / message.scale, height: message.frame.height / message.scale } });
         break;
+      }
       default: break;
     }
   }
-  const fakeParent = { postMessage(data) { if (data?.pluginMessage) setTimeout(() => handle(data.pluginMessage), 0); } };
+  // A pluginDrop is Figma's: it becomes main's drop event, which answers with a placeholder (config.dropRefused: an error).
+  function handleDrop(drop) {
+    drops.push(drop);
+    const { dropId, connectionGeneration } = drop.dropMetadata;
+    reply(config.dropRefused ? { type: 'error', requestId: dropId, message: config.dropRefused }
+      : { type: 'dropped', dropId, nodeId: `300:${drops.length}`, connectionGeneration });
+  }
+  const fakeParent = { postMessage(data) {
+    if (data?.pluginDrop) setTimeout(() => handleDrop(data.pluginDrop), 0);
+    else if (data?.pluginMessage) setTimeout(() => handle(data.pluginMessage), 0);
+  } };
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   // Tests may change `delays` mid-test; each request reads its route's delay when it starts.
-  window.__harness = { log, received, notices, uuid, delays, inserted: () => frames };
+  window.__harness = { log, received, notices, uuid, delays, targets, drops, insertDrops, resizes, saved, inserted: () => frames };
 }
 
 // Tokens as the console mints them: alk_ and 43 base64url characters. Fake, for these pages only.
@@ -389,17 +438,51 @@ async function openUi(options = {}, { width = 420, height = 720, theme: mode = n
   /** Two animation frames: the UI renders once per frame, so the page then shows the last action. */
   const frames = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const type = async text => { await send('Input.insertText', { text }); await frames(); };
-  /** A key press, as a person makes it (Enter in a field submits its form). */
-  async function press(key) {
-    const keys = { Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }, Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 } };
-    const { text, ...base } = keys[key];
-    await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text });
+  /**
+   * A key press, as a person makes it (Enter in a field submits its form; a letter types itself). `modifiers` adds
+   * Ctrl (2), Meta (4), or Shift (8); with Ctrl or Meta a key is a shortcut and types nothing.
+   */
+  async function press(key, modifiers = 0) {
+    const named = { Enter: [13, 'Enter', '\r'], Escape: [27, 'Escape'], Tab: [9, 'Tab'], ' ': [32, 'Space', ' '], ArrowUp: [38, 'ArrowUp'],
+      ArrowDown: [40, 'ArrowDown'], ArrowLeft: [37, 'ArrowLeft'], ArrowRight: [39, 'ArrowRight'], Home: [36, 'Home'], End: [35, 'End'],
+      '/': [191, 'Slash', '/'], '.': [190, 'Period', '.'] };
+    const [keyCode, code, character] = named[key] ?? (/^[a-z]$/i.test(key) ? [key.toUpperCase().charCodeAt(0), `Key${key.toUpperCase()}`, key]
+      : /^[0-9]$/.test(key) ? [key.charCodeAt(0), `Digit${key}`, key] : assert.fail(`No key description for ${key}`));
+    const text = modifiers & 6 ? undefined : character;
+    const base = { key, code, windowsVirtualKeyCode: keyCode, modifiers };
+    await send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', ...base, ...(text ? { text } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+    await frames();
+  }
+  /** A real double-click at the element's center: two clicks, then dblclick. */
+  async function doubleClick(selector) {
+    await frames();
+    const box = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+    for (const clickCount of [1, 2]) {
+      for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount });
+    }
     await frames();
   }
   /** What has focus: an id, a data-key or data-asset-id, or "body". */
   const focused = () => evaluate(`(() => { const el = document.activeElement; if (!el || el === document.body) return 'body';
     return el.id || el.getAttribute('data-key') || el.getAttribute('data-asset-id') || el.tagName; })()`);
+  /**
+   * The colour Chrome painted at one CSS pixel, as [r, g, b]. A 1×1 PNG needs no unfiltering: with no neighbours, every
+   * PNG filter leaves the bytes as they are.
+   */
+  async function pixel(x, y) {
+    await frames();
+    const { data } = await send('Page.captureScreenshot', { format: 'png', clip: { x, y, width: 1, height: 1, scale: 1 } });
+    const png = Buffer.from(data, 'base64');
+    const chunks = [];
+    for (let at = 8; at < png.length;) {
+      const length = png.readUInt32BE(at);
+      if (png.toString('latin1', at + 4, at + 8) === 'IDAT') chunks.push(png.subarray(at + 8, at + 8 + length));
+      at += length + 12;
+    }
+    return [...inflateSync(Buffer.concat(chunks)).subarray(1, 4)];
+  }
   /** A PNG of the page as it is now. */
   async function screenshot(path) {
     await frames();
@@ -411,7 +494,7 @@ async function openUi(options = {}, { width = 420, height = 720, theme: mode = n
     await browser.send('Target.closeTarget', { targetId }).catch(() => {});
     assert.deepEqual(errors, [], 'the page threw no errors');
   }
-  return { evaluate, waitFor, click, type, press, focused, frames, close, send, screenshot };
+  return { evaluate, waitFor, click, doubleClick, type, press, focused, frames, close, send, screenshot, pixel };
 }
 
 const listBusy = `document.getElementById('insert-list').getAttribute('aria-busy') === 'true'`;
@@ -515,6 +598,7 @@ test('a refused connection save during an artwork load leaves the list, Refresh,
   try {
     await page.waitFor(listBusy, { message: 'the artwork load to start' });
     await page.click('#settings-summary');
+    await page.click('#update-token');
     await page.click('#token');
     await page.type(fakeToken('rotated'));
     await page.click('#connect');
@@ -573,11 +657,64 @@ test('Sync keeps focus, and its button is only unavailable while it runs', async
   } finally { await page.close(); }
 });
 
+test('the Sync bar shows a linked layer above the footer on both tabs, and Cmd+Enter syncs from it', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const page = await openUi({ selection: linkedSelection(node), delays: { drafts: 300 } });
+  const box = id => `(() => { const r = document.getElementById('${id}').getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height) }; })()`;
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.waitFor(shown('selection-bar'));
+    assert.equal(await page.evaluate(textOf('sync-title')), 'Linked to home.banner');
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'from Production');
+    assert.equal(await page.evaluate(`document.getElementById('sync-console').href`), `https://console.assetlib.dev/w/org-one/app-a/images/${bannerArt}`);
+    await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/')`, { message: 'the linked image’s preview' });
+    assert.equal(await page.evaluate(inViewport('selection-bar')), true);
+    assert.equal(await page.evaluate(`document.getElementById('selection-bar').clientHeight`), 48, 'one 48 px row at 420 px, under its 1 px rule');
+    assert.equal(await page.evaluate(shown('hint-bar')), false, 'the hint steps aside while the Sync bar shows');
+    // Its ink fades in over 120 ms once the placements make it available.
+    await page.waitFor(`JSON.stringify(${inkPrimaries}) === '["sync"]'`, { message: 'nothing chosen: Sync is the primary' });
+    // A row chosen: the footer's Insert is the one primary, and the bar sits above the footer.
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    await page.waitFor(`JSON.stringify(${inkPrimaries}) === '["insert"]'`, { message: 'Insert, the one primary' });
+    assert.ok((await page.evaluate(box('selection-bar'))).bottom <= (await page.evaluate(box('insert-bar'))).top, 'above the footer');
+    // Tab goes from the list to the bar, then to the footer.
+    await page.press('Tab');
+    assert.equal(await page.focused(), 'sync-console');
+    await page.press('Tab');
+    assert.equal(await page.focused(), 'sync');
+    await page.press('Tab');
+    assert.equal(await page.evaluate(`document.getElementById('insert-bar').contains(document.activeElement)`), true, 'then the footer');
+    // Cmd+Enter (Ctrl+Enter off Apple platforms) is Sync, from anywhere outside the connection settings.
+    await page.click('#insert-search');
+    const command = await page.evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`) ? 4 : 2;
+    await page.press('Enter', command);
+    await page.waitFor(`document.getElementById('sync').textContent === 'Syncing…'`, { message: 'Sync to run' });
+    assert.equal(await page.focused(), 'insert-search', 'focus stays where the person was');
+    await page.waitFor(`document.getElementById('status').textContent === 'Synced home.banner to draft'`, { message: 'the sync' });
+    assert.equal(await page.evaluate(`__harness.log.filter(entry => entry.route === 'drafts').length`), 1);
+    // On Send the bar stays, and its Sync is the primary over Send.
+    await page.click('#tab-send');
+    assert.equal(await page.evaluate(shown('selection-bar')), true);
+    await page.waitFor(`JSON.stringify(${inkPrimaries}) === '["sync"]'`, { message: 'Sync, the primary on Send' });
+    assert.equal(await page.evaluate(`document.getElementById('send').className`), 'secondary');
+  } finally { await page.close(); }
+
+  // Opened from the layer's Sync to Assetlib button: the bar's Sync has focus, and nothing has synced.
+  const launched = await openUi({ selection: linkedSelection(node), command: 'sync' });
+  try {
+    await launched.waitFor(shown('selection-bar'));
+    await launched.waitFor(`document.activeElement?.id === 'sync'`, { message: 'Sync to take focus' });
+    assert.equal(await launched.evaluate(`document.getElementById('sync').matches(':focus-visible')`), true, 'with its focus ring');
+    assert.equal(await launched.evaluate(`__harness.log.filter(entry => entry.route === 'drafts').length`), 0);
+  } finally { await launched.close(); }
+});
+
 test('an error that arrives while a token is typed keeps every keystroke and focus in the field', async () => {
   const page = await openUi({ delays: { artwork: 800 }, statuses: { artwork: 500 } });
   try {
     await page.waitFor(listBusy, { message: 'the artwork load to start' });
     await page.click('#settings-summary');
+    await page.click('#update-token');
     await page.click('#token');
     await page.type('alk_typed_');
     await page.waitFor(shown('insert-empty'), { message: 'the load to fail' });
@@ -606,11 +743,13 @@ test('a 401 from the opening connection test while typing in search or the file 
     assert.equal(await search.evaluate(inViewport('insert-search')), true, 'the search is still in view');
   } finally { await search.close(); }
 
+  // The file link is asked for at a Send or Sync, or with Change on a file the document already names.
   const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
-  const link = await openUi({ preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null },
+  const link = await openUi({ preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null, file: { source: 'document', name: 'Untitled' } },
     statuses: { placements: 401 }, delays: { placements: 1200 } });
   try {
-    await link.click('#file-url');
+    await link.click('#file-change');
+    assert.equal(await link.focused(), 'file-url', 'Change asks for this file’s link');
     await link.type('https://www.fig');
     assert.equal(await link.evaluate(connectionError), false, 'typed before the test failed');
     await link.waitFor(connectionError, { message: 'the refused token' });
@@ -625,6 +764,7 @@ test('a passing opening test leaves the settings open while a new token is typed
   const page = await openUi({ delays: { placements: 1200 } });
   try {
     await page.click('#settings-summary');
+    await page.click('#update-token');
     await page.click('#token');
     await page.type('alk_new');
     assert.equal(await page.evaluate(textOf('status')), 'Testing connection…', 'typed while the test ran');
@@ -642,6 +782,7 @@ test('Connect closes the settings and moves focus to their summary, never the pa
   try {
     await page.waitFor(`${rows} === 7 && !document.getElementById('settings').open`, { message: 'the opening test and list' });
     await page.click('#settings-summary');
+    await page.click('#update-token');
     await page.click('#token');
     await page.type(fakeToken('rotated'));
     await page.press('Enter');
@@ -652,6 +793,7 @@ test('Connect closes the settings and moves focus to their summary, never the pa
     assert.deepEqual(await page.evaluate('__harness.notices'), ['Connected to Sample workspace · Sample app']);
     // Esc closes the settings too, and focus returns to the chip.
     await page.click('#settings-summary');
+    await page.click('#update-token');
     await page.click('#token');
     await page.press('Escape');
     assert.equal(await page.evaluate(`document.getElementById('settings').open`), false);
@@ -663,6 +805,7 @@ test('Connect closes the settings and moves focus to their summary, never the pa
   try {
     await slow.waitFor(`document.getElementById('status').textContent === 'Testing connection…'`, { message: 'the opening test' });
     await slow.click('#settings-summary');
+    await slow.click('#update-token');
     await slow.click('#connect');
     assert.equal(await slow.focused(), 'connect');
     assert.equal(await slow.evaluate(`document.getElementById('connect').getAttribute('aria-disabled')`), 'true');
@@ -768,11 +911,27 @@ const longRebound = (() => {
       previous: null, bound: cell('home.banner'), bindError: null, rebound: [cell('home.banner'), cell(longKey)] } } };
 })();
 
-test('no horizontal overflow at 320×480', async () => {
+// What main reports for a selected frame with children, with a name the footer's primary must shorten (A.5), and for
+// several shapes or one linked layer.
+const longFrame = 'A frame with a long name that has to be shortened somewhere';
+const intoLong = { mode: 'into', label: `Insert into ${longFrame}`, count: 1, nodeIds: ['40:1'], name: longFrame, containerWidth: 390 };
+const fillThree = { mode: 'fill', label: 'Fill 3 layers', count: 3, nodeIds: ['41:1', '41:2', '41:3'], containerWidth: 120 };
+const replaceOne = { mode: 'replace', label: 'Replace image', count: 1, nodeIds: ['42:1'], name: 'home.banner', containerWidth: 390 };
+const intoComponent = { mode: 'into', label: 'Insert into Card', count: 1, nodeIds: ['43:1'], name: 'Card', containerWidth: 390, insideComponent: true };
+const canvasSelection = insertTarget => ({ selection: { ...DEFAULTS.selection, insertTarget } });
+// A layer linked to home.banner as main reports it (A.7): its link, written on it for this app, names Production art.
+const bannerArt = '00000000-0000-4000-8000-000000010002';
+const linkedSelection = layer => ({ node: layer, reason: null, fileKey: 'abc123', file: { source: 'figma', name: '' },
+  remembered: { fileKey: 'abc123', nodeId: layer.id, placementKey: 'home.banner', state: null, appearance: null, arm: null, insertedFrom: { environment: 'production', assetId: bannerArt } },
+  link: { kind: 'linked', placementKey: 'home.banner', state: null, appearance: null, arm: null, environment: 'production', assetId: bannerArt } });
+
+test('no overflow at 320×480, 420×720, 640×900', async () => {
+  // Nothing wider than the window, and the page itself never scrolls either way: only the list (or the Send form) does.
   const check = `(() => { const width = document.documentElement.clientWidth; const region = document.getElementById('list-region');
     const wide = [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden')).filter(el => { const r = el.getBoundingClientRect();
       return r.width > 0 && r.right > width + 0.5; }).map(el => el.id || el.getAttribute('data-key') || el.className || el.tagName);
-    return { page: document.documentElement.scrollWidth - width, list: region.scrollWidth - region.clientWidth, wide: wide.slice(0, 5) }; })()`;
+    return { page: document.documentElement.scrollWidth - width, pageY: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+      list: region.scrollWidth - region.clientWidth, wide: wide.slice(0, 5) }; })()`;
   const tall = { id: '40:1', name: 'A frame with a long name that has to be shortened somewhere', type: 'FRAME', width: 390, height: 844 };
   const remembered = { fileKey: 'abc123', nodeId: tall.id, placementKey: 'home.banner', state: null, appearance: null, arm: null, insertedFrom: null };
   const scenarios = [
@@ -785,15 +944,95 @@ test('no horizontal overflow at 320×480', async () => {
     // A Sync's Details name other cells by key, and keys run up to 120 characters with no spaces.
     ['Sync’s Details with a long placement key', longRebound,
       async page => { await page.click('#sync'); await page.waitFor(shown('result')); await page.click('#result summary'); }],
+    // The footer's primary names the frame it inserts into, with the hint and Insert as new frame under it.
+    ['Insert into a frame with a long name', canvasSelection(intoLong),
+      async page => { await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['Fill several layers', canvasSelection(fillThree),
+      async page => { await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['Insert beside a component, with its note', canvasSelection(intoComponent),
+      async page => { await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]'); await page.waitFor(shown('insert-note')); }],
+    ['the hint bar, wrapped', {}, async page => { await page.waitFor(`${rows} === 7`); await page.waitFor(shown('hint-bar')); }],
+    // The Sync bar wraps its actions under its text rather than overflow: with the footer, with the ratio off, and for a copy.
+    ['the Sync bar above the footer', { selection: linkedSelection({ id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 }) },
+      async page => { await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['the Sync bar with the ratio off', { selection: linkedSelection(tall) }, async page => { await page.waitFor(`${rows} === 7`); await page.waitFor(shown('sync-match')); }],
+    ['the Sync bar for a copy', { selection: { ...linkedSelection(tall), remembered: null, link: { ...linkedSelection(tall).link, kind: 'copy' } } },
+      async page => { await page.waitFor(`${rows} === 7`); await page.waitFor(shown('sync-send')); }],
   ];
-  for (const [name, options, steps] of scenarios) {
-    const page = await openUi(options, { width: 320, height: 480 });
-    try {
-      await steps?.(page);
-      await page.frames();
-      assert.deepEqual(await page.evaluate(check), { page: 0, list: 0, wide: [] }, name);
-    } finally { await page.close(); }
+  for (const size of [{ width: 320, height: 480 }, { width: 420, height: 720 }, { width: 640, height: 900 }]) {
+    for (const [name, options, steps] of scenarios) {
+      const page = await openUi(options, size);
+      try {
+        await steps?.(page);
+        await page.frames();
+        assert.deepEqual(await page.evaluate(check), { page: 0, pageY: 0, list: 0, wide: [] }, `${name} at ${size.width}×${size.height}`);
+      } finally { await page.close(); }
+    }
   }
+});
+
+test('the selection names the footer’s primary, and Insert as new frame sits under it', async () => {
+  const page = await openUi(canvasSelection(intoLong));
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    assert.deepEqual(await page.evaluate(`(() => { const b = document.getElementById('insert'); const style = getComputedStyle(b);
+      return { text: b.textContent, title: b.title, cut: b.scrollWidth > b.clientWidth, overflow: style.textOverflow }; })()`),
+    { text: intoLong.label, title: intoLong.label, cut: true, overflow: 'ellipsis' }, 'a long name is shortened with an ellipsis, and whole on hover');
+    assert.deepEqual(await page.evaluate(`(() => { const a = document.getElementById('insert').getBoundingClientRect();
+      const b = document.getElementById('insert-new').getBoundingClientRect(); return { below: b.top >= a.bottom - 0.5, right: Math.round(a.right - b.right) }; })()`),
+    { below: true, right: 0 }, 'under the primary, right-aligned with it');
+    // The frame's name, quoted and cut to 24 characters, so the note stays short.
+    assert.equal(await page.evaluate(textOf('insert-note')), `Wider than “${longFrame.slice(0, 23)}…” (390\u00a0px). Try 3×.`);
+    assert.equal(await page.evaluate(shown('scale-group')), true);
+    assert.equal(await page.evaluate(inViewport('insert-new')), true);
+    await page.click('#insert');
+    await page.waitFor('window.__harness.targets.length === 1');
+    await page.waitFor(`!document.getElementById('insert').hasAttribute('aria-disabled')`, { message: 'the insert to finish' });
+    await page.click('#insert-new');
+    await page.waitFor('window.__harness.targets.length === 2');
+    assert.deepEqual(await page.evaluate('window.__harness.targets'), [{ kind: 'into', nodeId: '40:1' }, { kind: 'new' }]);
+    assert.equal(await page.focused(), 'insert-new', 'focus stays on the action');
+  } finally { await page.close(); }
+
+  for (const [target, expected, status] of [[fillThree, { kind: 'fill', nodeIds: fillThree.nodeIds }, 'Filled 3 layers with home.banner.'],
+    [replaceOne, { kind: 'fill', nodeIds: replaceOne.nodeIds }, 'Replaced image in home.banner.']]) {
+    const fill = await openUi(canvasSelection(target));
+    try {
+      await fill.waitFor(`${rows} === 7`);
+      await fill.click('#insert-list .placement[data-key="home.banner"]');
+      assert.equal(await fill.evaluate(textOf('insert')), target.label);
+      assert.equal(await fill.evaluate(shown('scale-group')), false, `${target.mode}: the layer keeps its size`);
+      assert.equal(await fill.evaluate(shown('insert-new')), true);
+      await fill.press('Enter');
+      await fill.waitFor('window.__harness.targets.length === 1');
+      assert.deepEqual(await fill.evaluate('window.__harness.targets'), [expected], `${target.mode}: Enter on the row runs the primary`);
+      await fill.waitFor(`${textOf('status')} === ${JSON.stringify(status)}`, { message: `${target.mode}: the status repeats the toast` });
+    } finally { await fill.close(); }
+  }
+
+  // Placement art is a component, which Figma puts in no component: Insert goes beside one, and the note says why.
+  // A library image, a frame, still goes in.
+  const component = await openUi(canvasSelection(intoComponent));
+  try {
+    await component.waitFor(`${rows} === 7`);
+    await component.click('#insert-list .placement[data-key="home.banner"]');
+    assert.deepEqual(await component.evaluate(`[${textOf('insert')}, ${shown('insert-new')}, ${textOf('insert-note')}, ${shown('insert-note')}]`),
+      ['Insert', false, 'Figma doesn’t put components inside components, so this goes beside Card.', true]);
+    await component.press('Enter');
+    await component.waitFor('window.__harness.targets.length === 1');
+    assert.deepEqual(await component.evaluate('window.__harness.targets'), [{ kind: 'new' }]);
+  } finally { await component.close(); }
+  const image = await openUi({ ...canvasSelection(intoComponent), preferences: { browse: 'images' } });
+  try {
+    await image.waitFor(`${tiles} > 0`);
+    await image.click('#image-grid .tile');
+    assert.equal(await image.evaluate(textOf('insert')), 'Insert into Card');
+    assert.doesNotMatch(await image.evaluate(textOf('insert-note')), /components/);
+    await image.click('#insert');
+    await image.waitFor('window.__harness.targets.length === 1');
+    assert.deepEqual(await image.evaluate('window.__harness.targets'), [{ kind: 'into', nodeId: '43:1' }]);
+  } finally { await image.close(); }
 });
 
 test('the embedded font loads: document.fonts.check(\'12px "Instrument Sans"\')', async () => {
@@ -864,12 +1103,14 @@ test('errors render inside the viewport', async () => {
 test('controls inside a callout stand apart from it, and hover shows in Figma’s themes', async () => {
   const tall = { id: '40:1', name: 'Home banner', type: 'FRAME', width: 390, height: 844 };
   // Each control inside a visible callout: its background differs from the callout's, and it has a visible border.
-  const apart = `[...document.querySelectorAll('.notice, .error')].filter(callout => callout.checkVisibility()).flatMap(callout => {
+  const apart = `[...document.querySelectorAll('.notice, .error, .info')].filter(callout => callout.checkVisibility()).flatMap(callout => {
     const back = getComputedStyle(callout).backgroundColor;
     return [...callout.querySelectorAll('input, select, button')].filter(control => control.checkVisibility()).map(control => {
       const style = getComputedStyle(control);
-      return { id: control.id || control.textContent, apart: style.backgroundColor !== back && style.borderTopStyle === 'solid'
-        && parseFloat(style.borderTopWidth) >= 1 && style.borderTopColor !== back && style.borderTopColor !== 'rgba(0, 0, 0, 0)' };
+      // A focused field's ring stands for its border (an invalid one's red border would double the ring).
+      const ring = control.matches(':focus-visible') && style.outlineStyle === 'solid' && parseFloat(style.outlineWidth) >= 2;
+      return { id: control.id || control.textContent, apart: style.backgroundColor !== back && (ring || (style.borderTopStyle === 'solid'
+        && parseFloat(style.borderTopWidth) >= 1 && style.borderTopColor !== back && style.borderTopColor !== 'rgba(0, 0, 0, 0)')) };
     });
   })`;
   async function hover(page, selector) {
@@ -880,14 +1121,22 @@ test('controls inside a callout stand apart from it, and hover shows in Figma’
   const style = (selector, property) => `getComputedStyle(document.querySelector(${JSON.stringify(selector)})).${property}`;
   for (const mode of ['light', 'dark', null]) {
     const label = mode ?? 'no theme';
-    // The file link, Link file, and Match ratio, all in callouts on Send.
-    const page = await openUi({ preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: null, remembered: null } }, { theme: mode });
+    // The file link, Link file, Use anyway, and Match ratio, all in callouts on Send: the first Send asks for the link,
+    // a link to another file is questioned, and a placement of another ratio is gated.
+    const page = await openUi({ preferences: { tab: 'send' }, fileName: 'Roam onboarding',
+      selection: { node: { ...tall, height: 160 }, reason: null, fileKey: null, remembered: null } }, { theme: mode });
     try {
       await page.waitFor(`document.getElementById('placement').options.length > 1`);
       await page.evaluate(choose('placement', 'home.banner'));
+      await page.click('#send');
+      assert.equal(await page.focused(), 'file-url');
+      await page.type('https://www.figma.com/design/zzz/Coast-house');
+      await page.press('Enter');
+      await page.waitFor(shown('file-mismatch-box'));
+      await page.evaluate(choose('placement', 'onboarding.hero'));
       await page.waitFor(shown('aspect-warning'));
       const controls = await page.evaluate(apart);
-      assert.deepEqual(controls.map(item => item.id), ['file-url', 'Link file', 'match-ratio'], label);
+      assert.deepEqual(controls.map(item => item.id), ['file-url', 'Link file', 'file-anyway', 'match-ratio'], label);
       assert.deepEqual(controls.filter(item => !item.apart), [], `${label}: every control stands apart from its callout`);
       // Hovering Match ratio changes its fill.
       const rest = await page.evaluate(style('#match-ratio', 'backgroundColor'));
@@ -1024,13 +1273,627 @@ test('footer, chip, grid, and tile details fit at 420 px', async () => {
     assert.deepEqual(names.slice(0, 2).map(name => name.lines), [2, 2], 'names with no break opportunity wrap to a second line');
     assert.equal(names.at(-1).clamped, true, 'a name longer than two lines is clamped (with an ellipsis)');
     await grid.click('#image-grid .tile');
-    assert.deepEqual(await grid.evaluate(`(() => { const tile = document.querySelector('#image-grid .tile[aria-pressed="true"]');
+    assert.deepEqual(await grid.evaluate(`(() => { const tile = document.querySelector('#image-grid .tile[aria-selected="true"]');
       return [getComputedStyle(tile).boxShadow !== 'none', getComputedStyle(tile.querySelector('.thumb')).boxShadow]; })()`), [true, 'none']);
   } finally { await grid.close(); }
 });
 
-// Every state in §4.6 that exists after A.3, in both themes, for the founder's review (not committed).
+// ---- A.4: the keyboard ----
+
+/** The chosen rows or tiles, and the rows or tiles that are a tab stop (tabindex 0), by key or asset id. */
+const chosenKeys = `[...document.querySelectorAll('[role="option"][aria-selected="true"]')].map(el => el.getAttribute('data-key') || el.getAttribute('data-asset-id'))`;
+const listStops = `[...document.querySelectorAll('[role="option"]')].filter(el => el.tabIndex === 0).map(el => el.getAttribute('data-key') || el.getAttribute('data-asset-id'))`;
+const valueOf = id => `document.getElementById('${id}').value`;
+
+test('≤15 tab stops with 500 placements', async () => {
+  const page = await openUi({ placements: 500, declared: true });
+  try {
+    await page.waitFor(`${rows} === 500`, { message: '500 placements' });
+    await page.click('#insert-list .placement[data-key="screen0.slot0"]');
+    // Tab from the first stop until focus leaves the page or comes round again: every stop, in order.
+    await page.evaluate(`document.getElementById('tab-insert').focus()`);
+    const stops = ['tab-insert'];
+    for (let i = 0; i < 40; i += 1) {
+      await page.press('Tab');
+      const id = await page.focused();
+      if (id === 'body' || stops.includes(id)) break;
+      stops.push(id);
+    }
+    assert.ok(stops.length <= 15, `${stops.length} tab stops: ${stops.join(', ')}`);
+    // Tabs → account → search → scope → list → footer; each tab list, radio group, and the list is one stop.
+    assert.deepEqual(stops, ['tab-insert', 'settings-summary', 'insert-search', 'insert-refresh', 'browse-placements', 'env-draft', 'screen0.slot0',
+      'insert-state', 'insert-appearance', 'insert-arm', 'scale-1', 'insert']);
+    assert.deepEqual(await page.evaluate(listStops), ['screen0.slot0'], 'one of the 500 rows is a tab stop');
+    // Shift+Tab from the footer comes back to the chosen row.
+    await page.evaluate(`document.getElementById('insert-state').focus()`);
+    await page.press('Tab', 8);
+    assert.equal(await page.focused(), 'screen0.slot0');
+  } finally { await page.close(); }
+});
+
+test('arrows move selection', async () => {
+  const page = await openUi();
+  try {
+    await page.waitFor(`${rows} === 7`);
+    // A listbox, with a group of options for each screen named by its header.
+    assert.deepEqual(await page.evaluate(`(() => { const list = document.getElementById('insert-list');
+      return [list.getAttribute('role'), list.getAttribute('aria-label'), list.querySelectorAll('[role="option"]').length,
+        [...list.querySelectorAll('[role="group"]')].map(group => document.getElementById(group.getAttribute('aria-labelledby')).textContent)]; })()`),
+    ['listbox', 'Placements', 7, ['Onboarding', 'Home', 'Settings']]);
+    await page.click('#insert-list .placement[data-key="onboarding.hero"]');
+    const at = async (key, message) => {
+      assert.equal(await page.focused(), key, message);
+      assert.deepEqual(await page.evaluate(chosenKeys), [key], `${message}: chosen`);
+      assert.deepEqual(await page.evaluate(listStops), [key], `${message}: the one tab stop`);
+      assert.equal(await page.evaluate(textOf('insert-title')), key, `${message}: the footer`);
+    };
+    await page.press('ArrowDown'); await at('onboarding.footer', '↓');
+    await page.press('ArrowDown'); await at('home.banner', '↓ into the next screen');
+    await page.press('ArrowUp'); await at('onboarding.footer', '↑');
+    await page.press('End'); await at('settings.empty', 'End');
+    await page.press('ArrowDown'); await at('settings.empty', '↓ on the last row');
+    await page.press('Home'); await at('onboarding.hero', 'Home');
+    await page.press('ArrowUp'); await at('onboarding.hero', '↑ on the first row');
+    // Type-ahead: a letter jumps to the next key it starts, the same letter to the one after, and letters typed together narrow.
+    // Letters more than half a second apart start a new search.
+    const pause = () => new Promise(resolve => setTimeout(resolve, 600));
+    await page.press('s'); await at('settings.header', 's');
+    await page.press('s'); await at('settings.empty', 's again');
+    await pause();
+    for (const key of 'home.p') await page.press(key);
+    await at('home.promo', 'home.p');
+    await pause();
+    await page.press('o'); await at('onboarding.hero', 'o, from the end round to the start');
+    // Space chooses the focused row (here after Esc cleared the choice); within a type-ahead it is a letter.
+    await page.press('Escape');
+    assert.deepEqual(await page.evaluate(chosenKeys), []);
+    await pause();
+    await page.press(' '); await at('onboarding.hero', 'Space');
+  } finally { await page.close(); }
+
+  // The list scrolls to keep the focused row in view, below its screen's header.
+  const long = await openUi({ placements: 30 });
+  try {
+    await long.waitFor(`${rows} === 30`);
+    await long.click('#insert-list .placement[data-key="screen0.slot0"]');
+    const visible = key => `(() => { const region = document.getElementById('list-region').getBoundingClientRect();
+      const row = document.querySelector('[data-key="${key}"]').getBoundingClientRect(); return row.top >= region.top + 27.5 && row.bottom <= region.bottom + 0.5; })()`;
+    await long.press('End');
+    assert.equal(await long.focused(), 'screen3.slot29');
+    assert.equal(await long.evaluate(visible('screen3.slot29')), true, 'End scrolls to the last row');
+    await long.press('Home');
+    assert.equal(await long.evaluate(visible('screen0.slot0')), true, 'Home scrolls back');
+    for (let i = 0; i < 9; i += 1) await long.press('ArrowDown');
+    assert.equal(await long.focused(), 'screen1.slot9');
+    assert.equal(await long.evaluate(visible('screen1.slot9')), true, 'the row ↓ reaches is in view, clear of the sticky header');
+  } finally { await long.close(); }
+
+  // The grid: ← and → move by a tile, ↑ and ↓ by a row of tiles; type-ahead takes spaces inside a name.
+  const grid = await openUi({ preferences: { browse: 'images' } });
+  try {
+    await grid.waitFor(`${tiles} === 24`);
+    assert.equal(await grid.evaluate(`getComputedStyle(document.getElementById('image-grid')).gridTemplateColumns.split(' ').length`), 3, 'three columns at 420 px');
+    assert.equal(await grid.evaluate(`document.getElementById('image-grid').getAttribute('role')`), 'listbox');
+    const ids = Object.fromEntries(await grid.evaluate(`[1, 2, 4, 5, 20, 22, 24].map(n => [n, __harness.uuid(n)])`));
+    await grid.click('#image-grid .tile');
+    const at = async (n, message) => {
+      assert.equal(await grid.focused(), ids[n], message);
+      assert.deepEqual(await grid.evaluate(chosenKeys), [ids[n]], `${message}: chosen`);
+      assert.deepEqual(await grid.evaluate(listStops), [ids[n]], `${message}: the one tab stop`);
+    };
+    await grid.press('ArrowRight'); await at(2, '→');
+    await grid.press('ArrowDown'); await at(5, '↓ a row');
+    await grid.press('ArrowLeft'); await at(4, '←');
+    await grid.press('ArrowUp'); await at(1, '↑ a row');
+    await grid.press('ArrowUp'); await at(1, '↑ on the first row');
+    await grid.press('End'); await at(24, 'End');
+    await grid.press('ArrowDown'); await at(24, '↓ on the last row');
+    await grid.press('ArrowUp'); await grid.press('ArrowLeft'); await at(20, '↑ then ←');
+    await grid.press('Home'); await at(1, 'Home');
+    for (const key of 'image 22') await grid.press(key);
+    await at(22, 'type-ahead with a space');
+  } finally { await grid.close(); }
+});
+
+test('Enter inserts', async () => {
+  const page = await openUi({ declared: true, unset: ['home.tile'] });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    // Only the keyboard: / to the search, a few letters, Tab to the list (one stop), Enter.
+    await page.press('/');
+    assert.equal(await page.focused(), 'insert-search');
+    await page.type('home');
+    for (let i = 0; i < 5; i += 1) await page.press('Tab');
+    assert.equal(await page.focused(), 'home.banner', 'past Clear search, Refresh, Browse, and Environment, the first row');
+    assert.deepEqual(await page.evaluate(chosenKeys), [], 'reaching the list chooses nothing');
+    await page.press('Enter');
+    await page.waitFor(`__harness.inserted() === 1 && document.getElementById('status').textContent === 'Inserted home.banner from Draft.'`, { message: 'the insert' });
+    assert.equal(await page.focused(), 'home.banner', 'focus stays on the row');
+    assert.deepEqual(await page.evaluate(chosenKeys), ['home.banner']);
+
+    // Enter inserts the cell the footer shows: choosing the chosen row again keeps it.
+    await page.press('Escape');
+    await page.click('#insert-list .placement[data-key="onboarding.hero"]');
+    await page.evaluate(choose('insert-appearance', 'dark'));
+    await page.evaluate(choose('insert-arm', 'b'));
+    await page.click('#insert-list .placement[data-key="onboarding.hero"]');
+    assert.deepEqual(await page.evaluate(`[${valueOf('insert-appearance')}, ${valueOf('insert-arm')}]`), ['dark', 'b']);
+    await page.press('Enter');
+    await page.waitFor(`__harness.inserted() === 2 && document.getElementById('status').textContent === 'Inserted onboarding.hero · b · dark from Draft.'`, { message: 'the picked cell' });
+
+    // A double-click inserts too.
+    await page.doubleClick('#insert-list .placement[data-key="home.promo"]');
+    await page.waitFor(`__harness.inserted() === 3 && document.getElementById('status').textContent === 'Inserted home.promo from Draft.'`, { message: 'the double-click' });
+    assert.equal(await page.focused(), 'home.promo');
+
+    // Enter on a row Insert can't use inserts nothing and says why, as the footer does.
+    await page.click('#insert-list .placement[data-key="home.tile"]');
+    await page.press('Enter');
+    assert.equal(await page.evaluate(textOf('status')), 'No image in Draft for this cell. Choose another cell or environment.');
+    assert.equal(await page.evaluate('__harness.inserted()'), 3);
+  } finally { await page.close(); }
+
+  // An insert that fails: focus moves to the error.
+  const failing = await openUi({ statuses: { rendition: 404 } });
+  try {
+    await failing.waitFor(`${rows} === 7`);
+    await failing.click('#insert-list .placement[data-key="home.banner"]');
+    await failing.press('Enter');
+    await failing.waitFor(shown('error'), { message: 'the error' });
+    assert.equal(await failing.focused(), 'error');
+  } finally { await failing.close(); }
+
+  // In the grid, Enter inserts the focused image.
+  const grid = await openUi({ preferences: { browse: 'images' } });
+  try {
+    await grid.waitFor(`${tiles} === 24`);
+    await grid.click('#image-grid .tile');
+    await grid.press('ArrowRight');
+    await grid.press('Enter');
+    await grid.waitFor(`__harness.inserted() === 1 && document.getElementById('status').textContent === 'Inserted Image 2.'`, { message: 'the image insert' });
+  } finally { await grid.close(); }
+});
+
+test('/ focuses search', async () => {
+  const page = await openUi();
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    await page.press('/');
+    assert.equal(await page.focused(), 'insert-search');
+    assert.equal(await page.evaluate(valueOf('insert-search')), '', 'the shortcut types nothing');
+    // In the search itself, / is a character.
+    await page.press('/');
+    assert.equal(await page.evaluate(valueOf('insert-search')), '/');
+    // From the Send tab: Insert shows, and the search's text is selected so typing replaces it.
+    await page.click('#tab-send');
+    await page.press('/');
+    assert.equal(await page.evaluate(shown('panel-insert')), true);
+    assert.equal(await page.focused(), 'insert-search');
+    assert.deepEqual(await page.evaluate(`(() => { const input = document.getElementById('insert-search'); return [input.selectionStart, input.selectionEnd]; })()`), [0, 1]);
+    // In the token field / is a character, and Cmd+F (Ctrl+F off Apple platforms) still reaches the search.
+    await page.click('#settings-summary');
+    await page.click('#update-token');
+    await page.click('#token');
+    await page.press('/');
+    assert.equal(await page.evaluate(valueOf('token')), '/');
+    assert.equal(await page.focused(), 'token');
+    const find = await page.evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`) ? 4 : 2;
+    await page.press('f', find);
+    assert.equal(await page.focused(), 'insert-search');
+    assert.equal(await page.evaluate(valueOf('token')), '/', 'the shortcut types nothing');
+  } finally { await page.close(); }
+
+  // The first run has no search, so / does nothing there.
+  const first = await openUi({ connection: null });
+  try {
+    await first.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
+    await first.press('/');
+    assert.equal(await first.focused(), 'body');
+  } finally { await first.close(); }
+});
+
+test('Esc clears search then selection', async () => {
+  const page = await openUi();
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    await page.click('#insert-search');
+    await page.type('home');
+    assert.equal(await page.evaluate(rows), 3);
+    await page.press('Escape');
+    assert.equal(await page.evaluate(valueOf('insert-search')), '', 'the first Esc clears the search');
+    assert.equal(await page.evaluate(rows), 7);
+    assert.deepEqual(await page.evaluate(chosenKeys), ['home.banner'], 'and keeps the choice');
+    assert.equal(await page.evaluate(shown('insert-bar')), true);
+    assert.equal(await page.focused(), 'insert-search');
+    await page.press('Escape');
+    assert.deepEqual(await page.evaluate(chosenKeys), [], 'the second clears the choice');
+    assert.equal(await page.evaluate(shown('insert-bar')), false);
+    assert.equal(await page.focused(), 'insert-search');
+    await page.press('Escape');
+    assert.equal(await page.focused(), 'insert-search', 'a third does nothing');
+
+    // In the list: a search first, then the choice; focus stays on the row, which keeps the tab stop.
+    await page.click('#insert-search');
+    await page.type('promo');
+    await page.click('#insert-list .placement[data-key="home.promo"]');
+    await page.press('Escape');
+    assert.deepEqual([await page.evaluate(valueOf('insert-search')), await page.evaluate(rows), await page.focused()], ['', 7, 'home.promo']);
+    assert.deepEqual(await page.evaluate(chosenKeys), ['home.promo']);
+    await page.press('Escape');
+    assert.deepEqual(await page.evaluate(chosenKeys), []);
+    assert.equal(await page.focused(), 'home.promo');
+    assert.deepEqual(await page.evaluate(listStops), ['home.promo']);
+    assert.equal(await page.evaluate(shown('insert-bar')), false);
+  } finally { await page.close(); }
+});
+
+test('arrow keys switch tabs', async () => {
+  const page = await openUi();
+  try {
+    await page.waitFor(`${rows} === 7`);
+    const tabState = `[...document.querySelectorAll('[role="tab"]')].map(tab => [tab.id, tab.getAttribute('aria-selected'), tab.tabIndex])`;
+    await page.click('#tab-insert');
+    assert.deepEqual(await page.evaluate(tabState), [['tab-insert', 'true', 0], ['tab-send', 'false', -1]], 'one tab stop');
+    await page.press('ArrowRight');
+    assert.equal(await page.focused(), 'tab-send');
+    assert.equal(await page.evaluate(shown('panel-send')), true);
+    assert.deepEqual(await page.evaluate(tabState), [['tab-insert', 'false', -1], ['tab-send', 'true', 0]]);
+    await page.press('ArrowRight');
+    assert.equal(await page.focused(), 'tab-insert', '→ wraps round');
+    assert.equal(await page.evaluate(shown('panel-insert')), true);
+    await page.press('ArrowLeft');
+    assert.equal(await page.focused(), 'tab-send');
+    await page.press('Home');
+    assert.equal(await page.focused(), 'tab-insert');
+    await page.press('End');
+    assert.equal(await page.focused(), 'tab-send');
+    await page.press('ArrowLeft');
+
+    // Each segmented control is a radio group, one tab stop, whose arrows choose.
+    const checked = ids => `${JSON.stringify(ids)}.map(id => [id, document.getElementById(id).getAttribute('aria-checked'), document.getElementById(id).tabIndex])`;
+    await page.click('#browse-placements');
+    await page.press('ArrowRight');
+    assert.equal(await page.focused(), 'browse-images');
+    assert.deepEqual(await page.evaluate(checked(['browse-placements', 'browse-images'])), [['browse-placements', 'false', -1], ['browse-images', 'true', 0]]);
+    await page.waitFor(`${tiles} === 24`, { message: 'the images' });
+    await page.press('ArrowLeft');
+    assert.equal(await page.focused(), 'browse-placements');
+    await page.waitFor(`${rows} === 7`, { message: 'the placements' });
+    // Nothing is published to Staging, so the arrows pass over it.
+    await page.click('#env-draft');
+    await page.press('ArrowRight');
+    assert.equal(await page.focused(), 'env-production');
+    assert.deepEqual(await page.evaluate(checked(['env-draft', 'env-staging', 'env-production'])),
+      [['env-draft', 'false', -1], ['env-staging', 'false', -1], ['env-production', 'true', 0]]);
+    await page.press('ArrowDown');
+    assert.equal(await page.focused(), 'env-draft', '↓ wraps round, past Staging');
+    // Insert at, in the footer.
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    await page.click('#scale-1');
+    await page.press('ArrowRight');
+    assert.equal(await page.focused(), 'scale-2');
+    assert.deepEqual(await page.evaluate(checked(['scale-1', 'scale-2', 'scale-3'])), [['scale-1', 'false', -1], ['scale-2', 'true', 0], ['scale-3', 'false', -1]]);
+    assert.equal(await page.evaluate(textOf('insert-meta')), '→ 585 × 240 · Draft', 'the size in Figma first, so a narrow window keeps it');
+  } finally { await page.close(); }
+});
+
+test('the focus ring is whole on a row and a tile reached with the arrow keys', async () => {
+  // Vermilion, by theme (ui.html); a thumbnail painted over a tile's ring once hid its top edge.
+  const focus = { light: [182, 63, 27], dark: [228, 87, 46] };
+  const near = (actual, expected) => actual.every((value, i) => Math.abs(value - expected[i]) <= 2);
+  const topCenter = selector => `(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [Math.round(r.left + r.width / 2), Math.floor(r.top)]; })()`;
+  for (const mode of ['light', 'dark']) {
+    const page = await openUi({}, { theme: mode });
+    try {
+      await page.waitFor(`${rows} === 7`);
+      await page.click('#insert-list .placement[data-key="home.banner"]');
+      await page.press('ArrowDown');
+      const [x, y] = await page.evaluate(topCenter('[data-key="home.promo"]'));
+      assert.ok(near(await page.pixel(x, y + 1), focus[mode]), `${mode}: the row's ring`);
+      // Inside the ring of a chosen row, a band of the panel background.
+      const bg = await page.evaluate(`getComputedStyle(document.body).backgroundColor.match(/\\d+/g).slice(0, 3).map(Number)`);
+      assert.ok(near(await page.pixel(x, y + 2), bg), `${mode}: the band inside the row's ring`);
+    } finally { await page.close(); }
+    const grid = await openUi({ preferences: { browse: 'images' } }, { theme: mode });
+    try {
+      await grid.waitFor(`${tiles} === 24`);
+      await grid.click('#image-grid .tile');
+      await grid.press('ArrowRight');
+      // A tile's ring sits 2 px outside it, clear of its name; on the chosen tile it takes the selection ring's place,
+      // with a band of the panel background inside it.
+      const [x, y] = await grid.evaluate(`(${topCenter('#image-grid .tile:focus')})`);
+      assert.ok(near(await grid.pixel(x, y - 3), focus[mode]), `${mode}: the tile's ring above it`);
+      const bg = await grid.evaluate(`getComputedStyle(document.body).backgroundColor.match(/\\d+/g).slice(0, 3).map(Number)`);
+      assert.ok(near(await grid.pixel(x, y - 1), bg), `${mode}: the band inside the tile's ring`);
+      assert.equal(await grid.evaluate(`(() => { const tile = document.activeElement; const name = tile.querySelector('.name').getBoundingClientRect();
+        return getComputedStyle(tile).outlineStyle === 'none' || name.left >= tile.getBoundingClientRect().left; })()`), true, `${mode}: no ring over the name`);
+      assert.equal(await grid.evaluate(`getComputedStyle(document.activeElement.querySelector('.thumb')).position`), 'static', `${mode}: nothing inside a tile is positioned`);
+    } finally { await grid.close(); }
+  }
+});
+
+// ---- A.6: drag to canvas ----
+test('rows drag to the canvas, and the hint bar shows how until the first insert', async () => {
+  const page = await openUi({ unset: ['home.tile'], legacy: ['settings.empty'], missing: ['home.promo'], huge: ['onboarding.footer'] });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    // Nothing chosen: the hint bar, in the window, in place of the footer.
+    assert.equal(await page.evaluate(shown('hint-bar')), true);
+    assert.equal(await page.evaluate(`document.querySelector('#hint-bar .hint-wide').innerText`), 'Drag onto the canvas, or select an item and press Enter.');
+    assert.equal(await page.evaluate(`document.querySelector('#hint-bar .hint-narrow').checkVisibility()`), false, 'its narrow wording shows only below 400 px');
+    assert.equal(await page.evaluate(inViewport('hint-bar')), true);
+    assert.equal(Math.round(await page.evaluate(`document.getElementById('hint-bar').getBoundingClientRect().height`)), 28);
+    // Only what Insert could insert drags; a thumbnail never drags its own image.
+    assert.deepEqual(await page.evaluate(`Object.fromEntries([...document.querySelectorAll('#insert-list .placement[data-key]')].map(row => [row.dataset.key, row.draggable]))`),
+      { 'onboarding.hero': true, 'onboarding.footer': false, 'home.banner': true, 'home.promo': false, 'home.tile': false, 'settings.header': true, 'settings.empty': false });
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#insert-list img')].filter(img => img.draggable).length`), 0);
+
+    // A real drag in Chrome: pressing a row and moving starts it, with the row's key as its data (no field here takes it).
+    await page.send('Input.setInterceptDrags', { enabled: true });
+    await page.evaluate(`window.__ends = []; document.addEventListener('dragend', event => __ends.push(event.view === window ? window.length : 'another view'))`);
+    const intercepted = new Promise(resolve => { const stop = browser.on(message => { if (message.method === 'Input.dragIntercepted') { stop(); resolve(message.params.data); } }); });
+    const box = await page.evaluate(`(() => { const r = document.querySelector('.placement[data-key="home.banner"]').getBoundingClientRect(); return { x: r.left + 40, y: r.top + 24 }; })()`);
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    for (let step = 1; step <= 5; step += 1) await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x - step * 12, y: box.y, button: 'left', buttons: 1 });
+    const data = await Promise.race([intercepted, new Promise((_, reject) => setTimeout(() => reject(new Error('Chrome started no drag')), 5000))]);
+    assert.deepEqual(data.items.map(item => [item.mimeType, item.data]), [['application/x-assetlib-item', 'home.banner']]);
+    assert.equal(data.dragOperationsMask & 1, 1, 'a copy');
+    // Cancelled, the drag ends in the plugin window: nothing goes to Figma.
+    await page.send('Input.dispatchDragEvent', { type: 'dragCancel', x: box.x, y: box.y, data });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    await page.send('Input.setInterceptDrags', { enabled: false });
+    await page.frames();
+    assert.deepEqual(await page.evaluate('__ends'), [0], 'Chrome ended it here: the event’s view is this window, which holds no frame');
+    assert.deepEqual(await page.evaluate('__harness.drops.length'), 0);
+
+    // Dropped outside the window (Figma's check: the event's view holds a frame), the row goes to Figma as a pluginDrop.
+    await page.evaluate(`(() => { const row = document.querySelector('.placement[data-key="home.banner"]');
+      row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
+      const end = new DragEvent('dragend', { bubbles: true, clientX: -150, clientY: 300 }); Object.defineProperty(end, 'view', { value: { length: 1 } });
+      row.dispatchEvent(end); })()`);
+    await page.waitFor(`__harness.inserted() === 1`, { message: 'the drop’s insert' });
+    const [drop] = await page.evaluate('__harness.drops');
+    assert.deepEqual({ ...drop, dropMetadata: { ...drop.dropMetadata, dropId: 'id' } }, { clientX: -150, clientY: 300, files: [], dropMetadata: { assetlib: 1, dropId: 'id',
+      connectionGeneration: 0, name: 'home.banner', frame: { width: 1170, height: 480 }, scale: 1,
+      link: { placementKey: 'home.banner', state: null, appearance: null, arm: null, environment: 'draft', assetId: await page.evaluate('__harness.uuid(10002)') } } });
+    assert.deepEqual(await page.evaluate('[__harness.targets.at(-1), __harness.insertDrops.at(-1)]'), [{ kind: 'fill', nodeIds: ['300:1'] }, drop.dropMetadata.dropId],
+      'the insert fills the placeholder main made');
+    // The first insert retires the hint; the panel is free again.
+    await page.waitFor(`!(${shown('hint-bar')})`, { message: 'the hint to go' });
+    assert.equal(await page.evaluate(textOf('status')), 'Inserted home.banner from Draft.');
+    assert.deepEqual(await page.evaluate(`__harness.received.filter(type => type === 'save-preferences').length`), 1);
+    assert.equal(await page.evaluate(`document.getElementById('insert-list').getAttribute('aria-busy')`), null);
+  } finally { await page.close(); }
+
+  // A drop main refuses says why in the error line; Close retires the hint on its own.
+  const refused = await openUi({ dropRefused: 'The connection changed. Drag the image again.', placements: 3 });
+  try {
+    await refused.waitFor(`${rows} === 3`);
+    await refused.evaluate(`(() => { const row = document.querySelector('.placement[data-key="onboarding.hero"]');
+      row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
+      const end = new DragEvent('dragend', { bubbles: true, clientX: 500, clientY: 100 }); Object.defineProperty(end, 'view', { value: { length: 1 } });
+      row.dispatchEvent(end); })()`);
+    await refused.waitFor(shown('error-box'));
+    assert.equal(await refused.evaluate(textOf('error')), 'The connection changed. Drag the image again.');
+    assert.equal(await refused.evaluate(inViewport('error-box')), true);
+    assert.equal(await refused.evaluate('__harness.inserted()'), 0);
+    await refused.click('#hint-close');
+    assert.equal(await refused.evaluate(shown('hint-bar')), false);
+    assert.notEqual(await refused.focused(), 'body', 'closing the hint never drops focus to the page');
+  } finally { await refused.close(); }
+});
+
+// ---- A.8: the window size ----
+
+/** Resizes the page as Figma resizes the plugin window when main calls figma.ui.resize. */
+const resizeTo = async (page, width, height) => {
+  await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+  await page.frames();
+};
+const gripBox = `(() => { const grip = document.getElementById('resize-grip'); const r = grip.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + 6, r.top + 6);
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2, right: r.right, bottom: r.bottom, width: r.width, height: r.height, cursor: getComputedStyle(grip).cursor,
+    hit: Boolean(hit && grip.contains(hit)) }; })()`;
+
+test('the grip resizes the window, keeps focus, saves the size on pointer-up, and a double-click restores the default', async () => {
+  const page = await openUi({ declared: true, placements: 30 });
+  try {
+    await page.waitFor(`${rows} === 30`);
+    await page.click('#insert-list .placement[data-key="screen0.slot0"]');
+    await page.click('#insert-search');
+    const bars = `['.topbar', '.toolbar', '.scopebar'].map(s => Math.round(document.querySelector(s).getBoundingClientRect().height))`;
+    const barsBefore = await page.evaluate(bars);
+    const listBefore = await page.evaluate(`Math.round(document.getElementById('list-region').getBoundingClientRect().height)`);
+    const grip = await page.evaluate(gripBox);
+    assert.deepEqual({ ...grip, x: undefined, y: undefined }, { x: undefined, y: undefined, right: 420, bottom: 720, width: 12, height: 12, cursor: 'nwse-resize', hit: true },
+      'a 12 px grip in the bottom-right corner, over the footer');
+    // Clear of the footer's controls: the primary ends in the 12 px side padding the grip sits in.
+    assert.ok(await page.evaluate(`document.getElementById('insert').getBoundingClientRect().right <= 408.5`));
+
+    // A drag: each frame asks for the size under the pointer, which Figma applies; letting go saves it.
+    const mouse = (type, x, y, extra = {}) => page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', ...extra });
+    await mouse('mouseMoved', grip.x, grip.y, { button: 'none' });
+    await mouse('mousePressed', grip.x, grip.y, { clickCount: 1 });
+    assert.equal(await page.focused(), 'insert-search', 'pressing the grip leaves focus where it was');
+    for (const [x, y] of [[grip.x + 40, grip.y + 30], [grip.x + 100, grip.y + 60]]) {
+      await mouse('mouseMoved', x, y, { buttons: 1 });
+      await page.frames();
+      const asked = await page.evaluate('__harness.resizes.at(-1)');
+      await resizeTo(page, asked.width, asked.height);
+    }
+    assert.deepEqual(await page.evaluate('__harness.resizes'), [{ width: 460, height: 750 }, { width: 520, height: 780 }], 'one size a frame, the grip kept under the pointer');
+    assert.equal(await page.evaluate('__harness.saved.filter(prefs => prefs.window).length'), 0, 'nothing saved during the drag');
+    await mouse('mouseReleased', grip.x + 100, grip.y + 60, { clickCount: 1 });
+    await page.frames();
+    assert.deepEqual(await page.evaluate('__harness.saved.at(-1).window'), { width: 520, height: 780 });
+    assert.deepEqual(await page.evaluate(`(() => { const r = document.getElementById('resize-grip').getBoundingClientRect(); return [r.right, r.bottom]; })()`), [520, 780],
+      'the grip follows the corner');
+    assert.equal(await page.focused(), 'insert-search', 'resizing never takes focus');
+    // Only the list grows; the bars keep their heights.
+    assert.deepEqual(await page.evaluate(bars), barsBefore);
+    assert.equal(await page.evaluate(`Math.round(document.getElementById('list-region').getBoundingClientRect().height)`), listBefore + 60);
+
+    // Smaller than the minimum: the UI asks for 320 × 480 at the least.
+    const corner = await page.evaluate(gripBox);
+    await mouse('mouseMoved', corner.x, corner.y, { button: 'none' });
+    await mouse('mousePressed', corner.x, corner.y, { clickCount: 1 });
+    await mouse('mouseMoved', 60, 60, { buttons: 1 });
+    await page.frames();
+    await mouse('mouseReleased', 60, 60, { clickCount: 1 });
+    await page.frames();
+    assert.deepEqual(await page.evaluate('__harness.resizes.at(-1)'), { width: 320, height: 480 });
+    assert.deepEqual(await page.evaluate('__harness.saved.at(-1).window'), { width: 320, height: 480 });
+    await resizeTo(page, 320, 480);
+
+    // A double-click: the default size, and the saved size forgotten.
+    const resizes = await page.evaluate('__harness.resizes.length');
+    await page.doubleClick('#resize-grip');
+    await page.waitFor(`__harness.resizes.at(-1) === 'reset'`, { message: 'the reset' });
+    assert.equal(await page.evaluate('__harness.resizes.length'), resizes + 1, 'nothing else is asked for');
+    assert.equal(await page.evaluate(`'window' in __harness.saved.at(-1)`), false);
+    assert.equal(await page.focused(), 'insert-search', 'a double-click leaves focus where it was');
+  } finally { await page.close(); }
+});
+
+test('the layout follows the window: an Environment dropdown and value-only pickers below 400 px, a meta column from 560 px', async () => {
+  const page = await openUi({ declared: true, placements: 30 }, { width: 380, height: 640 });
+  try {
+    await page.waitFor(`${rows} === 30`);
+    // The radios give way to a 24 px dropdown with the same choices; staging has nothing published.
+    const visible = id => `document.getElementById('${id}').checkVisibility()`;
+    assert.deepEqual(await page.evaluate(`[${visible('env-group')}, ${visible('env-select')}, Math.round(document.getElementById('env-select').getBoundingClientRect().height)]`), [false, true, 24]);
+    assert.deepEqual(await page.evaluate(`[${valueOf('env-select')}, document.getElementById('env-option-staging').disabled, document.getElementById('env-select').getAttribute('aria-label')]`),
+      ['draft', true, 'Environment']);
+    await page.evaluate(choose('env-select', 'production'));
+    await page.frames();
+    assert.equal(await page.evaluate(`document.getElementById('env-production').getAttribute('aria-checked')`), 'true');
+    // The footer's pickers show their values; each select keeps its name.
+    await page.click('#insert-list .placement[data-key="screen0.slot0"]');
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker-word')].map(word => word.checkVisibility())`), [false, false, false]);
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker select')].map(select => select.getAttribute('aria-label'))`), ['State', 'Appearance', 'A/B arm']);
+    assert.equal(await page.evaluate(`new Set([...document.querySelectorAll('#insert-bar .picker')].map(label => Math.round(label.getBoundingClientRect().top))).size`), 1,
+      'all three on one row');
+
+    // Crossing 400 px moves focus between the dropdown and the radios, never to the page.
+    await page.evaluate(`document.getElementById('env-select').focus()`);
+    await resizeTo(page, 420, 640);
+    assert.equal(await page.focused(), 'env-production');
+    assert.deepEqual(await page.evaluate(`[${visible('env-group')}, ${visible('env-select')}]`), [true, false]);
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker-word')].every(word => word.checkVisibility())`), true);
+    await resizeTo(page, 360, 640);
+    assert.equal(await page.focused(), 'env-select');
+
+    // From 560 px a row's meta sits in a right-aligned column before the tag column, on the key's line.
+    await resizeTo(page, 640, 900);
+    const columns = await page.evaluate(`[...document.querySelectorAll('#insert-list .placement[data-key]')].slice(0, 8).map(row => {
+      const key = row.querySelector('.key').getBoundingClientRect(); const size = row.querySelector('.size').getBoundingClientRect();
+      return { right: Math.round(size.right), after: size.left >= key.right, line: Math.abs((key.top + key.bottom) / 2 - (size.top + size.bottom) / 2) < 1, height: Math.round(row.getBoundingClientRect().height) }; })`);
+    assert.equal(new Set(columns.map(column => column.right)).size, 1, `the meta column is right-aligned: ${JSON.stringify(columns.map(column => column.right))}`);
+    assert.ok(columns.every(column => column.after && column.line && column.height === 48), JSON.stringify(columns));
+  } finally { await page.close(); }
+  // Every tag, the widest ("Needs re-upload") included, fits the tag column, so the meta column stays aligned.
+  const tagged = await openUi({ changed: ['home.banner'], unset: ['home.tile'], legacy: ['settings.empty'], missing: ['home.promo'] }, { width: 640, height: 900 });
+  try {
+    await tagged.waitFor(`${rows} === 7`);
+    await tagged.evaluate('document.fonts.ready.then(() => true)');
+    await tagged.frames();
+    const edges = await tagged.evaluate(`[...document.querySelectorAll('#insert-list .placement[data-key]')].map(row => [row.querySelector('.tag')?.textContent ?? '',
+      Math.round(row.querySelector('.size').getBoundingClientRect().right), row.querySelector('.tag') ? Math.round(row.querySelector('.tag').getBoundingClientRect().right) : null])`);
+    assert.deepEqual(edges.map(([tag]) => tag), ['Draft only', '', 'Changed', 'Unavailable', 'Not set', '', 'Needs re-upload']);
+    assert.equal(new Set(edges.map(([, size]) => size)).size, 1, JSON.stringify(edges));
+    assert.equal(new Set(edges.filter(([tag]) => tag).map(([, , right]) => right)).size, 1, 'tags end at the row’s padding');
+  } finally { await tagged.close(); }
+
+  // The image grid takes four columns at 560 px and more beyond.
+  for (const [width, count] of [[420, 3], [560, 4], [900, 7]]) {
+    const grid = await openUi({ preferences: { browse: 'images' } }, { width, height: 720 });
+    try {
+      await grid.waitFor(`${tiles} === 24`);
+      assert.equal(await grid.evaluate(`(() => { const top = tile => Math.round(tile.getBoundingClientRect().top); const all = [...document.querySelectorAll('#image-grid .tile')];
+        return all.filter(tile => top(tile) === top(all[0])).length; })()`), count, `${width} px`);
+    } finally { await grid.close(); }
+  }
+});
+
+test('the window opens on the shell while the saved connection loads, never the first-run screen', async () => {
+  // Main's connection message comes 600 ms after the UI loads; the font loads and the window is resized meanwhile. Before
+  // A.8 the font's render showed the first-run screen, and a refused opening test then left the settings open over the shell.
+  const view = `[document.getElementById('app').dataset.view, document.getElementById('settings').open]`;
+  for (const [name, options, loaded] of [['a passing opening test', {}, `${rows} === 7`],
+    ['a refused opening test', { statuses: { placements: 401 } }, shown('insert-empty')]]) {
+    const page = await openUi({ ...options, delays: { connection: 600 } });
+    try {
+      await page.evaluate('document.fonts.ready.then(() => true)');
+      await page.frames();
+      assert.deepEqual(await page.evaluate(view), ['shell', false], `${name}: before the connection message`);
+      await resizeTo(page, 440, 700);
+      assert.deepEqual(await page.evaluate(view), ['shell', false], `${name}: resized before the connection message`);
+      await page.waitFor(loaded);
+      await page.frames();
+      assert.deepEqual(await page.evaluate(view), ['shell', false], `${name}: the connection settings stay closed`);
+    } finally { await page.close(); }
+  }
+});
+
+// Every state in §4.6 that exists after A.4, in both themes, for the founder's review (not committed).
 const shots = process.env.ASSETLIB_SCREENSHOTS;
+test('a running action keeps its ink and a spinner, and the shell gives names and the list their room', async () => {
+  // Insert running: ink at 80% with a spinner, never the disabled look, and the controls beside it stay put.
+  const page = await openUi({ delays: { rendition: 1500 } });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    const scaleLeft = `Math.round(document.getElementById('scale-group').getBoundingClientRect().left)`;
+    const idle = await page.evaluate(scaleLeft);
+    await page.click('#insert');
+    await page.waitFor(`document.getElementById('insert').getAttribute('aria-busy') === 'true'`, { message: 'the insert to run' });
+    assert.deepEqual(await page.evaluate(`(() => { const b = document.getElementById('insert'); const s = getComputedStyle(b);
+      return [b.textContent, s.backgroundColor === getComputedStyle(document.body).backgroundColor, getComputedStyle(b, '::before').animationName, s.cursor]; })()`),
+    ['Inserting…', false, 'spin', 'progress']);
+    assert.equal(await page.evaluate(scaleLeft), idle, 'the label change moves nothing beside it');
+    assert.notEqual(await page.evaluate(`getComputedStyle(document.getElementById('insert')).backgroundColor`),
+      await page.evaluate(`getComputedStyle(document.documentElement).getPropertyValue('--bg-disabled')`), 'not the disabled fill');
+    // The chip has room for both names at 420 px; the open panel is a menu, not the token form.
+    assert.equal(await page.evaluate(`(() => { const el = document.querySelector('.chip-workspace'); return el.scrollWidth <= el.clientWidth; })()`), true);
+    await page.click('#settings-summary');
+    assert.deepEqual(await page.evaluate(`[document.getElementById('connection-form').checkVisibility(), document.getElementById('update-token').checkVisibility()]`), [false, true]);
+  } finally { await page.close(); }
+
+  // At 320×480 with the account menu open, the list keeps rows in view; the footer keeps the item's name readable.
+  const narrow = await openUi(canvasSelection(intoLong), { width: 320, height: 480 });
+  try {
+    await narrow.waitFor(`${rows} === 7`);
+    await narrow.click('#insert-list .placement[data-key="home.banner"]');
+    assert.ok(await narrow.evaluate(`document.getElementById('insert-title').getBoundingClientRect().width`) >= 88, 'the name keeps 88 px');
+    assert.equal(await narrow.evaluate(`document.getElementById('insert-preview').checkVisibility()`), false, 'the chosen row shows the image already');
+    await narrow.click('#settings-summary');
+    assert.ok(await narrow.evaluate(`document.getElementById('list-region').getBoundingClientRect().height`) >= 96, 'two rows or more stay in view');
+  } finally { await narrow.close(); }
+
+  // Tile names break after their separators.
+  const grid = await openUi({ preferences: { browse: 'images' }, imageNames: longImageNames });
+  try {
+    await grid.waitFor(`${tiles} === 24`);
+    assert.equal(await grid.evaluate(`document.querySelectorAll('#image-grid .tile .name wbr').length > 0`), true);
+  } finally { await grid.close(); }
+
+  // The first run sits in the middle of a tall window; an invalid field that has focus shows the ring, not a red border too.
+  const first = await openUi({ connection: null }, { width: 420, height: 900 });
+  try {
+    await first.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
+    await first.frames();
+    assert.ok(await first.evaluate(`document.querySelector('.first-run h1').getBoundingClientRect().top`) > 150, 'not stuck to the top');
+    await first.click('#token');
+    await first.type('not-a-token');
+    await first.press('Enter');
+    assert.equal(await first.focused(), 'token');
+    assert.deepEqual(await first.evaluate(`(() => { const s = getComputedStyle(document.getElementById('token')); return [s.borderTopColor, s.outlineStyle]; })()`),
+      ['rgba(0, 0, 0, 0)', 'solid']);
+  } finally { await first.close(); }
+});
+
 test('screenshots of every state in both themes', { skip: shots ? false : 'set ASSETLIB_SCREENSHOTS=<directory> to write them' }, async () => {
   await mkdir(shots, { recursive: true });
   const node = { id: '40:1', name: 'Home banner', type: 'FRAME', width: 390, height: 160 };
@@ -1042,6 +1905,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     await page.evaluate(choose('placement', 'home.banner'));
   };
   const submit = text => async page => { await page.click('#token'); await page.type(text); await page.press('Enter'); await page.waitFor(shown('connection-error')); };
+  const askForLink = async page => { await pickBanner(page); await page.click('#send'); await page.waitFor(shown('file-fallback')); };
   const states = [
     ['first-run', { connection: null }],
     ['first-run-bad-format', { connection: null }, submit('not-a-token')],
@@ -1049,15 +1913,25 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['first-run-scope', { connection: null, identity: { ...DEFAULTS.identity, scopes: ['declare'] } }, submit(fakeToken('declare'))],
     ['first-run-older-console', { connection: null, statuses: { token: 404 } }, submit(fakeToken('older'))],
     ['insert-loading', { delays: { artwork: 8000 } }, page => page.waitFor(skeletonRows)],
+    // Nothing chosen: the hint bar sits where the footer goes, until the first insert.
     ['insert-list', { unset: ['home.tile'], legacy: ['settings.empty'] }, ready],
+    ['insert-hint-seen', { preferences: { hintSeen: true } }, ready],
     ['insert-selected-pickers', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
     ['insert-scale-3x', {}, async page => { await ready(page); await page.click('#insert-list .placement[data-key="onboarding.hero"]'); await page.click('#scale-3'); }],
     ['insert-not-set', { unset: ['home.tile'] }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.tile"]'); }],
     ['insert-needs-reupload', { legacy: ['settings.empty'] }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="settings.empty"]'); }],
     ['insert-error', { statuses: { rendition: 404 } }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); await page.click('#insert'); await page.waitFor(shown('error')); }],
     ['insert-production', { preferences: { environment: 'production' } }, ready],
+    // The selection names the primary (A.5): into a frame (with the width hint), fill several layers, replace a linked image.
+    ['insert-into', canvasSelection(intoLong), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['insert-fill', canvasSelection(fillThree), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['insert-replace', canvasSelection(replaceOne), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
     ['images-grid', { preferences: { browse: 'images' }, imageNames: longImageNames }, page => page.waitFor(`${tiles} === 24`)],
     ['images-selected', { preferences: { browse: 'images' }, imageNames: longImageNames }, async page => { await page.waitFor(`${tiles} === 24`); await page.click('#image-grid .tile'); }],
+    // The focus ring on a chosen row and tile, reached with the arrow keys.
+    ['insert-keyboard-focus', {}, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); await page.press('ArrowDown'); }],
+    ['images-keyboard-focus', { preferences: { browse: 'images' }, imageNames: longImageNames },
+      async page => { await page.waitFor(`${tiles} === 24`); await page.click('#image-grid .tile'); await page.press('ArrowRight'); }],
     ['no-placements', { artwork: 'empty' }, page => page.waitFor(shown('insert-empty'))],
     ['no-results', {}, async page => { await ready(page); await page.click('#insert-search'); await page.type('zzz'); }],
     ['images-empty-library', { images: 0, preferences: { browse: 'images' } }, page => page.waitFor(shown('insert-empty'))],
@@ -1086,7 +1960,19 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['send-several', { preferences: { tab: 'send' }, selection: { node: null, reason: 'Select one layer. Sending several at once isn’t supported yet.', fileKey: 'abc123', remembered: null } }],
     ['send-selection', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner],
     ['send-ratio-gate', { preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner],
-    ['send-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, pickBanner],
+    ['send-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, askForLink],
+    ['send-file-mismatch', { preferences: { tab: 'send' }, fileName: 'Roam onboarding', selection: { node, reason: null, fileKey: null, remembered: null } },
+      async page => { await askForLink(page); await page.type('https://www.figma.com/design/zzz/Coast-house'); await page.press('Enter'); await page.waitFor(shown('file-mismatch-box')); }],
+    ['send-file-line', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null, file: { source: 'document', name: 'Roam onboarding' } } }, pickBanner],
+    ['send-view-only', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null, file: { source: 'session', name: 'Roam onboarding' } } }, pickBanner],
+    // The Sync bar (A.7): on Insert and Send, with the ratio off, a copy, another app's link, and a placement that's gone.
+    ['sync-bar-insert', { selection: linkedSelection(node) }, async page => { await ready(page); await page.waitFor(shown('selection-bar')); }],
+    ['sync-bar-insert-chosen', { selection: linkedSelection(node) }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['sync-bar-send', { preferences: { tab: 'send' }, selection: linkedSelection(node) }, page => page.waitFor(shown('selection-bar'))],
+    ['sync-bar-ratio', { selection: linkedSelection(tall) }, async page => { await ready(page); await page.waitFor(shown('sync-match')); }],
+    ['sync-bar-copy', { selection: { ...linkedSelection(node), remembered: null, link: { ...linkedSelection(node).link, kind: 'copy' } } }, ready],
+    ['sync-bar-other', { selection: { ...linkedSelection(node), remembered: null, link: { ...linkedSelection(node).link, kind: 'other' } } }, ready],
+    ['sync-bar-removed', { selection: { ...linkedSelection(node), remembered: { ...linkedSelection(node).remembered, placementKey: 'home.gone' } } }, ready],
     ['send-sending', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null }, delays: { drafts: 8000 } },
       async page => { await pickBanner(page); await page.click('#send'); await page.waitFor(`document.getElementById('send').textContent === 'Sending…'`); }],
     ['send-sent', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null } },
@@ -1107,16 +1993,26 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
         bound: null, bindError: 'This placement changed since the plugin loaded it.', rebound: [] } } },
       async page => { await pickBanner(page); await page.click('#send'); await page.waitFor(shown('result')); }],
   ];
-  const narrow = [['narrow-first-run', { connection: null }], ['narrow-list', { declared: true, placements: 30 },
+  const narrow = [['narrow-first-run', { connection: null }], ['narrow-hint', {}, ready], ['narrow-list', { declared: true, placements: 30 },
     async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
-  ['narrow-file-link', { preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: null, remembered: null } }, pickBanner],
+  ['narrow-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, askForLink],
+  ['narrow-sync-bar', { selection: linkedSelection(node) }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+  ['narrow-sync-bar-ratio', { selection: linkedSelection(tall) }, async page => { await ready(page); await page.waitFor(shown('sync-match')); }],
+  ['narrow-insert-into', canvasSelection(intoLong), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
   ['narrow-send-problem', { statuses: { placements: 401 }, preferences: { tab: 'send' } }, page => page.waitFor(shown('send-problem'))],
   ['narrow-sync-long-key', longRebound, async page => { await page.click('#sync'); await page.waitFor(shown('result')); await page.click('#result summary'); }],
   ['narrow-older-console', { connection: null, statuses: { token: 404 } }, submit(fakeToken('older'))],
   ['narrow-account', { connection: { ...DEFAULTS.connection, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' } },
-    async page => { await ready(page); await page.click('#settings-summary'); }]];
+    async page => { await ready(page); await page.click('#settings-summary'); }],
+  ['narrow-images', { preferences: { browse: 'images' }, imageNames: longImageNames }, page => page.waitFor(`${tiles} === 24`)]];
+  // A window dragged wider and taller (A.8): the meta column, more tiles a row, and only the list grown.
+  const wide = [['wide-list', { changed: ['home.banner'], unset: ['home.tile'], legacy: ['settings.empty'] }, ready],
+    ['wide-selected-pickers', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
+    ['wide-images', { preferences: { browse: 'images' }, imageNames: longImageNames }, page => page.waitFor(`${tiles} === 24`)],
+    ['wide-send', { preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner]];
   for (const mode of ['light', 'dark']) {
-    for (const [name, options, steps, size] of [...states, ...narrow.map(([name, options, steps]) => [name, options, steps, { width: 320, height: 480 }])]) {
+    for (const [name, options, steps, size] of [...states, ...narrow.map(([name, options, steps]) => [name, options, steps, { width: 320, height: 480 }]),
+      ...wide.map(([name, options, steps]) => [name, options, steps, { width: 640, height: 900 }])]) {
       const page = await openUi(options, { theme: mode, ...(size ?? {}) });
       try {
         await steps?.(page);

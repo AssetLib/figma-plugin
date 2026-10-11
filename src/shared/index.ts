@@ -7,5 +7,5 @@ export * from './http.js';
 export * from './library.js';
 export * from './links.js';
 export * from './placements.js';
-export { isUint8Array, validArm, validFileKey, validNodeId, validSha256, validUuid } from './validation.js';
+export { isUint8Array, validArm, validFileKey, validNodeId, validPlacementKey, validSha256, validUuid } from './validation.js';
 export * from './marker.js';

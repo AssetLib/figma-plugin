@@ -1,5 +1,5 @@
 import { MISSING_INSERT, TOKEN_NO_LONGER_ACCEPTED, defaultPreferences } from '../shared/index.js';
-import type { Connection, Placement, Preferences } from '../shared/index.js';
+import type { CanvasTarget, Connection, Placement, Preferences } from '../shared/index.js';
 import type { SelectionState } from '../shared/protocol.js';
 
 /**
@@ -22,16 +22,19 @@ export function readProblem(failure: ReadFailure | null): ReadProblem {
   return { text: failure.text, action: 'retry' };
 }
 
+/** Insert with nothing selected, or before main reports the selection: a new frame. */
+export const NEW_FRAME: CanvasTarget = { mode: 'new', label: 'Insert', count: 0, nodeIds: [] };
+
 // State more than one module reads. Each module keeps the rest to itself.
 export const state = {
   connection: null as Connection | null,
   // Null while a connection save awaits main's acknowledgement, so no selection reply is trusted meanwhile.
   connectionGeneration: null as number | null,
   selectionGeneration: null as number | null,
-  selection: { node: null, reason: 'Select a frame or layer to send.', fileKey: null, remembered: null } as SelectionState,
+  selection: { node: null, reason: 'Select a frame or layer to send.', fileKey: null, remembered: null, insertTarget: NEW_FRAME } as SelectionState,
   // The Send tab's placements, from the connection test.
   placements: [] as Placement[],
-  // Set by a successful placements read in this generation: a later network failure on an Insert read then means an older console.
+  // Set by a successful placements read in this generation: Send has its placements.
   placementsLoaded: false,
   // Why this generation's connection test failed, until a read succeeds: Send says it in place of its placements.
   testFailure: null as ReadFailure | null,

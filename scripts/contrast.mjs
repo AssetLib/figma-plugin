@@ -59,7 +59,8 @@ export async function checkContrast() {
     if (!tokens[name]) throw new Error(`src/ui.html no longer defines --${name} as a Figma variable with a fallback.`);
   }
   if (!/--al-text-meta:\s*color-mix\(in srgb, var\(--text\) 70%, transparent\)/.test(html)) throw new Error('--al-text-meta is no longer the text colour at 70%.');
-  if (!/\.placement\[aria-pressed="true"\]:focus-visible \{ box-shadow: inset 0 0 0 3px var\(--bg\); \}/.test(html)) throw new Error('A focused selected row no longer keeps a band of bg inside its ring.');
+  if (!/\.placement\[aria-selected="true"\]:focus-visible \{ box-shadow: inset 0 0 0 3px var\(--bg\); \}/.test(html)) throw new Error('A focused selected row no longer keeps a band of bg inside its ring.');
+  if (!/\.primary\[aria-busy="true"\] \{ background: color-mix\(in srgb, var\(--text\) 80%, var\(--bg\)\); color: var\(--bg\);/.test(html)) throw new Error('A running primary is no longer ink at 80% with bg text.');
   // Every text colour in the stylesheet is one this script measures (disabled text is exempt from the minimum).
   const allowed = new Set(['var(--text)', 'var(--al-text-meta)', 'var(--bg)', 'var(--text-disabled)', 'inherit', 'var(--figma-color-text, #0b0f14)']);
   const css = /<style>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? '';
@@ -75,6 +76,7 @@ export async function checkContrast() {
     const bg = value('bg');
     const meta = colorMix(text, 0.7, TRANSPARENT);
     const primaryHover = over(colorMix(text, 0.88, bg), over(bg, { r: 255, g: 255, b: 255, a: 1 }));
+    const primaryBusy = over(colorMix(text, 0.8, bg), over(bg, { r: 255, g: 255, b: 255, a: 1 }));
     const pairs = [
       ['text on bg (and fields and buttons inside callouts)', text, bg],
       ['text on bg-secondary (fields, callouts, active tab, chip)', text, value('bg-secondary')],
@@ -87,6 +89,7 @@ export async function checkContrast() {
       ['meta on bg-hover', meta, value('bg-hover')],
       ['primary button: bg on text', bg, text],
       ['primary button hover: bg on mixed ink', bg, primaryHover],
+      ['primary button running (aria-busy): bg on mixed ink', bg, primaryBusy],
     ].map(([pair, fg, back]) => ({ mode, pair, ratio: ratio(fg, back), minimum: 4.5 }));
     pairs.push(
       // A focused selected row keeps a band of bg inside its ring (ui.html), so the ring never sits on bg-tertiary.

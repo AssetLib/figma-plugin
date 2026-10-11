@@ -1,5 +1,14 @@
-import type { CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, NodeSelection, Placement, Preferences } from './index.js';
+import type {
+  CanvasTarget, CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, InsertMode, NodeSelection, Placement, Preferences,
+} from './index.js';
 import { isRecord } from './validation.js';
+
+/**
+ * Where an insert goes: a new frame (centered in the view, or right of the selection), a child of the container
+ * selected, or the selected layers filled (a fill of one linked layer replaces its image). Main checks that `into` and
+ * `fill` still name the selection.
+ */
+export type InsertDestination = { kind: 'new' } | { kind: 'into'; nodeId: string } | { kind: 'fill'; nodeIds: string[] };
 
 export type RememberedTarget = {
   // null when a pluginData link names the cell but no file key is known yet.
@@ -13,22 +22,47 @@ export type RememberedTarget = {
   insertedFrom: { environment: EnvironmentName; assetId: string } | null;
 };
 
+/**
+ * The selected layer's own link (pluginData `assetlib.link.v1`), as main read it: `linked`, written on this layer for the
+ * connected app; `copy`, written for this app on another layer (a Cmd+D copy keeps the data, not the node id); or `other`,
+ * written for another console app.
+ */
+export type SelectedLink = InsertLink & { kind: 'linked' | 'copy' | 'other' };
+
+/**
+ * Where `fileKey` came from: Figma itself (`figma`), the identity saved in this document (`document`), or a link pasted
+ * this session that the document couldn't keep (`session`, a view-only file). `name` is the file name the identity was
+ * saved with; empty for `figma`.
+ */
+export type FileState = { source: 'figma' | 'document' | 'session' | null; name: string };
+
 export type SelectionState = {
   node: NodeSelection | null;
   reason: string | null;
   fileKey: string | null;
   remembered: RememberedTarget | null;
+  // What Insert does with this selection, which labels its button.
+  insertTarget: CanvasTarget;
+  // One selected layer's link, or null (optional: a selection without them reads as null).
+  link?: SelectedLink | null;
+  file?: FileState;
 };
 
 // Every message that main can refuse carries a requestId, and main's error names it, so an error ends only that operation.
 export type UiMessage =
   | { type: 'init' }
   | { type: 'save-connection'; requestId: number; connection: Connection }
-  | { type: 'save-file-url'; requestId: number; url: string }
+  // `force`: Use anyway, after main said the link names another file (`file-mismatch`).
+  | { type: 'save-file-url'; requestId: number; url: string; force?: boolean }
   | { type: 'export'; requestId: number; node: NodeSelection; fileKey: string; placement: Placement; bind: CellBinding; rebind: boolean }
-  | { type: 'remember'; requestId: number }
+  // `assetId`: the image the draft put in the cell, which the layer's link then names; null when the draft wasn't bound.
+  | { type: 'remember'; requestId: number; assetId?: string | null }
+  // `drop` names a drop main answered with `dropped`: the target is then that drop's placeholder or image frame.
   | { type: 'insert'; requestId: number; connectionGeneration: number; bytes: Uint8Array; name: string;
-    frame: { width: number; height: number }; scale: 1 | 2 | 3; link: InsertLink | null }
+    frame: { width: number; height: number }; scale: 1 | 2 | 3; link: InsertLink | null; target: InsertDestination; drop?: number }
+  // A drop's image never came (its download failed, or the UI gave up waiting): main removes the placeholder it made
+  // for it, and only that. Never refused.
+  | { type: 'discard-placeholder'; nodeId: string }
   | { type: 'save-preferences'; preferences: Preferences }
   // Keeps the node's width and sets its height to the placement's ratio (width and height are the placement's).
   | { type: 'match-ratio'; requestId: number; nodeId: string; width: number; height: number }
@@ -36,18 +70,37 @@ export type UiMessage =
   | { type: 'clear-connection'; requestId: number }
   // A Figma toast for a finished operation. Main shortens the text to 100 characters and opens only a console link
   // for the connected app from the button.
-  | { type: 'notify'; text: string; button?: NotifyButton };
+  | { type: 'notify'; text: string; button?: NotifyButton }
+  // The grip asks for a window size (at most one a frame); main clamps it (`clampWindow`) and resizes. Never refused.
+  | { type: 'resize'; width: number; height: number }
+  // A double-click on the grip: main resizes to the default for the canvas now (`defaultWindowSize`). Never refused.
+  | { type: 'reset-size' };
 
 export type NotifyButton = { text: string; url: string };
 
 export type MainMessage =
   | { type: 'connection'; connectionGeneration: number; connection: Connection | null; savedFileUrl: string; preferences: Preferences }
   | { type: 'selection'; connectionGeneration: number; selection: SelectionState }
-  | { type: 'file-saved'; requestId: number; fileKey: string }
+  // `session`: the document couldn't keep the key (a view-only file), so it lasts until the plugin closes.
+  | { type: 'file-saved'; requestId: number; fileKey: string; session: boolean }
+  // The pasted link's file name (`slug`) isn't this file's (`name`); nothing was saved.
+  | { type: 'file-mismatch'; requestId: number; slug: string; name: string }
+  // The plugin was opened from a linked layer's Sync to Assetlib button in the properties panel.
+  | { type: 'launch'; command: 'sync' }
   | { type: 'exported'; requestId: number; node: NodeSelection; fileKey: string; settings: ExportSettings; bytes: Uint8Array }
   | { type: 'remembered'; requestId: number }
-  | { type: 'inserted'; requestId: number; connectionGeneration: number; node: NodeSelection; linked: boolean }
+  // `node` is the new frame, or the first layer filled; `notice` is main's toast, which the UI repeats in its status region.
+  | { type: 'inserted'; requestId: number; connectionGeneration: number; node: NodeSelection; linked: boolean; mode: InsertMode; notice: string }
+  // Main answered a drop: `nodeId` is the placeholder it made, or the image frame the drop landed on, which the UI fills.
+  | { type: 'dropped'; dropId: number; nodeId: string; connectionGeneration: number }
   | { type: 'error'; message: string; requestId?: number };
+
+/**
+ * What a row or tile dragged onto the canvas carries in its `pluginDrop` (Figma passes it to main's drop handler as
+ * `dropMetadata`). `dropId` is a request id, so main's error for the drop names it.
+ */
+export type DropMetadata = { assetlib: 1; dropId: number; connectionGeneration: number; name: string; frame: { width: number; height: number };
+  scale: 1 | 2 | 3; link: InsertLink | null };
 
 // Main's toast after Disconnect; the UI announces the same words.
 export const DISCONNECTED = 'Disconnected. The token still works elsewhere until an owner revokes it.';
@@ -64,6 +117,9 @@ export const UNREADABLE_MESSAGE = 'The plugin hit an unexpected problem. Close a
 const requestId = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 const text = (value: unknown): value is string => typeof value === 'string';
 const size = (value: unknown): value is number => typeof value === 'number';
+const destination = (value: unknown): value is InsertDestination => isRecord(value) && (value.kind === 'new'
+  || (value.kind === 'into' && text(value.nodeId))
+  || (value.kind === 'fill' && Array.isArray(value.nodeIds) && value.nodeIds.length > 0 && value.nodeIds.every(text)));
 
 /** The request id of a message from the UI, if it names a valid one, so main's error can name it too. */
 export function messageRequestId(value: unknown): number | undefined {
@@ -82,20 +138,41 @@ export function parseUiMessage(value: unknown): UiMessage {
       case 'init': return true;
       case 'save-connection': return requestId(m.requestId) && isRecord(m.connection)
         && text(m.connection.origin) && text(m.connection.orgId) && text(m.connection.appId) && text(m.connection.token);
-      case 'save-file-url': return requestId(m.requestId) && text(m.url);
+      case 'save-file-url': return requestId(m.requestId) && text(m.url) && (m.force === undefined || typeof m.force === 'boolean');
       case 'export': return requestId(m.requestId) && isRecord(m.node) && text(m.node.id) && text(m.node.name) && text(m.node.type)
         && size(m.node.width) && size(m.node.height) && text(m.fileKey) && isRecord(m.placement) && isRecord(m.bind) && typeof m.rebind === 'boolean';
-      case 'remember': return requestId(m.requestId);
+      case 'remember': return requestId(m.requestId) && (m.assetId === undefined || m.assetId === null || text(m.assetId));
       // The bytes, frame, and scale have their own messages in main.
       case 'insert': return requestId(m.requestId) && typeof m.connectionGeneration === 'number' && Number.isSafeInteger(m.connectionGeneration)
-        && text(m.name) && (m.link === null || isRecord(m.link));
+        && text(m.name) && (m.link === null || isRecord(m.link)) && destination(m.target) && (m.drop === undefined || requestId(m.drop));
+      case 'discard-placeholder': return text(m.nodeId);
       case 'save-preferences': return 'preferences' in m;
       case 'match-ratio': return requestId(m.requestId) && text(m.nodeId) && size(m.width) && size(m.height);
       case 'clear-connection': return requestId(m.requestId);
       case 'notify': return text(m.text) && (m.button === undefined || (isRecord(m.button) && text(m.button.text) && text(m.button.url)));
+      case 'resize': return Number.isFinite(m.width) && Number.isFinite(m.height);
+      case 'reset-size': return true;
       default: return false;
     }
   })();
   if (!ok) throw new Error(UNREADABLE_MESSAGE);
   return value as UiMessage;
+}
+
+/** True for a drop that came from this plugin's UI; any other (a file from the desktop, say) is Figma's to handle. */
+export function isAssetlibDrop(value: unknown): boolean {
+  return isRecord(value) && value.assetlib === 1;
+}
+
+/** The drop's request id, if it names a valid one, so main's error for the drop can name it too. */
+export function dropRequestId(value: unknown): number | undefined {
+  return isRecord(value) && requestId(value.dropId) ? value.dropId : undefined;
+}
+
+/** Checks the shape of an Assetlib drop's metadata, as `parseUiMessage` does for messages; main checks the values. */
+export function parseDropMetadata(value: unknown): DropMetadata {
+  if (!isRecord(value) || value.assetlib !== 1 || !requestId(value.dropId) || typeof value.connectionGeneration !== 'number'
+    || !Number.isSafeInteger(value.connectionGeneration) || !text(value.name) || !isRecord(value.frame) || !size(value.frame.width) || !size(value.frame.height)
+    || !size(value.scale) || (value.link !== null && !isRecord(value.link))) throw new Error(UNREADABLE_MESSAGE);
+  return value as DropMetadata;
 }

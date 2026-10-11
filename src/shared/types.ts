@@ -143,6 +143,31 @@ export interface InsertLink {
   assetId: string;
 }
 
+/** What Insert does with the canvas selection: a new frame, a child of a container, a fill, or a linked layer's image replaced. */
+export type InsertMode = 'new' | 'into' | 'fill' | 'replace';
+
+/** The selection as Insert sees it; main classifies it on every selection report (`classifyInsertTarget`). */
+export interface CanvasTarget {
+  mode: InsertMode;
+  /** The primary button's label: "Insert", "Insert into {name}", "Fill {name}", "Fill {n} layers", or "Replace image". */
+  label: string;
+  /** Layers filled, 1 for into and replace, 0 for new. */
+  count: number;
+  /** The container (into) or the layers to fill (fill, replace); empty for new. */
+  nodeIds: string[];
+  /** The container's or the one layer's name. */
+  name?: string;
+  /** Into: the container's width. Fill and replace: the widest layer's, which sizes the download. */
+  containerWidth?: number;
+  /** Fill and replace: the tallest layer's height, which sizes the download for art drawn wider than its layer. */
+  containerHeight?: number;
+  /**
+   * Into: the container is a component or sits inside one (or a component set or an instance). Figma puts no component
+   * there, so placement art, a component, goes beside it; a library image, a frame, still goes in.
+   */
+  insideComponent?: true;
+}
+
 /** pluginData `assetlib.link.v1` on an inserted frame. It never holds the token. */
 export interface StoredLink extends InsertLink {
   v: 1;
@@ -158,7 +183,7 @@ export interface Preferences {
   browse: 'placements' | 'images';
   environment: EnvironmentName;
   scale: 1 | 2 | 3;
-  // Optional, absent until set: the window size the person chose (A.8), and whether the insert hint was dismissed (A.6).
+  // Optional, absent until set: the window size the person dragged the grip to, and whether the insert hint was dismissed.
   window?: { width: number; height: number };
   hintSeen?: boolean;
 }
