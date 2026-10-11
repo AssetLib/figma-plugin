@@ -45,6 +45,18 @@ export interface Connection {
   orgId: string;
   appId: string;
   token: string;
+  // Names from GET /api/token, kept to label the connection. Optional: older saves and the ID form have none.
+  workspaceName?: string;
+  appName?: string;
+}
+
+/** What GET /api/token says about the presented token. Names are null while the console can't read them for a token. */
+export interface TokenIdentity {
+  orgId: string;
+  appId: string;
+  workspaceName: string | null;
+  appName: string | null;
+  scopes: ('declare' | 'draft')[];
 }
 
 export interface DraftBody {
@@ -146,4 +158,7 @@ export interface Preferences {
   browse: 'placements' | 'images';
   environment: EnvironmentName;
   scale: 1 | 2 | 3;
+  // Optional, absent until set: the window size the person chose (A.8), and whether the insert hint was dismissed (A.6).
+  window?: { width: number; height: number };
+  hintSeen?: boolean;
 }

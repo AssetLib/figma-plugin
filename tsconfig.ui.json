@@ -4,5 +4,5 @@
     "lib": ["ES2020", "DOM"],
     "noEmit": true
   },
-  "include": ["src/ui.ts", "src/shared/**/*.ts"]
+  "include": ["src/ui/**/*.ts", "src/image.ts", "src/shared/**/*.ts"]
 }

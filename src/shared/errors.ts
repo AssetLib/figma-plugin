@@ -1,4 +1,8 @@
+import { DEVELOPMENT_ORIGIN } from './connection.js';
 import { isRecord } from './validation.js';
+
+// What the plugin tells people when something fails: one plain sentence about what happened, then what to do next.
+// Developer detail (HTTP codes, manifests, PNG chunks) stays out of it.
 
 function consoleMessage(payload: unknown): string | null {
   if (!isRecord(payload)) return null;
@@ -12,27 +16,59 @@ function consoleMessage(payload: unknown): string | null {
 
 // A console without the Insert routes answers 404. When it sends no CORS headers the
 // iframe sees a network error instead, which insertUnavailable() explains.
-export const MISSING_INSERT = 'This console does not support Insert yet. Send still works if the connection test passed. Update the console, then choose Refresh.';
+export const MISSING_INSERT = 'This console doesn’t support Insert yet. Send still works.';
 
 // A rendition that disappears between the listing and the download; the console itself supports Insert.
-export const GONE_IMAGE = 'This image is no longer available. Choose Refresh and pick it again.';
+export const GONE_IMAGE = 'This image was removed. Refresh to update the list.';
 
-export function mapHttpError(status: number, payload: unknown, action: 'send' | 'insert' = 'send'): string {
-  if (status === 401) return 'The token was not accepted. Paste a current app-scoped draft token from the console Tokens panel.';
-  if (status === 403 && action === 'insert') return 'This token cannot read this app’s images. Use a token with the draft scope for this organization and app.';
-  if (status === 403) return 'This token does not allow drafts for this app. Create a token with the draft scope and check the organization and app ids.';
-  if (status === 404 && action === 'insert') return MISSING_INSERT;
-  if (status === 413) return 'The export is too large. Use a smaller export constraint or a placement with smaller canvas dimensions, then try again.';
-  if (status === 409) return consoleMessage(payload) ?? 'The console could not bind this draft. Check the placement and selected cell.';
-  if (status === 429) return 'The console is receiving too many requests. Wait a moment, then try again.';
-  return consoleMessage(payload) ?? `The console returned HTTP ${status}. Try again or check the console.`;
+// The token form, for a token the console refused (401) or no longer honours (a revoked token answers 403).
+export const TOKEN_REFUSED = 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.';
+// A token without the draft scope (a declare token for CI).
+export const TOKEN_SCOPE = 'This token can’t send drafts. Create a token with Draft permission.';
+// GET /api/token answered 404, or without CORS: a console from before it identified tokens.
+export const OLDER_CONSOLE = 'This console also needs the organization and app IDs. Find them in Settings › General.';
+// A read refused after the connection worked: in place of the Insert list.
+export const TOKEN_NO_LONGER_ACCEPTED = 'Assetlib no longer accepts this token. Paste a new one.';
+// The selected layer, its size, or the file changed between the export and the upload.
+export const SELECTION_CHANGED = 'The selection changed while sending. Check it and send again.';
+// Main could not write to figma.clientStorage.
+export const DEVICE_STORAGE = 'Figma couldn’t save this on your device. Try again.';
+export const BUSY = 'Assetlib is busy. Try again in a minute.';
+
+export function serverError(status: number): string {
+  return `Assetlib had a problem (${status}). Try again in a minute.`;
 }
 
+export function mapHttpError(status: number, payload: unknown, action: 'send' | 'insert' = 'send'): string {
+  if (status === 401) return TOKEN_REFUSED;
+  if (status === 403 && action === 'insert') return 'This token can’t read this app’s images. Create a token with Draft permission.';
+  if (status === 403) return TOKEN_SCOPE;
+  if (status === 404 && action === 'insert') return MISSING_INSERT;
+  if (status === 413) return 'This export is too large for Assetlib (over 4 MiB). Reduce its detail or size and try again.';
+  if (status === 409) return consoleMessage(payload) ?? 'Assetlib couldn’t put this image in the chosen cell. Check the placement and try again.';
+  if (status === 429) return BUSY;
+  if (status >= 500) return serverError(status);
+  return consoleMessage(payload) ?? serverError(status);
+}
+
+/** No answer at all. Production says so plainly; the local console is named, since it may simply not be running. */
 export function mapNetworkError(origin: string): string {
-  return `Could not reach ${origin}. Check the connection and that this origin is allowed by the plugin manifest.`;
+  return origin === DEVELOPMENT_ORIGIN
+    ? 'Can’t reach the console at localhost:3100. Check that it’s running.'
+    : 'Can’t reach Assetlib. Check your internet connection.';
 }
 
 /** A network failure on an Insert read after the placements read succeeded on the same connection. */
 export function insertUnavailable(origin: string): string {
-  return `This console does not support Insert yet, or ${origin} could not be reached. Send still works if the connection test passed. Update the console, then choose Refresh.`;
+  return origin === DEVELOPMENT_ORIGIN
+    ? 'This console doesn’t support Insert yet, or localhost:3100 couldn’t be reached. Send still works.'
+    : 'This console doesn’t support Insert yet, or Assetlib couldn’t be reached. Send still works.';
+}
+
+// A draft request that failed in transit may still have been saved.
+export const DRAFT_MAY_HAVE_ARRIVED = 'It may have arrived anyway, so check the console before sending again.';
+
+/** A request that got no answer in time. A draft may have arrived anyway, so it is not simply retried. */
+export function mapTimeoutError(seconds: number, action: 'read' | 'send' = 'read'): string {
+  return `Assetlib didn’t answer within ${seconds} seconds. ${action === 'send' ? DRAFT_MAY_HAVE_ARRIVED : 'Try again.'}`;
 }

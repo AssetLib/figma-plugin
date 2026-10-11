@@ -16,13 +16,29 @@ export const MAX_PREVIEW_BYTES = 512 * 1024;
 export const ENVIRONMENTS: readonly EnvironmentName[] = ['draft', 'staging', 'production'];
 export type CellCoordinate = Pick<ArtworkCell, 'state' | 'appearance' | 'arm'>;
 
-const invalidArtwork = 'The console returned invalid placement artwork. Refresh, or update the console.';
+const invalidArtwork = 'The console sent placement artwork the plugin can’t read. Refresh and try again.';
 const mimes = ['image/webp', 'image/png', 'image/svg+xml'];
 const appearanceValue = (value: unknown): value is Appearance => value === 'light' || value === 'dark';
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 
 export function environmentLabel(environment: EnvironmentName): string {
   return environment === 'draft' ? 'Draft' : environment === 'staging' ? 'Staging' : 'Production';
+}
+
+/** An appearance as people read it: Any, Light, or Dark. */
+export function appearanceLabel(appearance: Appearance | null): string {
+  return appearance === 'light' ? 'Light' : appearance === 'dark' ? 'Dark' : 'Any';
+}
+
+/** A placement row's meta line: "1170 × 1560 · 2 states · light, dark · arm b", naming only what it declares. */
+export function placementMeta(placement: Pick<Placement, 'width' | 'height' | 'states' | 'variants'>): string {
+  const parts = [`${placement.width} × ${placement.height}`];
+  if (placement.states?.length) parts.push(`${placement.states.length} state${placement.states.length === 1 ? '' : 's'}`);
+  const appearances = placement.variants?.appearance ?? [];
+  if (appearances.length) parts.push(appearances.join(', '));
+  const arms = placement.variants?.arm ?? [];
+  if (arms.length) parts.push(`arm${arms.length === 1 ? '' : 's'} ${arms.join(', ')}`);
+  return parts.join(' · ');
 }
 
 function parseRendition(value: unknown): RenditionInfo | null {
@@ -45,7 +61,7 @@ export function parseLibraryAsset(value: unknown): LibraryAsset | null {
 
 export function parseAssetPage(value: unknown): AssetPage {
   if (!isRecord(value) || !Array.isArray(value.assets) || (value.nextCursor !== null && !validUuid(value.nextCursor))) {
-    throw new Error('The console returned an invalid image list. Refresh, or update the console.');
+    throw new Error('The console sent an image list the plugin can’t read. Refresh and try again.');
   }
   return { assets: value.assets.map(parseLibraryAsset).filter((item): item is LibraryAsset => item !== null), nextCursor: value.nextCursor };
 }
@@ -186,11 +202,15 @@ export function linkMatches(link: StoredLink, connection: Pick<Connection, 'orig
   return origin === connection.origin && link.orgId === connection.orgId && link.appId === connection.appId && link.nodeId === nodeId;
 }
 
+/** The plugin opens on Insert: its library is the first thing people look for. */
 export function defaultPreferences(): Preferences {
-  return { tab: 'send', browse: 'placements', environment: 'draft', scale: 1 };
+  return { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1 };
 }
 
-/** Each invalid or missing field falls back to its default. */
+// The window sizes the plugin can be resized to (A.8 adds the grip); a saved size outside them is ignored.
+export const WINDOW_LIMITS = { minWidth: 320, maxWidth: 900, minHeight: 480, maxHeight: 1000 } as const;
+
+/** Each invalid or missing field falls back to its default; the optional fields are left out unless valid. */
 export function parsePreferences(value: unknown): Preferences {
   const result = defaultPreferences();
   if (!isRecord(value)) return result;
@@ -198,5 +218,14 @@ export function parsePreferences(value: unknown): Preferences {
   if (value.browse === 'placements' || value.browse === 'images') result.browse = value.browse;
   if (typeof value.environment === 'string' && ENVIRONMENTS.includes(value.environment as EnvironmentName)) result.environment = value.environment as EnvironmentName;
   if (value.scale === 1 || value.scale === 2 || value.scale === 3) result.scale = value.scale;
+  const size = value.window;
+  if (isRecord(size) && Number.isInteger(size.width) && Number.isInteger(size.height)) {
+    const width = size.width as number;
+    const height = size.height as number;
+    if (width >= WINDOW_LIMITS.minWidth && width <= WINDOW_LIMITS.maxWidth && height >= WINDOW_LIMITS.minHeight && height <= WINDOW_LIMITS.maxHeight) {
+      result.window = { width, height };
+    }
+  }
+  if (typeof value.hintSeen === 'boolean') result.hintSeen = value.hintSeen;
   return result;
 }

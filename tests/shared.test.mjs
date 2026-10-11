@@ -3,13 +3,17 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
-  apiUrl, artworkAsset, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
-  cellOptions, chooseExportSettings, decodedBase64Length, defaultPreferences, encodeBase64, environmentLabel, findCell,
+  apiUrl, artworkAsset, aspectMismatch, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
+  cellOptions, chooseExportSettings, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
   insertRendition, insertUnavailable, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
   normalizeConsoleOrigin, parseArtwork, parseAssetPage, parseDraftResponse, parseFileKey, parsePlacements, parsePngDimensions,
   parsePreferences, parseStoredLink, placementMarker, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
   utf8Length, validArm, validateBinding, validateConnection, validateInsertLink,
+  appUrl, assetsPath, renditionPath, mapTimeoutError, parseRetryAfter, requestTimeoutMs, retryDelayMs,
+  OLDER_CONSOLE, TOKEN_REFUSED, TOKEN_SCOPE, appearanceLabel, checkTokenFormat, connectionLabel, consoleLink, isConsoleLink, parseTokenIdentity,
+  placementMeta, serverError, tokenUrl,
 } from '../.test-build/shared/index.js';
+import { UNREADABLE_MESSAGE, messageRequestId, parseUiMessage, toastText } from '../.test-build/shared/protocol.js';
 
 const readText = path => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 
@@ -34,7 +38,7 @@ test('file URL fallback accepts both file and design links and excludes non-Figm
     'https://user:secret@figma.com/file/abc/', 'https://figma.com:444/file/abc/',
     'https://figma.com/proto/abc/', 'https://figma.com/file/a%2Fb/', 'https://figma.com/design//',
     `https://figma.com/file/${'x'.repeat(129)}/`]) {
-    assert.throws(() => parseFileKey(url));
+    assert.throws(() => parseFileKey(url), /^Error: That isn’t a link to a Figma design file\. In Figma, press Cmd\+L to copy this file’s link, then paste it here\.$/);
   }
 });
 
@@ -54,9 +58,9 @@ test('connection origin is limited to the production and development origins', (
   assert.equal(connection.token, 'draft_secret');
   assert.equal(apiUrl(connection, 'placements'), `${PRODUCTION_ORIGIN}/api/apps/org-123/app-456/placements`);
   assert.equal(apiUrl(connection, 'drafts'), `${PRODUCTION_ORIGIN}/api/apps/org-123/app-456/drafts`);
-  assert.throws(() => validateConnection({ ...connection, orgId: '../other' }), /organization id/);
-  assert.throws(() => validateConnection({ ...connection, appId: '' }), /app id/);
-  assert.throws(() => validateConnection({ ...connection, token: 'with space' }), /draft token/);
+  assert.throws(() => validateConnection({ ...connection, orgId: '../other' }), /organization ID from Settings › General/);
+  assert.throws(() => validateConnection({ ...connection, appId: '' }), /app ID from Settings › General/);
+  assert.throws(() => validateConnection({ ...connection, token: 'with space' }), /Draft token from Settings › Tokens/);
   assert.equal(tokenPrefix(''), '');
   for (const secret of ['a', 'abcd', 'draft_secret_long']) {
     assert.ok(tokenPrefix(secret).endsWith('…'));
@@ -102,9 +106,12 @@ test('placements parse stateless and stateful picker data without importing bind
   assert.deepEqual(parsePlacements({ placements: [{ ...placement, states: undefined, defaultState: undefined, variants: undefined }] }), [placement]);
 });
 
+// What people read for any of them: one plain sentence and the next step, never which field the console got wrong.
+const unreadablePlacements = /^Error: The console sent placements the plugin can’t read\. Try again\.$/;
+
 test('placements reject malformed response shapes, states, dimensions, and duplicate keys', () => {
   for (const value of [null, [], { slots: [] }, { placements: [null] }, { placements: [placement, placement] }]) {
-    assert.throws(() => parsePlacements(value));
+    assert.throws(() => parsePlacements(value), unreadablePlacements);
   }
   for (const extra of [{ width: 0 }, { height: Infinity }, { width: 1.5 }, { key: '' }, { origin: 'unknown' },
     { states: { empty: 'asset-id' }, defaultState: 'empty' },
@@ -112,7 +119,7 @@ test('placements reject malformed response shapes, states, dimensions, and dupli
     { states: ['empty', 'empty'], defaultState: 'empty' },
     { states: ['empty', 'growing'], defaultState: 'missing' },
     { states: ['empty', 'constructor'], defaultState: 'empty' }, { defaultState: 'empty' }]) {
-    assert.throws(() => parsePlacements({ placements: [{ ...placement, ...extra }] }));
+    assert.throws(() => parsePlacements({ placements: [{ ...placement, ...extra }] }), unreadablePlacements);
   }
 });
 
@@ -124,7 +131,7 @@ test('arm validation enforces all contract restrictions and rejects unknown axes
     { arm: ['control'] }, { arm: ['any'] }, { arm: ['constructor'] }, { arm: ['prototype'] }, { arm: ['__proto__'] },
     { arm: ['UPPER'] }, { appearance: [] }, { appearance: ['dark', 'dark'] }, { appearance: ['any'] },
     { platform: ['ios'] }, {}, JSON.parse('{"__proto__": ["b"]}')]) {
-    assert.throws(() => parsePlacements({ placements: [{ ...placement, variants }] }));
+    assert.throws(() => parsePlacements({ placements: [{ ...placement, variants }] }), unreadablePlacements);
   }
   assert.deepEqual(parsePlacements({ placements: [{ ...placement, variants: { arm: ['b'] } }] })[0].variants, { arm: ['b'] });
 });
@@ -151,8 +158,8 @@ test('export uses absolute bounds with HEIGHT for taller nodes and WIDTH otherwi
   assert.deepEqual(chooseExportSettings({ ...node, width: 1600, height: 400 }, placement),
     { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 1200 } });
   for (const dimension of [0, -1, NaN, Infinity]) {
-    assert.throws(() => chooseExportSettings({ ...node, width: dimension }, placement), /non-zero/);
-    assert.throws(() => aspectRatioDifference(node, { ...placement, height: dimension }), /non-zero/);
+    assert.throws(() => chooseExportSettings({ ...node, width: dimension }, placement), /^Error: This layer has no visible area to export\.$/);
+    assert.throws(() => aspectRatioDifference(node, { ...placement, height: dimension }), /no visible area/);
   }
 });
 
@@ -181,24 +188,24 @@ test('PNG dimensions come from big-endian IHDR values, including a byte-offset v
 
 test('PNG dimensions reject malformed signatures, IHDR chunks, truncation and illegal sizes', () => {
   for (let length = 0; length < 33; length++) {
-    assert.throws(() => parsePngDimensions(pngHeader().subarray(0, length)), /PNG.*IHDR/);
+    assert.throws(() => parsePngDimensions(pngHeader().subarray(0, length)), /couldn’t export this layer/);
   }
   for (let index = 0; index < 8; index++) {
     const bytes = pngHeader();
     bytes[index] ^= 255;
-    assert.throws(() => parsePngDimensions(bytes), /PNG.*IHDR/);
+    assert.throws(() => parsePngDimensions(bytes), /couldn’t export this layer/);
   }
   for (const length of [0, 12, 14, 0xffffffff]) {
     const bytes = pngHeader();
     new DataView(bytes.buffer).setUint32(8, length);
-    assert.throws(() => parsePngDimensions(bytes), /PNG.*IHDR/);
+    assert.throws(() => parsePngDimensions(bytes), /couldn’t export this layer/);
   }
   const wrongType = pngHeader();
   wrongType.set([73, 68, 65, 84], 12);
-  assert.throws(() => parsePngDimensions(wrongType), /PNG.*IHDR/);
+  assert.throws(() => parsePngDimensions(wrongType), /couldn’t export this layer/);
   for (const value of [0, 0x80000000, 0xffffffff]) {
-    assert.throws(() => parsePngDimensions(pngHeader(value, 900)), /PNG.*dimensions/);
-    assert.throws(() => parsePngDimensions(pngHeader(1200, value)), /PNG.*dimensions/);
+    assert.throws(() => parsePngDimensions(pngHeader(value, 900)), /couldn’t export this layer/);
+    assert.throws(() => parsePngDimensions(pngHeader(1200, value)), /couldn’t export this layer/);
   }
 });
 
@@ -211,16 +218,48 @@ test('aspect warning is relative to the placement aspect and uses a two percent 
   assert.equal(aspectRatioDifference({ width: 980, height: 1000 }, { width: 1000, height: 1000 }), 0.02);
 });
 
+test('the ratio gate blocks above two percent, and a matched height keeps the width in whole pixels when it can', () => {
+  const banner = { width: 1170, height: 480 };
+  assert.equal(aspectMismatch({ width: 390, height: 844 }, banner), true);
+  assert.equal(aspectMismatch({ width: 1170, height: 475 }, banner), false);
+  assert.equal(aspectMismatch({ width: 1000, height: 1020 }, { width: 1000, height: 1000 }), false, 'exactly 2% is allowed');
+  assert.equal(aspectMismatch({ width: 1000, height: 1021 }, { width: 1000, height: 1000 }), true);
+  assert.equal(matchedHeight(390, banner), 160);
+  assert.equal(matchedHeight(333.33, { width: 1000, height: 1000 }), 333);
+  assert.equal(matchedHeight(10, { width: 3, height: 1 }), 3.33, 'rounding to 3 would miss the ratio by 11%');
+  assert.equal(aspectMismatch({ width: 10, height: matchedHeight(10, { width: 3, height: 1 }) }, { width: 3, height: 1 }), false);
+  assert.equal(matchedHeight(0.001, banner), 0.01, 'never below Figma’s 0.01 minimum');
+  assert.throws(() => matchedHeight(0, banner), /no visible area/);
+  assert.equal(ratioLabel(banner), '2.44\u00a0:\u00a01', 'no-break spaces: it never wraps at the colon');
+  assert.equal(ratioLabel({ width: 1000, height: 1000 }), '1\u00a0:\u00a01');
+  assert.equal(ratioLabel({ width: 390, height: 844 }), '0.46\u00a0:\u00a01');
+  assert.equal(sizeLabel({ width: 390, height: 844 }), '390 × 844');
+  assert.equal(sizeLabel({ width: 333.3333, height: 120.5 }), '333.33 × 120.5');
+});
+
+test('connection validation errors name their field', () => {
+  const valid = { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token: 'alt_token' };
+  const field = value => { try { validateConnection(value); return 'valid'; } catch (error) { return connectionErrorField(error); } };
+  assert.equal(field(valid), 'valid');
+  assert.equal(field({ ...valid, origin: LEGACY_PRODUCTION_ORIGIN }), 'origin');
+  assert.equal(field({ ...valid, orgId: 'bad id' }), 'orgId');
+  assert.equal(field({ ...valid, appId: '' }), 'appId');
+  assert.equal(field({ ...valid, token: ' ' }), 'token');
+  assert.equal(connectionErrorField(new Error('Could not save the connection in Figma. Please try again.')), null);
+  assert.equal(connectionErrorField('token'), null);
+});
+
 test('base64 is browser-portable and matches Node for all remainder lengths', () => {
   for (const length of [1, 2, 3, 4, 255, 1024, 16385]) {
     const bytes = Uint8Array.from({ length }, (_, index) => index % 256);
     assert.equal(bytesToBase64(bytes), Buffer.from(bytes).toString('base64'));
     assert.equal(decodedBase64Length(bytesToBase64(bytes)), length);
   }
-  assert.throws(() => bytesToBase64(new Uint8Array()), /empty PNG/);
+  assert.throws(() => bytesToBase64(new Uint8Array()), /couldn’t export this layer/);
   assert.throws(() => bytesToBase64(new Uint8Array(MAX_IMAGE_BYTES + 1)), /4 MiB/);
   for (const bad of ['', 'abc', 'a===', '=abc', 'aa=a', 'ab==', 'aab=', 'AA==\n', 'data:image/png;base64,AA==', '____']) {
-    assert.throws(() => decodedBase64Length(bad), /base64/);
+    // The plugin encodes the export itself, so a bad encoding is a failed export to the person.
+    assert.throws(() => decodedBase64Length(bad), /^Error: Figma couldn’t export this layer\. Try again, or flatten it first\.$/);
   }
 });
 
@@ -239,11 +278,12 @@ test('draft body contains only the source export and chosen binding contract', (
   assert.equal(named.name.length, 120);
   assert.equal(named.source.nodeName.length, 200);
   assert.equal(makeBody({ node: { ...node, name: ' ' } }).name, placement.key);
-  for (const fileKey of ['', 'bad/key', 'x'.repeat(129)]) assert.throws(() => makeBody({ fileKey }), /file URL/);
-  for (const id of ['', 'bad_id', 'x'.repeat(65)]) assert.throws(() => makeBody({ node: { ...node, id } }), /node id/);
-  assert.throws(() => makeBody({ settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 600 } } }), /Export again/);
+  for (const fileKey of ['', 'bad/key', 'x'.repeat(129)]) assert.throws(() => makeBody({ fileKey }), /file’s link/);
+  for (const id of ['', 'bad_id', 'x'.repeat(65)]) assert.throws(() => makeBody({ node: { ...node, id } }), /can’t be sent/);
+  assert.throws(() => makeBody({ settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 600 } } }),
+    /^Error: The selection changed while sending\. Check it and send again\.$/);
   for (const useAbsoluteBounds of [undefined, false]) {
-    assert.throws(() => makeBody({ settings: { ...chooseExportSettings(node, placement), useAbsoluteBounds } }), /Export again/);
+    assert.throws(() => makeBody({ settings: { ...chooseExportSettings(node, placement), useAbsoluteBounds } }), /selection changed while sending/);
   }
   assert.throws(() => makeBody({ bind: { ...bind, arm: 'b' } }), /arm/);
 });
@@ -285,15 +325,25 @@ test('409 binding failure remains a created draft with the console error and any
 });
 
 test('errors explain token scopes, payload size, console conflicts, and the called origin', () => {
-  assert.match(mapHttpError(401, { error: 'server detail' }), /token.*Tokens panel/);
-  assert.match(mapHttpError(403, null), /draft scope/);
-  assert.match(mapHttpError(413, null), /too large.*smaller export constraint/);
-  assert.match(mapHttpError(429, null), /Wait a moment/);
-  assert.match(mapHttpError(409, null), /could not bind/);
+  assert.equal(mapHttpError(401, { error: 'server detail' }), TOKEN_REFUSED);
+  assert.equal(TOKEN_REFUSED, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
+  assert.equal(mapHttpError(403, null), TOKEN_SCOPE);
+  assert.equal(TOKEN_SCOPE, 'This token can’t send drafts. Create a token with Draft permission.');
+  assert.equal(mapHttpError(413, null), 'This export is too large for Assetlib (over 4 MiB). Reduce its detail or size and try again.');
+  assert.equal(mapHttpError(429, null), 'Assetlib is busy. Try again in a minute.');
+  assert.match(mapHttpError(409, null), /couldn’t put this image in the chosen cell/);
   assert.equal(mapHttpError(409, { error: { message: 'Canvas does not match.' } }), 'Canvas does not match.');
-  assert.match(mapHttpError(500, null), /HTTP 500/);
+  // A server error never shows the console's own text or a bare HTTP code.
+  assert.equal(mapHttpError(500, { error: 'Internal stack trace' }), 'Assetlib had a problem (500). Try again in a minute.');
+  assert.equal(serverError(503), 'Assetlib had a problem (503). Try again in a minute.');
   assert.equal(mapHttpError(400, { message: 'Invalid file key.' }), 'Invalid file key.');
-  assert.match(mapNetworkError(DEVELOPMENT_ORIGIN), /http:\/\/localhost:3100/);
+  assert.equal(mapHttpError(400, null), 'Assetlib had a problem (400). Try again in a minute.');
+  assert.equal(mapNetworkError(PRODUCTION_ORIGIN), 'Can’t reach Assetlib. Check your internet connection.');
+  assert.equal(mapNetworkError(DEVELOPMENT_ORIGIN), 'Can’t reach the console at localhost:3100. Check that it’s running.');
+  // Developer-facing wording from before A.3 is gone from every message.
+  for (const text of [mapHttpError(401, null), mapHttpError(403, null), mapHttpError(500, null), mapNetworkError(PRODUCTION_ORIGIN), insertUnavailable(PRODUCTION_ORIGIN)]) {
+    assert.doesNotMatch(text, /manifest|HTTP \d|Update the console|IHDR/, text);
+  }
 });
 
 // ---- Insert ----
@@ -362,15 +412,15 @@ test('artwork rejects illegal coordinates and inheritance, and drops an invalid 
   for (const change of [{ state: null }, { state: 'missing' }, { state: '__proto__' }, { appearance: 'light' }, { appearance: 'any' },
     { arm: 'c' }, { arm: 'control' }, { draft: art('not-a-uuid') }, { draft: { assetId } }, { staging: art(assetId, 'b', null) },
     { production: art(assetId, null, 'dark') }, { draft: undefined }]) {
-    assert.throws(() => parseArtwork(withCell(change)), /invalid placement artwork/, JSON.stringify(change));
+    assert.throws(() => parseArtwork(withCell(change)), /placement artwork the plugin can’t read/, JSON.stringify(change));
   }
   const stateless = { ...family, states: null, defaultState: null };
-  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...stateless, cells: [{ ...familyCells()[0] }] }] })), /invalid placement artwork/, 'a stateless cell has a null state');
-  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: [familyCells()[0], familyCells()[0]] }] })), /invalid placement artwork/, 'duplicate cells');
-  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: Array.from({ length: 241 }, () => familyCells()[0]) }] })), /invalid placement artwork/);
-  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: null }] })), /invalid placement artwork/);
-  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, width: 0, cells: [] }] })), /invalid placement/);
-  assert.throws(() => parseArtwork(artworkPayload({ environments: { staging: { sequence: -1, createdAt: 'x' }, production: null } })), /invalid placement artwork/);
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...stateless, cells: [{ ...familyCells()[0] }] }] })), /placement artwork the plugin can’t read/, 'a stateless cell has a null state');
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: [familyCells()[0], familyCells()[0]] }] })), /placement artwork the plugin can’t read/, 'duplicate cells');
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: Array.from({ length: 241 }, () => familyCells()[0]) }] })), /placement artwork the plugin can’t read/);
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, cells: null }] })), /placement artwork the plugin can’t read/);
+  assert.throws(() => parseArtwork(artworkPayload({ placements: [{ ...family, width: 0, cells: [] }] })), unreadablePlacements);
+  assert.throws(() => parseArtwork(artworkPayload({ environments: { staging: { sequence: -1, createdAt: 'x' }, production: null } })), /placement artwork the plugin can’t read/);
   for (const value of [null, [], { placements: [] }, { environments: {}, placements: {}, assets: {} }]) assert.throws(() => parseArtwork(value));
 
   const assets = { [assetId]: libraryAsset([item(1, 'image/png', 1200, 900)], { width: 0 }), [otherId]: libraryAsset([], { id: assetId }),
@@ -385,7 +435,7 @@ test('image pages parse assets and a uuid cursor, dropping invalid assets', () =
   const page = parseAssetPage({ assets: [libraryAsset([item(1, 'image/png', 1200, 900)], { processingIntent: null }), { id: 'bad' }, libraryAsset([], { name: 42 })], nextCursor: assetId });
   assert.deepEqual(page, { assets: [{ id: assetId, name: 'Coast', width: 1200, height: 900, processingIntent: null, renditions: [strip(item(1, 'image/png', 1200, 900))] }], nextCursor: assetId });
   assert.deepEqual(parseAssetPage({ assets: [], nextCursor: null }), { assets: [], nextCursor: null });
-  for (const value of [null, { assets: {} }, { assets: [], nextCursor: 'x' }, { assets: [] }]) assert.throws(() => parseAssetPage(value), /invalid image list/);
+  for (const value of [null, { assets: {} }, { assets: [], nextCursor: 'x' }, { assets: [] }]) assert.throws(() => parseAssetPage(value), /image list the plugin can’t read/);
 });
 
 test('layer names list the key, arm, appearance, and a non-default state within 200 characters', () => {
@@ -460,23 +510,184 @@ test('pngSize reads IHDR dimensions without throwing, and plain base64 matches N
 });
 
 test('insert errors explain the read scope and an older console, and send errors are unchanged', () => {
-  assert.equal(mapHttpError(403, null, 'insert'), 'This token cannot read this app’s images. Use a token with the draft scope for this organization and app.');
-  assert.match(mapHttpError(403, null), /does not allow drafts/);
+  assert.equal(mapHttpError(403, null, 'insert'), 'This token can’t read this app’s images. Create a token with Draft permission.');
+  assert.equal(mapHttpError(403, null), TOKEN_SCOPE);
+  assert.equal(MISSING_INSERT, 'This console doesn’t support Insert yet. Send still works.');
   assert.equal(mapHttpError(404, { error: 'Rendition not found.' }, 'insert'), MISSING_INSERT);
   assert.equal(mapHttpError(404, { error: 'Placement not found.' }), 'Placement not found.');
   assert.equal(mapHttpError(401, null, 'insert'), mapHttpError(401, null));
   assert.equal(mapHttpError(429, null, 'insert'), mapHttpError(429, null));
   assert.equal(mapHttpError(400, { error: 'Invalid cursor.' }, 'insert'), 'Invalid cursor.');
-  assert.match(insertUnavailable(DEVELOPMENT_ORIGIN), /^This console does not support Insert yet, or http:\/\/localhost:3100 could not be reached\. Send still works/);
+  assert.equal(insertUnavailable(DEVELOPMENT_ORIGIN), 'This console doesn’t support Insert yet, or localhost:3100 couldn’t be reached. Send still works.');
+  assert.equal(insertUnavailable(PRODUCTION_ORIGIN), 'This console doesn’t support Insert yet, or Assetlib couldn’t be reached. Send still works.');
 });
 
-test('preferences fall back field by field to Send, Placements, Draft, and 1×', () => {
-  assert.deepEqual(defaultPreferences(), { tab: 'send', browse: 'placements', environment: 'draft', scale: 1 });
-  assert.deepEqual(parsePreferences({ tab: 'insert', browse: 'images', environment: 'production', scale: 3, extra: true }),
-    { tab: 'insert', browse: 'images', environment: 'production', scale: 3 });
+test('default tab is insert', () => {
+  assert.equal(defaultPreferences().tab, 'insert');
+  assert.equal(parsePreferences(undefined).tab, 'insert', 'a first run opens on Insert');
+  assert.equal(parsePreferences({ tab: 'send' }).tab, 'send', 'a saved Send tab is kept');
+});
+
+test('preferences fall back field by field to Insert, Placements, Draft, and 1×, with optional window and hint fields', () => {
+  assert.deepEqual(defaultPreferences(), { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1 });
+  assert.deepEqual(parsePreferences({ tab: 'send', browse: 'images', environment: 'production', scale: 3, extra: true }),
+    { tab: 'send', browse: 'images', environment: 'production', scale: 3 });
   assert.deepEqual(parsePreferences({ tab: 'publish', browse: 'images', environment: 'live', scale: '2' }),
-    { tab: 'send', browse: 'images', environment: 'draft', scale: 1 });
+    { tab: 'insert', browse: 'images', environment: 'draft', scale: 1 });
   for (const value of [undefined, null, 'text', []]) assert.deepEqual(parsePreferences(value), defaultPreferences());
+  // The new fields are kept only when valid, and are absent otherwise, so saved preferences keep their shape.
+  assert.deepEqual(parsePreferences({ window: { width: 420, height: 640 }, hintSeen: true }),
+    { ...defaultPreferences(), window: { width: 420, height: 640 }, hintSeen: true });
+  for (const window of [{ width: 319, height: 640 }, { width: 420, height: 1001 }, { width: 420.5, height: 640 }, { width: '420', height: 640 }, [420, 640], null]) {
+    assert.deepEqual(parsePreferences({ window, hintSeen: 'yes' }), defaultPreferences(), JSON.stringify(window));
+  }
+});
+
+test('every request goes to one of the five app routes', () => {
+  const config = { origin: PRODUCTION_ORIGIN, orgId: 'org-1', appId: 'app-1' };
+  const base = `${PRODUCTION_ORIGIN}/api/apps/org-1/app-1/`;
+  const id = '00000000-0000-4000-8000-000000000001';
+  const hash = 'ab'.repeat(32);
+  for (const path of ['placements', 'placements/artwork', 'drafts', 'assets', assetsPath({ limit: 24, cursor: id, q: 'Coast ridge & co' }), renditionPath(id.toUpperCase(), hash)]) {
+    assert.equal(appUrl(config, path), `${base}${path}`, path);
+  }
+  assert.equal(renditionPath(id.toUpperCase(), hash), `assets/${id}/renditions/${hash}`, 'asset ids are lowercased');
+  assert.equal(assetsPath({ q: ' a/b?c#d ' }), 'assets?q=a%2Fb%3Fc%23d');
+  for (const path of ['releases', 'placements/publish', 'drafts/1', 'assets/../releases', `assets/${id}/renditions/${hash}/original`, 'assets#x',
+    'assets?q=a b', '/placements', 'https://evil.test/placements', `assets/${id}/renditions/${hash.toUpperCase()}`, '']) {
+    assert.throws(() => appUrl(config, path), /route it does not use/, path);
+  }
+  assert.throws(() => appUrl({ ...config, origin: LEGACY_PRODUCTION_ORIGIN }, 'placements'), /console\.assetlib\.dev/);
+});
+
+test('request timeouts: 20 s reads, 30 s drafts, plus 15 s per MiB, in whole seconds', () => {
+  const mib = 1024 * 1024;
+  assert.equal(requestTimeoutMs('GET'), 20000);
+  assert.equal(requestTimeoutMs('POST'), 30000);
+  assert.equal(requestTimeoutMs('POST', 400), 30000, 'a small body adds nothing');
+  assert.equal(requestTimeoutMs('POST', 2 * mib), 60000);
+  assert.equal(requestTimeoutMs('POST', 6 * mib), 120000, 'the largest draft body');
+  assert.equal(requestTimeoutMs('GET', 4 * mib), 80000, 'the largest insert download');
+  assert.equal(requestTimeoutMs('GET', -5), 20000);
+  assert.equal(mapTimeoutError(20), 'Assetlib didn’t answer within 20 seconds. Try again.');
+  assert.equal(mapTimeoutError(70, 'send'), 'Assetlib didn’t answer within 70 seconds. It may have arrived anyway, so check the console before sending again.');
+});
+
+test('Retry-After parses seconds and dates, and decides which GETs are tried again', () => {
+  const now = Date.parse('2026-10-09T12:00:00Z');
+  assert.equal(parseRetryAfter(null, now), null);
+  assert.equal(parseRetryAfter(' 7 ', now), 7);
+  assert.equal(parseRetryAfter('Fri, 09 Oct 2026 12:00:12 GMT', now), 12);
+  assert.equal(parseRetryAfter('Fri, 09 Oct 2026 11:00:00 GMT', now), 0, 'a date in the past means now');
+  assert.equal(parseRetryAfter('soon', now), null);
+  assert.equal(parseRetryAfter('-3', now), null);
+  const outcome = (kind, status = 0, retryAfter = null) => ({ kind, status, retryAfter });
+  for (const failure of [outcome('network'), outcome('http', 502), outcome('http', 503), outcome('http', 504)]) {
+    assert.deepEqual([0, 1, 2].map(attempt => retryDelayMs(failure, attempt)), [1000, 4000, null], JSON.stringify(failure));
+  }
+  assert.equal(retryDelayMs(outcome('http', 503, 10), 0), 10000, 'a longer Retry-After is honoured');
+  assert.equal(retryDelayMs(outcome('http', 503, 31), 0), null, 'more than 30 s is not waited for');
+  assert.deepEqual([0, 1, 2].map(attempt => retryDelayMs(outcome('http', 429, 30), attempt)), [30000, 30000, null]);
+  assert.equal(retryDelayMs(outcome('http', 429, 0), 0), 1000, 'at least a second');
+  assert.equal(retryDelayMs(outcome('http', 429), 0), null, 'a 429 without Retry-After is not retried');
+  assert.equal(retryDelayMs(outcome('http', 429, 31), 0), null);
+  for (const other of [outcome('ok', 200), outcome('http', 500), outcome('http', 404), outcome('http', 401), outcome('timeout'), outcome('aborted')]) {
+    assert.equal(retryDelayMs(other, 0), null, JSON.stringify(other));
+  }
+});
+
+test('main reads only well-formed messages from the UI', () => {
+  const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token: 'draft_x' };
+  const node = { id: '1:2', name: 'Hero', type: 'FRAME', width: 10, height: 10 };
+  const good = [
+    { type: 'init' },
+    { type: 'save-connection', requestId: 1, connection },
+    { type: 'save-file-url', requestId: 2, url: 'https://www.figma.com/design/abc/x' },
+    { type: 'export', requestId: 3, node, fileKey: 'abc', placement: {}, bind: {}, rebind: false },
+    { type: 'remember', requestId: 4 },
+    // Main checks the bytes, frame, and scale itself, with messages of their own.
+    { type: 'insert', requestId: 5, connectionGeneration: 0, bytes: [1], name: 'x', frame: null, scale: 4, link: null },
+    { type: 'save-preferences', preferences: null },
+    { type: 'match-ratio', requestId: 6, nodeId: '1:2', width: 1, height: 1 },
+    { type: 'clear-connection', requestId: 7 },
+    { type: 'notify', text: 'Synced hero.artwork to draft' },
+    { type: 'notify', text: 'Sent', button: { text: 'Review', url: 'https://console.assetlib.dev/w/o/a/releases' } },
+  ];
+  for (const message of good) assert.equal(parseUiMessage(message), message, message.type);
+  const bad = [
+    null, 'init', [], { type: 3 }, { type: 'publish', requestId: 7 },
+    { type: 'save-connection', connection }, { type: 'save-connection', requestId: 0, connection },
+    { type: 'save-connection', requestId: 1.5, connection }, { type: 'save-connection', requestId: 8, connection: null },
+    { type: 'save-connection', requestId: 8, connection: { ...connection, token: 5 } },
+    { type: 'save-file-url', requestId: 9 }, { type: 'export', requestId: 10, node, fileKey: 'abc', placement: {}, bind: {} },
+    { type: 'export', requestId: 10, node: { ...node, width: '10' }, fileKey: 'abc', placement: {}, bind: {}, rebind: true },
+    { type: 'remember' }, { type: 'insert', requestId: 11, connectionGeneration: '0', name: 'x', link: null },
+    { type: 'insert', requestId: 11, connectionGeneration: 0, name: 'x', link: 'cell' }, { type: 'save-preferences' },
+    { type: 'match-ratio', requestId: 12, nodeId: 5, width: 1, height: 1 },
+    { type: 'clear-connection' }, { type: 'notify' }, { type: 'notify', text: 'x', button: { text: 'Review' } }, { type: 'notify', text: 'x', button: 'Review' },
+  ];
+  for (const message of bad) assert.throws(() => parseUiMessage(message), { message: UNREADABLE_MESSAGE }, JSON.stringify(message));
+  assert.equal(messageRequestId({ type: 'x', requestId: 7 }), 7);
+  for (const value of [null, {}, { requestId: '7' }, { requestId: -1 }, { requestId: 2 ** 60 }]) assert.equal(messageRequestId(value), undefined);
+});
+
+// ---- A.3: the token form, labels, links, and toasts ----
+test('a typed token must look like an Assetlib token; saved connections keep loading and keep their names', () => {
+  const token = `alk_${'a'.repeat(43)}`;
+  assert.equal(checkTokenFormat(` ${token} `), token);
+  for (const bad of ['', 'draft_secret', `alk_${'a'.repeat(42)}`, `alk_${'a'.repeat(44)}`, `alk_${'a'.repeat(42)}!`, `figd_${'a'.repeat(43)}`]) {
+    assert.throws(() => checkTokenFormat(bad), error => error.message === 'That doesn’t look like an Assetlib token. Tokens start with alk_.' && connectionErrorField(error) === 'token', bad);
+  }
+  // Saved connections are not checked against the format, so one saved by an earlier build still loads.
+  assert.equal(loadSavedConnection({ origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token: 'draft_secret' }).token, 'draft_secret');
+  const named = validateConnection({ origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token, workspaceName: ' Acme\u0007 ', appName: 'x'.repeat(250) });
+  assert.deepEqual(named, { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token, workspaceName: 'Acme', appName: 'x'.repeat(200) });
+  assert.deepEqual(validateConnection({ origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token, workspaceName: 5, appName: '  ' }),
+    { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token }, 'an unusable name is dropped, never an error');
+  assert.equal(connectionLabel(named), 'Acme · ' + 'x'.repeat(200));
+  assert.equal(connectionLabel({ orgId: 'org', appId: 'app' }), 'org · app', 'without names, the IDs');
+  assert.equal(connectionLabel({ orgId: 'org', appId: 'app', appName: 'iOS' }), 'iOS');
+  assert.equal(OLDER_CONSOLE, 'This console also needs the organization and app IDs. Find them in Settings › General.');
+});
+
+test('GET /api/token is built for the two console origins only, and its answer is checked', () => {
+  assert.equal(tokenUrl(PRODUCTION_ORIGIN), 'https://console.assetlib.dev/api/token');
+  assert.equal(tokenUrl(DEVELOPMENT_ORIGIN), 'http://localhost:3100/api/token');
+  for (const origin of [LEGACY_PRODUCTION_ORIGIN, 'http://127.0.0.1:3100', 'https://evil.test']) assert.throws(() => tokenUrl(origin), /console\.assetlib\.dev/);
+  assert.deepEqual(parseTokenIdentity({ orgId: 'org-1', appId: 'app-1', workspaceName: 'Acme', appName: null, scopes: ['draft', 'publish', 'declare'] }),
+    { orgId: 'org-1', appId: 'app-1', workspaceName: 'Acme', appName: null, scopes: ['draft', 'declare'] });
+  for (const bad of [null, {}, { orgId: '../x', appId: 'a', scopes: [] }, { orgId: 'o', appId: 'a' }, { orgId: 'o', appId: 'a b', scopes: [] }]) {
+    assert.throws(() => parseTokenIdentity(bad), /can’t read/, JSON.stringify(bad));
+  }
+});
+
+test('console links are built from validated ids on the connected origin, and main opens nothing else', () => {
+  const config = { origin: PRODUCTION_ORIGIN, orgId: 'org-1', appId: 'app-1' };
+  const image = '00000000-0000-4000-8000-00000000000A';
+  assert.equal(consoleLink(config, 'releases'), 'https://console.assetlib.dev/w/org-1/app-1/releases');
+  assert.equal(consoleLink(config, 'images', image), 'https://console.assetlib.dev/w/org-1/app-1/images/00000000-0000-4000-8000-00000000000a');
+  for (const [section, id] of [['settings'], ['images', 'not-a-uuid'], ['releases', '00000000-0000-4000-8000-000000000001']]) {
+    assert.throws(() => consoleLink(config, section, id), /not valid/, section);
+  }
+  assert.throws(() => consoleLink({ ...config, orgId: '../x' }, 'releases'), /not valid/);
+  assert.equal(isConsoleLink('https://console.assetlib.dev/w/org-1/app-1/releases', config), true);
+  assert.equal(isConsoleLink(consoleLink(config, 'images', image), config), true);
+  for (const url of ['https://console.assetlib.dev/w/org-1/app-2/releases', 'https://console.assetlib.dev/w/org-1/app-1/settings/tokens',
+    'https://console.assetlib.dev/w/org-1/app-1/releases/x', 'https://evil.test/w/org-1/app-1/releases', 'javascript:alert(1)', 5]) {
+    assert.equal(isConsoleLink(url, config), false, String(url));
+  }
+  assert.equal(isConsoleLink('https://console.assetlib.dev/w/org-1/app-1/releases', null), false, 'no connection, no link');
+});
+
+test('toasts are at most 100 characters, and rows and pickers name only what a placement declares', () => {
+  assert.equal(toastText('Synced  hero.artwork\nto draft'), 'Synced hero.artwork to draft');
+  const long = toastText(`Inserted ${'x'.repeat(200)}`);
+  assert.equal(Array.from(long).length, 100);
+  assert.ok(long.endsWith('…'));
+  assert.equal(placementMeta({ width: 1170, height: 1560, states: ['a', 'b'], variants: { appearance: ['light', 'dark'], arm: ['b'] } }),
+    '1170 × 1560 · 2 states · light, dark · arm b');
+  assert.equal(placementMeta({ width: 1170, height: 480, states: null, variants: null }), '1170 × 480');
+  assert.deepEqual([null, 'light', 'dark'].map(appearanceLabel), ['Any', 'Light', 'Dark']);
 });
 
 test('placementMarker names the placement for coding agents and links the console, never with the token', () => {

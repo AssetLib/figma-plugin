@@ -1,10 +1,13 @@
 import type { ExportSettings, NodeSelection, Placement } from './types.js';
 import { isUint8Array, positiveDimension } from './validation.js';
 
+// What Send says when Figma's export can't be used.
+export const EXPORT_FAILED = 'Figma couldn’t export this layer. Try again, or flatten it first.';
+// A layer, or a placement, without a size to export (main reports a zero-size layer the same way).
+export const NO_AREA = 'This layer has no visible area to export.';
+
 function checkDimensions(node: Pick<NodeSelection, 'width' | 'height'>, placement: Pick<Placement, 'width' | 'height'>): void {
-  if (![node.width, node.height, placement.width, placement.height].every(positiveDimension)) {
-    throw new Error('Select a node with a non-zero width and height and a valid placement canvas.');
-  }
+  if (![node.width, node.height, placement.width, placement.height].every(positiveDimension)) throw new Error(NO_AREA);
 }
 
 export function aspectRatioDifference(node: Pick<NodeSelection, 'width' | 'height'>, placement: Pick<Placement, 'width' | 'height'>): number {
@@ -12,6 +15,33 @@ export function aspectRatioDifference(node: Pick<NodeSelection, 'width' | 'heigh
   const difference = Math.abs((node.width / node.height) / (placement.width / placement.height) - 1);
   // Avoid warning for an exact 2% change represented as 0.020000000000000018.
   return Math.round(difference * 1e12) / 1e12;
+}
+
+// Send and Sync stay disabled while the node's ratio differs from the placement's by more than this.
+export const MAX_ASPECT_DIFFERENCE = 0.02;
+
+/** True when Send and Sync must wait for the node to match the placement's ratio. */
+export function aspectMismatch(node: Pick<NodeSelection, 'width' | 'height'>, placement: Pick<Placement, 'width' | 'height'>): boolean {
+  return aspectRatioDifference(node, placement) > MAX_ASPECT_DIFFERENCE;
+}
+
+/** The height that gives a node of this width the placement's ratio: whole pixels, unless rounding misses by more than 2%. */
+export function matchedHeight(width: number, placement: Pick<Placement, 'width' | 'height'>): number {
+  checkDimensions({ width, height: 1 }, placement);
+  const exact = (width * placement.height) / placement.width;
+  const whole = Math.round(exact);
+  if (whole >= 1 && !aspectMismatch({ width, height: whole }, placement)) return whole;
+  return Math.max(0.01, Math.round(exact * 100) / 100);
+}
+
+/** A size for people: at most two decimals, no trailing zeros. */
+export function sizeLabel(size: Pick<NodeSelection, 'width' | 'height'>): string {
+  return `${Number(size.width.toFixed(2))} × ${Number(size.height.toFixed(2))}`;
+}
+
+/** The placement's ratio as "2.44 : 1", with no-break spaces, so a narrow window never wraps it at the colon. */
+export function ratioLabel(placement: Pick<Placement, 'width' | 'height'>): string {
+  return `${Number((placement.width / placement.height).toFixed(2))}\u00a0:\u00a01`;
 }
 
 export function chooseExportSettings(node: Pick<NodeSelection, 'width' | 'height'>, placement: Pick<Placement, 'width' | 'height'>): ExportSettings {
@@ -44,7 +74,7 @@ export function pngSize(bytes: Uint8Array): { width: number; height: number } | 
 
 export function parsePngDimensions(bytes: Uint8Array): { width: number; height: number } {
   const size = readIhdr(bytes);
-  if (!size) throw new Error('Figma returned a PNG with an invalid or incomplete IHDR header. Export the artwork again.');
-  if (!validPngSize(size)) throw new Error('Figma returned a PNG with invalid dimensions. Export the artwork again.');
+  // Figma wrote something that is not a readable PNG (no complete IHDR header, or impossible dimensions).
+  if (!size || !validPngSize(size)) throw new Error(EXPORT_FAILED);
   return size;
 }

@@ -1,9 +1,10 @@
 import {
-  LEGACY_PRODUCTION_ORIGIN, MAX_IMAGE_BYTES, MAX_INSERT_PIXELS, PRODUCTION_ORIGIN, chooseExportSettings, defaultPreferences,
-  environmentLabel, isUint8Array, linkMatches, loadSavedConnection, parseFileKey, parsePlacements, parsePreferences,
-  parseStoredLink, placementMarker, pngSize, sanitizeName, validateBinding, validateConnection, validateInsertLink,
+  DEVICE_STORAGE, LEGACY_PRODUCTION_ORIGIN, MAX_IMAGE_BYTES, MAX_INSERT_PIXELS, NO_AREA, PRODUCTION_ORIGIN, SELECTION_CHANGED, chooseExportSettings, defaultPreferences,
+  environmentLabel, isConsoleLink, isUint8Array, linkMatches, loadSavedConnection, mapHttpError, matchedHeight, parseFileKey, parsePlacements,
+  parsePreferences, parseStoredLink, placementMarker, pngSize, sanitizeName, validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
 import type { Connection, NodeSelection, Preferences, StoredLink } from './shared/index.js';
+import { DISCONNECTED, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { MainMessage, RememberedTarget, UiMessage } from './shared/protocol.js';
 
 const CONNECTION_KEY = 'assetlib.connection.v1';
@@ -64,8 +65,8 @@ async function reportSelection(): Promise<void> {
   const fileKey = currentFileKey();
   let reason: string | null = null;
   let remembered: RememberedTarget | null = null;
-  if (!node) reason = figma.currentPage.selection.length === 0 ? 'Select one node to send its artwork.' : 'Select just one node. Multiple selections cannot be sent together.';
-  else if (node.width <= 0 || node.height <= 0) reason = 'This node has no exportable area. Select a node with a positive width and height.';
+  if (!node) reason = figma.currentPage.selection.length === 0 ? 'Select a frame or layer to send.' : 'Select one layer. Sending several at once isn’t supported yet.';
+  else if (node.width <= 0 || node.height <= 0) reason = NO_AREA;
   if (node && fileKey && config) {
     try {
       for (const key of targetKeys(config, fileKey, node.id)) {
@@ -114,7 +115,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'save-connection': {
       const next = validateConnection(message.connection);
       try { await figma.clientStorage.setAsync(CONNECTION_KEY, next); }
-      catch { throw new Error('Could not save the connection in Figma. Please try again.'); }
+      catch { throw new Error(DEVICE_STORAGE); }
       connection = next;
       connectionGeneration += 1;
       post({ type: 'connection', connectionGeneration, connection, savedFileUrl, preferences });
@@ -124,22 +125,22 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'save-file-url': {
       const fileKey = parseFileKey(message.url);
       try { await figma.clientStorage.setAsync(FILE_URL_KEY, message.url); }
-      catch { throw new Error('Could not save the file URL in Figma. Please try again.'); }
+      catch { throw new Error(DEVICE_STORAGE); }
       fallbackFileKey = fileKey;
       savedFileUrl = message.url;
-      post({ type: 'file-saved', fileKey });
+      post({ type: 'file-saved', requestId: message.requestId, fileKey });
       await reportSelection();
       break;
     }
     case 'export': {
       if (exporting || importing) throw new Error('An export is already in progress.');
-      if (!connection) throw new Error('Save and test your connection first.');
+      if (!connection) throw new Error('Connect to Assetlib first.');
       const node = selectedNode();
       const fileKey = currentFileKey();
-      if (!node || node.id !== message.node.id || fileKey !== message.fileKey) throw new Error('The selection or file changed. Review the selection and send again.');
+      if (!node || node.id !== message.node.id || fileKey !== message.fileKey) throw new Error(SELECTION_CHANGED);
       if (node.width !== message.node.width || node.height !== message.node.height || node.name !== message.node.name) {
         await reportSelection();
-        throw new Error('The artwork changed. Review its updated dimensions and aspect ratio before sending again.');
+        throw new Error(SELECTION_CHANGED);
       }
       const placement = parsePlacements({ placements: [message.placement] })[0]!;
       const bind = validateBinding(placement, message.bind);
@@ -148,13 +149,13 @@ async function handleMessage(message: UiMessage): Promise<void> {
       exporting = true;
       let bytes: Uint8Array;
       try { bytes = await node.exportAsync(settings); }
-      catch { throw new Error('Figma could not export this node as PNG. Check the node and try again.'); }
+      catch { throw new Error('Figma couldn’t export this layer. Try again, or flatten it first.'); }
       finally { exporting = false; }
       if (node.removed || node.width !== snapshot.width || node.height !== snapshot.height || node.name !== snapshot.name) {
         await reportSelection();
-        throw new Error('The artwork changed during export. Review the selection and send again.');
+        throw new Error(SELECTION_CHANGED);
       }
-      if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error('The export is too large (over 4 MiB). Try a placement with a smaller export constraint.');
+      if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error(mapHttpError(413, null));
       exported.clear();
       exported.set(message.requestId, {
         storageKey: targetKey(connection, fileKey, snapshot.id),
@@ -167,7 +168,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       const pending = exported.get(message.requestId);
       if (!pending) throw new Error('The draft was sent, but its sync target is no longer available.');
       try { await figma.clientStorage.setAsync(pending.storageKey, pending.target); }
-      catch { throw new Error('The draft was sent, but Figma could not save its sync target. Send again to remember it.'); }
+      catch { throw new Error('The draft was sent, but Figma couldn’t save its sync target on your device. Send again to remember it.'); }
       exported.delete(message.requestId);
       post({ type: 'remembered', requestId: message.requestId });
       await reportSelection();
@@ -224,10 +225,54 @@ async function handleMessage(message: UiMessage): Promise<void> {
         if (node.x < bounds.x || node.y < bounds.y || node.x + width > bounds.x + bounds.width || node.y + height > bounds.y + bounds.height) {
           figma.viewport.scrollAndZoomIntoView([node]);
         }
-        figma.notify(link ? `Inserted ${name} from ${environmentLabel(link.environment)}` : `Inserted ${name}`);
+        figma.notify(toastText(link ? `Inserted ${name} from ${environmentLabel(link.environment)}` : `Inserted ${name}`));
         post({ type: 'inserted', requestId: message.requestId, connectionGeneration, node: describeNode(node), linked: Boolean(link) });
       } finally { importing = false; }
       // selectionchange is asynchronous and coalesced; report the new selection now.
+      await reportSelection();
+      break;
+    }
+    case 'clear-connection': {
+      // Disconnect: this device forgets the token. It keeps working elsewhere until an owner revokes it in the console.
+      try { await figma.clientStorage.deleteAsync(CONNECTION_KEY); }
+      catch { throw new Error(DEVICE_STORAGE); }
+      connection = null;
+      connectionGeneration += 1;
+      post({ type: 'connection', connectionGeneration, connection, savedFileUrl, preferences });
+      figma.notify(DISCONNECTED);
+      await reportSelection();
+      break;
+    }
+    case 'notify': {
+      const { button } = message;
+      // Only a link into the connected app's console; any other button is dropped, and the toast still shows.
+      const action = button && isConsoleLink(button.url, connection) ? { text: toastText(button.text).slice(0, 24), action: () => { figma.openExternal(button.url); } } : null;
+      figma.notify(toastText(message.text), action ? { button: action } : undefined);
+      break;
+    }
+    case 'match-ratio': {
+      if (exporting || importing) throw new Error('Wait for the current export or insert to finish, then match the ratio.');
+      const node = selectedNode();
+      if (!node || node.id !== message.nodeId) throw new Error('The selection changed. Check it and try again.');
+      const placement = { width: message.width, height: message.height };
+      if (![placement.width, placement.height].every(value => typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new Error('Choose a valid placement.');
+      if (!('resize' in node) || node.width <= 0) throw new Error('Figma can’t resize this layer. Resize it on the canvas, then send.');
+      const width = node.width;
+      const height = matchedHeight(width, placement);
+      const sizing = 'layoutSizingVertical' in node ? node.layoutSizingVertical : null;
+      // Earlier uncommitted plugin edits (an Insert, say) become their own undo step, so Cmd+Z undoes only the resize.
+      figma.commitUndo();
+      try {
+        // A hug or fill height would undo the resize; matching the ratio needs a fixed height.
+        if ('layoutSizingVertical' in node && sizing !== 'FIXED') node.layoutSizingVertical = 'FIXED';
+        node.resize(width, height);
+      } catch {
+        // Leave the layer as it was: put back the hug or fill height fixed for the resize.
+        try { if ('layoutSizingVertical' in node && sizing && node.layoutSizingVertical !== sizing) node.layoutSizingVertical = sizing; } catch { /* already as it was, or gone */ }
+        throw new Error('Figma couldn’t resize this layer. Resize it on the canvas, then send.');
+      }
+      // One undo step for the resize.
+      figma.commitUndo();
       await reportSelection();
       break;
     }
@@ -235,11 +280,40 @@ async function handleMessage(message: UiMessage): Promise<void> {
 }
 
 figma.showUI(__html__, { width: 420, height: 720, themeColors: true });
-figma.ui.onmessage = (message: UiMessage) => {
-  if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
-  void handleMessage(message).catch((error: unknown) => {
-    post({ type: 'error', message: error instanceof Error ? error.message : 'The plugin could not complete that action.', ...('requestId' in message ? { requestId: message.requestId } : {}) });
+figma.ui.onmessage = (value: unknown) => {
+  // Anything but an object (a null pluginMessage, say) is not for this handler.
+  if (!value || typeof value !== 'object') return;
+  // The error names the request it ends, when the message named a valid one, so the UI ends only that operation.
+  const requestId = messageRequestId(value);
+  const fail = (error: unknown) => post({ type: 'error', message: error instanceof Error ? error.message : 'The plugin could not complete that action.',
+    ...(requestId === undefined ? {} : { requestId }) });
+  let message: UiMessage;
+  try { message = parseUiMessage(value); } catch (error) { fail(error); return; }
+  void handleMessage(message).catch(error => {
+    fail(error);
+    // The UI set its selection aside for the new connection; the old one stands, so it gets the selection again.
+    if (message.type === 'save-connection') void reportSelection();
   });
 };
 figma.on('selectionchange', () => { void initialized.then(reportSelection); });
-figma.on('currentpagechange', () => { void initialized.then(reportSelection); });
+
+// A resize or rename on the canvas fires no selectionchange, so the selected node's changes are watched on its page.
+let nodeChangeTimer: ReturnType<typeof setTimeout> | null = null;
+let watchedPage: PageNode | null = null;
+function onNodeChange(event: NodeChangeEvent): void {
+  if (nodeChangeTimer !== null) return;
+  const node = selectedNode();
+  if (!node || !event.nodeChanges.some(change => change.type === 'PROPERTY_CHANGE' && change.id === node.id)) return;
+  // A drag resizes many times a second; one report per 150 ms keeps the size current.
+  nodeChangeTimer = setTimeout(() => { nodeChangeTimer = null; void initialized.then(reportSelection); }, 150);
+}
+function watchCurrentPage(): void {
+  // A page that was just deleted may throw here; that must not stop the new page being watched.
+  try { watchedPage?.off('nodechange', onNodeChange); } catch { /* its listener went with it */ }
+  try {
+    watchedPage = figma.currentPage;
+    watchedPage.on('nodechange', onNodeChange);
+  } catch { watchedPage = null; /* Sizes then refresh on the next selection change. */ }
+}
+watchCurrentPage();
+figma.on('currentpagechange', () => { watchCurrentPage(); void initialized.then(reportSelection); });

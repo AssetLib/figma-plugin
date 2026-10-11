@@ -5,172 +5,400 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Assetlib</title>
   <style>
-    :root { color-scheme: light; font: 12px/1.5 'Instrument Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); --focus: #b63f1b; }
+    /* Instrument Sans (SIL Open Font License 1.1, src/assets/OFL.txt), embedded by scripts/build.mjs. */
+    /* ASSETLIB_FONT */
+    /* Every colour is one of Figma's theme variables (themeColors: true); the fallbacks are Assetlib's brand tokens, for
+       a page without Figma's theme. Text pairs are checked at 4.5:1 or more in both themes by scripts/contrast.mjs. */
+    :root {
+      color-scheme: light;
+      --bg: var(--figma-color-bg, #ffffff);
+      --bg-secondary: var(--figma-color-bg-secondary, #eef0f3);
+      --bg-tertiary: var(--figma-color-bg-tertiary, #e3e6eb);
+      --bg-hover: var(--figma-color-bg-hover, #eef0f3);
+      --bg-pressed: var(--figma-color-bg-pressed, #e3e6eb);
+      --bg-disabled: var(--figma-color-bg-disabled, #e3e6eb);
+      --text: var(--figma-color-text, #0b0f14);
+      --text-disabled: var(--figma-color-text-disabled, #8b929c);
+      --border: var(--figma-color-border, #e2e5ea);
+      --slot: var(--figma-color-icon-tertiary, #8b929c);
+      /* Meta text: the raw UI3 text-secondary is 3.95:1 on white, so meta is the text colour at 70%. */
+      --al-text-meta: color-mix(in srgb, var(--text) 70%, transparent);
+      /* A hovered field that already has a border (inside a callout) darkens it; Figma has no variable between border and border-strong. */
+      --al-border-hover: color-mix(in srgb, var(--text) 30%, var(--bg));
+      /* Vermilion is only the focus ring. */
+      --focus: #b63f1b;
+      font: 400 11px/16px 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
     /* Native controls and scrollbars follow Figma's theme, not the OS. */
     html.figma-dark { --focus: #e4572e; color-scheme: dark; }
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 20px; }
-    h1 { margin: 0; font-size: 19px; font-weight: 500; letter-spacing: -.5px; }
-    h2 { margin: 0 0 8px; font-size: 12px; font-weight: 500; }
-    p { margin: 6px 0; overflow-wrap: anywhere; }
-    header { margin-bottom: 20px; }
-    .muted, small { color: var(--figma-color-text-secondary, #666); }
-    section, details { border-top: 1px solid var(--figma-color-border, #ddd); padding: 16px 0; }
-    summary { cursor: pointer; font-weight: 500; }
-    details[open] summary { margin-bottom: 12px; }
-    label { display: grid; gap: 5px; margin-bottom: 10px; }
-    input, select, button { font: inherit; border: 1px solid var(--figma-color-border, #ccc); border-radius: 3px; padding: 8px 10px; min-height: 34px; }
-    input, select { width: 100%; min-width: 0; background: var(--figma-color-bg, white); color: inherit; }
-    button { cursor: pointer; background: var(--figma-color-bg-secondary, #f5f5f5); color: inherit; font-weight: 500; }
-    button.primary { background: var(--figma-color-text, #222); color: var(--figma-color-bg, #fff); border-color: transparent; }
-    button:disabled, input:disabled, select:disabled { opacity: .45; cursor: default; }
-    /* Vermilion appears only on the focus ring. */
-    :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .row { display: flex; gap: 10px; }
-    .row > * { flex: 1; min-width: 0; }
-    .actions { display: grid; gap: 8px; margin-top: 12px; }
-    /* The tertiary washes keep warning and danger text readable; the solid bg-warning and bg-danger are fills for white text. */
-    .notice { padding: 10px; background: var(--figma-color-bg-warning-tertiary, #fff1cf); color: var(--figma-color-text-warning, #664500); border-radius: 6px; }
-    .error { padding: 10px; background: var(--figma-color-bg-danger-tertiary, #fff0ef); color: var(--figma-color-text-danger, #a12619); border-radius: 6px; }
-    #selection-name { font-weight: 500; }
-    #result { border: 1px solid var(--figma-color-border, #ddd); padding: 12px; border-radius: 6px; margin-top: 12px; }
-    #result ul { margin: 6px 0; padding-left: 18px; }
-    a { color: var(--figma-color-text-brand, #1769ff); }
+    html, body { height: 100%; margin: 0; }
+    body { overflow: hidden; background: var(--bg); }
     [hidden] { display: none !important; }
-    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+    p { margin: 0; overflow-wrap: anywhere; }
+    h1, h2 { margin: 0; }
+    a { color: inherit; }
+    button, input, select { font: inherit; color: inherit; }
+    button { cursor: pointer; border: 0; background: none; padding: 0; transition: background-color 120ms; }
+    svg.icon { display: block; flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .meta { color: var(--al-text-meta); font-variant-numeric: tabular-nums; }
+    .title { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
-    .tabs { display: flex; gap: 18px; border-top: 1px solid var(--figma-color-border, #ddd); border-bottom: 1px solid var(--figma-color-border, #ddd); }
-    .tabs [role="tab"] { min-height: 32px; padding: 0 2px; border: 0; border-radius: 0; background: none; color: var(--figma-color-text-secondary, #666); box-shadow: inset 0 -2px 0 transparent; }
-    .tabs [role="tab"][aria-selected="true"] { color: var(--figma-color-text, #222); box-shadow: inset 0 -2px 0 var(--figma-color-text, #222); }
-    #panel-send > section:first-child { border-top: 0; }
-    #panel-insert { padding-top: 16px; }
-    .segmented { display: flex; border: 1px solid var(--figma-color-border, #ccc); border-radius: 3px; overflow: hidden; }
-    .segmented button { flex: 1; min-height: 28px; padding: 0 8px; border: 0; border-radius: 0; background: none; }
-    .segmented button + button { border-left: 1px solid var(--figma-color-border, #ccc); }
-    .segmented [aria-checked="true"] { background: var(--figma-color-text, #222); color: var(--figma-color-bg, #fff); }
-    .tools { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
-    .tools .search { flex: 1; margin: 0; }
-    .tools .scale { display: flex; align-items: center; gap: 6px; margin: 0; white-space: nowrap; }
-    .tools .scale select { width: auto; }
-    .env-row { display: flex; gap: 8px; align-items: center; }
-    .env-row .segmented { flex: 1; }
-    #insert-refresh, #images-more, #insert-clear { min-height: 28px; padding: 0 10px; }
-    #env-note { margin: 6px 0 0; }
-    .group { margin: 14px 0 2px; color: var(--figma-color-text-secondary, #666); }
-    .placement { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 56px; padding: 8px; border: 0; border-radius: 0; background: none; text-align: left; font-weight: 400; }
-    .placement:not(:disabled):hover, .tile:not(:disabled):hover { background: var(--figma-color-bg-hover, #f0f0f0); }
-    .placement[aria-pressed="true"] { background: var(--figma-color-bg-secondary, #f5f5f5); box-shadow: inset 2px 0 0 var(--figma-color-text, #222); }
-    .key { display: block; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .size { display: block; color: var(--figma-color-text-secondary, #666); }
-    .tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--figma-color-bg-tertiary, #ececec); color: var(--figma-color-text-secondary, #666); white-space: nowrap; }
-    .thumb { position: relative; display: block; width: 40px; height: 40px; border-radius: 3px; overflow: hidden;
-      background: repeating-conic-gradient(var(--figma-color-bg-secondary, #f5f5f5) 0 25%, var(--figma-color-bg-tertiary, #e6e6e6) 0 50%) 0 0 / 8px 8px; }
+    /* Buttons. One primary per view, in ink; the rest are secondary or text actions. */
+    .primary, .secondary, .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; height: 32px; padding: 0 12px;
+      border-radius: 5px; font-size: 12px; font-weight: 500; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-decoration: none; }
+    .primary { background: var(--text); color: var(--bg); }
+    .primary:hover { background: color-mix(in srgb, var(--text) 88%, var(--bg)); }
+    .secondary, .button { background: var(--bg-secondary); color: var(--text); }
+    /* Figma's bg-hover and bg-pressed equal bg-secondary in both themes, so a hovered secondary button steps to bg-tertiary. */
+    .secondary:hover, .button:hover { background: var(--bg-tertiary); }
+    .small { height: 24px; padding: 0 8px; }
+    .wide { width: 100%; }
+    .text-action { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 2px; border-radius: 5px; font-size: 11px; font-weight: 500;
+      color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--al-text-meta); }
+    .icon-button { display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 5px; color: var(--text); }
+    .icon-button:hover { background: var(--bg-hover); }
+    /* Actions that can't run yet keep focus (aria-disabled); other controls use disabled. Both look disabled. */
+    .primary[aria-disabled="true"], .primary:disabled { background: var(--bg-disabled); color: var(--text-disabled); cursor: default; }
+    button[aria-disabled="true"]:not(.primary), button:disabled:not(.primary), input:disabled, select:disabled { color: var(--text-disabled); cursor: default; }
+    .secondary[aria-disabled="true"]:hover, .secondary:disabled:hover { background: var(--bg-secondary); }
+
+    /* Fields. */
+    input:not([type="search"]), select { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid transparent; border-radius: 5px;
+      background: var(--bg-secondary); font-size: 12px; line-height: 16px; }
+    input::placeholder { color: var(--al-text-meta); opacity: 1; }
+    input:hover:not(:focus-visible), select:hover:not(:focus-visible) { border-color: var(--border); }
+    input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--figma-color-border-danger-strong, #b3261e); }
+    .field { display: grid; gap: 4px; min-width: 0; color: var(--al-text-meta); }
+    .field > input, .field > select { color: var(--text); }
+    .help { color: var(--al-text-meta); }
+    .pair { display: flex; gap: 8px; }
+    .pair > * { flex: 1; }
+
+    /* Callouts: body text on bg-secondary, readable in both themes; a 16 px icon carries the tone. Figma's tinted
+       washes are not: dark mode's text-warning on bg-warning-tertiary measures about 2.2:1. */
+    .notice, .error, .info { position: relative; padding: 8px 8px 8px 32px; background: var(--figma-color-bg-secondary, #eef0f3); color: var(--figma-color-text, #0b0f14);
+      border: 1px solid var(--border); border-radius: 6px; font-size: 11px; line-height: 16px; }
+    .notice::before, .notice::after, .error::before, .error::after, .info::before { content: ''; position: absolute; left: 8px; top: 8px; width: 16px; height: 16px;
+      -webkit-mask: var(--icon) center / 16px 16px no-repeat; mask: var(--icon) center / 16px 16px no-repeat; }
+    /* A neutral step, not a problem (an older console asks for the IDs): an ink "i" in a ring. */
+    .info::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6.5' fill='none' stroke='%23000' stroke-width='1.5'/%3E%3Cpath d='M7.25 7h1.5v4.5h-1.5zM8 4.1a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8z'/%3E%3C/svg%3E"); background: var(--text); }
+    .notice::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.2 14.6 13.8H1.4Z' stroke='%23000' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E"); background: var(--figma-color-icon-warning, #ffcd29); }
+    .notice::after { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M7.25 6h1.5v4h-1.5zM8 10.9a.85.85 0 1 1 0 1.7.85.85 0 0 1 0-1.7z'/%3E%3C/svg%3E"); background: var(--figma-color-icon-onwarning, rgba(0, 0, 0, .9)); }
+    .error::before { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7'/%3E%3C/svg%3E"); background: var(--figma-color-icon-danger, #b3261e); }
+    .error::after { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M7.25 4h1.5v5h-1.5zM8 10.15a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8z'/%3E%3C/svg%3E"); background: var(--figma-color-icon-ondanger, #fff); }
+    .notice .small, .error .small { margin-top: 8px; }
+    /* Controls inside a callout sit on the panel's own surface with a border: on the callout's bg-secondary, a field or a
+       secondary button in bg-secondary would read as plain text. */
+    .notice input, .notice select, .notice .secondary, .error .secondary { background: var(--bg); border: 1px solid var(--border); }
+    .notice input:hover:not(:focus-visible), .notice select:hover:not(:focus-visible) { border-color: var(--al-border-hover); }
+    .notice input[aria-invalid="true"] { border-color: var(--figma-color-border-danger-strong, #b3261e); }
+    .notice .secondary:hover, .error .secondary:hover { background: var(--bg-tertiary); }
+    .notice .secondary[aria-disabled="true"]:hover, .error .secondary[aria-disabled="true"]:hover { background: var(--bg); }
+
+    /* App shell: fixed bars, and only the list (or the Send form) scrolls. */
+    .app { position: relative; display: flex; flex-direction: column; height: 100%; min-width: 0; }
+    .topbar { flex: none; display: flex; align-items: center; height: 40px; padding: 0 12px; }
+    .tabs { display: flex; gap: 4px; }
+    [role="tab"] { height: 24px; padding: 0 8px; border-radius: 5px; font-size: 12px; font-weight: 500; color: var(--al-text-meta); }
+    /* A hovered tab turns to ink without a fill: Figma's bg-hover is the active tab's bg-secondary in both themes. */
+    [role="tab"]:hover { color: var(--text); }
+    [role="tab"][aria-selected="true"] { background: var(--bg-secondary); color: var(--text); }
+
+    /* The account chip is the connection settings' summary, drawn in the top bar; the settings open below it. */
+    .settings { flex: none; }
+    .chip { position: absolute; top: 8px; right: 12px; display: flex; align-items: center; gap: 4px; max-width: 160px; height: 24px; padding: 0 4px 0 8px;
+      border-radius: 5px; font-size: 11px; font-weight: 500; cursor: pointer; list-style: none; user-select: none; transition: background-color 120ms; }
+    .chip::-webkit-details-marker { display: none; }
+    .chip:hover, .settings[open] > .chip { background: var(--bg-secondary); }
+    /* A long workspace name shortens first, so the app's name stays readable: the separator and the app's name (auto
+       columns) get their width before the workspace (the 1fr column) gets what is left. */
+    .chip-name { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+    .chip-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .chip-warning { flex: none; width: 12px; height: 12px; -webkit-mask: var(--warning-glyph) center / 12px 12px no-repeat; mask: var(--warning-glyph) center / 12px 12px no-repeat; background: currentColor; }
+    :root { --warning-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5 15 14H1Z M7.2 6v4.2h1.6V6Z M8 11.2a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8z' fill-rule='evenodd'/%3E%3C/svg%3E"); }
+    .panel { display: grid; gap: 12px; max-height: 70vh; overflow: auto; padding: 4px 12px 12px; border-bottom: 1px solid var(--border); }
+    .account { display: grid; gap: 2px; }
+    .account-actions { display: flex; gap: 12px; margin-top: 4px; }
+    .connection-form { display: grid; gap: 8px; }
+    .first-run, .guide { display: none; }
+
+    /* First run: no tabs and no list, one centered column. */
+    .app[data-view="first-run"] .topbar, .app[data-view="first-run"] .chip, .app[data-view="first-run"] .account { display: none; }
+    .app[data-view="first-run"] .settings { flex: 1; min-height: 0; overflow: auto; }
+    .app[data-view="first-run"] .panel { max-width: 324px; max-height: none; margin: 0 auto; padding: 32px 12px 16px; border: 0; overflow: visible; }
+    .app[data-view="first-run"] .first-run { display: grid; gap: 8px; margin-bottom: 4px; }
+    .app[data-view="first-run"] .guide { display: block; justify-self: start; }
+    .lockup { display: block; height: 24px; width: auto; margin-bottom: 8px; color: var(--text); }
+    .headline { font-size: 13px; line-height: 20px; font-weight: 600; }
+    .first-run .button { margin-top: 4px; }
+
+    /* Views. */
+    .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .toolbar { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; }
+    .search { position: relative; flex: 1; min-width: 0; }
+    .search svg.icon { position: absolute; left: 8px; top: 8px; color: var(--al-text-meta); pointer-events: none; }
+    .search input { width: 100%; height: 32px; padding: 0 28px; border: 1px solid transparent; border-radius: 5px; background: var(--bg-secondary); font-size: 12px; line-height: 16px; }
+    .search input:hover:not(:focus-visible) { border-color: var(--border); }
+    .search input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+    .search .icon-button { position: absolute; right: 4px; top: 4px; }
+    .search .icon-button:hover { background: var(--bg-tertiary); }
+    .scopebar { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; min-height: 32px; padding: 0 12px 8px;
+      border-bottom: 1px solid var(--border); }
+    .segmented { display: inline-flex; flex: none; height: 24px; padding: 2px; border-radius: 5px; background: var(--bg-secondary); }
+    .segmented button { height: 20px; padding: 0 8px; border: 1px solid transparent; border-radius: 4px; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--al-text-meta); }
+    .segmented button[aria-checked="true"] { background: var(--bg); border-color: var(--border); color: var(--text); }
+    .segmented button:disabled { color: var(--text-disabled); }
+    .segmented button[aria-checked="false"]:not(:disabled):hover { color: var(--text); }
+    .note { flex: none; padding: 6px 12px 0; color: var(--al-text-meta); }
+
+    .list-region { position: relative; flex: 1; min-height: 0; overflow: auto; scroll-padding-top: 28px; }
+    .group { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; height: 28px; padding: 0 12px; background: var(--bg);
+      color: var(--al-text-meta); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .placement { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; height: 48px; padding: 8px 12px; text-align: left; }
+    .placement:hover { background: var(--bg-hover); }
+    .placement[aria-pressed="true"] { background: var(--bg-tertiary); }
+    .placement:focus-visible, .tile:focus-visible { outline-offset: -2px; }
+    /* Inside the ring, a 1 px band of the panel background: dark mode's vermilion on the selected row's fill is under 3:1. */
+    .placement[aria-pressed="true"]:focus-visible { box-shadow: inset 0 0 0 3px var(--bg); }
+    .row-text { display: grid; min-width: 0; }
+    .key { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .size { color: var(--al-text-meta); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Tags carry a word, never colour alone: a dot for information, a warning glyph for what blocks Insert. */
+    .tag { display: inline-flex; align-items: center; gap: 4px; color: var(--al-text-meta); white-space: nowrap; }
+    .tag::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .tag.blocking { color: var(--text); }
+    .tag.blocking::before { width: 12px; height: 12px; border-radius: 0; -webkit-mask: var(--warning-glyph) center / 12px 12px no-repeat; mask: var(--warning-glyph) center / 12px 12px no-repeat; }
+    .thumb { position: relative; display: block; width: 32px; height: 32px; border-radius: 4px; overflow: hidden;
+      background: repeating-conic-gradient(var(--bg-secondary) 0 25%, var(--bg-tertiary) 0 50%) 0 0 / 8px 8px; }
     .thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .thumb img:not([src]) { visibility: hidden; }
-    /* data-sha="" means the image has no preview version at all, as opposed to one that is loading or failed. */
-    .thumb:has(img[data-sha=""])::after { content: 'No preview'; position: absolute; inset: 0; display: grid; place-items: center; padding: 2px; text-align: center; font-size: 9px; line-height: 1.2; color: var(--figma-color-text-secondary, #666); }
-    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
-    .tile { display: grid; gap: 2px; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: none; text-align: left; font-weight: 400; }
+    /* A cell with nothing in this environment is an empty slot, not a broken preview. */
+    .thumb.slot { background: none; border: 1px dashed var(--slot); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 8px 12px; }
+    /* An empty grid takes no room, so its empty state sits where the placements' does. */
+    .grid:empty { padding: 0; }
+    .tile { display: grid; align-content: start; gap: 2px; min-width: 0; padding: 0; border-radius: 6px; text-align: left; }
     .tile .thumb { width: 100%; height: auto; aspect-ratio: 1; border-radius: 6px; }
-    .tile[aria-pressed="true"] .thumb { outline: 2px solid var(--figma-color-text, #222); }
-    .tile .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tile .size { font-size: 11px; }
-    #images-more { display: block; width: 100%; margin-top: 10px; }
-    .empty { padding: 16px 0; }
-    .insert-bar { position: sticky; bottom: 0; margin: 12px -20px 0; padding: 12px 20px 8px; background: var(--figma-color-bg, #fff); border-top: 1px solid var(--figma-color-border, #ddd); }
-    .insert-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
-    .insert-head > div { flex: 1; min-width: 0; }
-    .insert-head .thumb { flex: none; width: 48px; height: 48px; }
-    .insert-head p { margin: 0; }
-    /* Pickers share a row when their labels fit, and wrap instead of truncating an option. */
-    .insert-bar .row { flex-wrap: wrap; }
-    .insert-bar .row > * { flex: 1 1 auto; }
-    .insert-messages p { margin: 8px 0 0; }
-    .insert-messages p:empty { margin: 0; }
-    #insert-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #insert { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #insert-note { margin: 6px 0 0; }
+    /* The selected tile: a 2 px ink ring around the whole tile, 2 px out. */
+    .tile[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+    /* Two lines at most, then an ellipsis. Layer names such as onboarding_hero_dark_final_v2 have no break opportunity,
+       so they may break anywhere; otherwise one line is cut at the tile's edge with no ellipsis. */
+    .tile .name { margin-top: 4px; font-weight: 500; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    #images-more { display: flex; width: calc(100% - 24px); margin: 0 12px 12px; }
+    .skeleton { pointer-events: none; }
+    .skeleton .block, .skeleton .bar { display: block; border-radius: 4px; background: var(--bg-secondary); }
+    .skeleton.placement .block { width: 32px; height: 32px; }
+    .skeleton .lines { display: grid; gap: 6px; }
+    .skeleton .bar { height: 8px; }
+    .skeleton .bar + .bar { width: 35%; }
+    .skeleton .bar:first-child { width: 60%; }
+    .skeleton.tile .block { width: 100%; aspect-ratio: 1; border-radius: 6px; }
+    .empty { display: grid; justify-items: start; gap: 8px; padding: 24px 16px; }
+    /* A list state or Send's reason takes focus on its own when a read fails; like the list, it shows no ring for it. */
+    .empty:focus, #send-problem:focus { outline: none; }
+    .empty-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .empty-actions > * { height: 24px; padding: 0 8px; }
+
+    /* Send. */
+    /* One column as wide as the panel: an auto column would grow to the longest unbreakable text and widen the form. */
+    .send-scroll { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 12px; padding: 4px 12px 12px; }
+    .selection-card { display: grid; gap: 2px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+    .inline-form { display: flex; align-items: end; gap: 8px; margin-top: 8px; }
+    .inline-form .field { flex: 1; }
+    /* Each label sits 4 px from its own select and 12 px from the next picker, so the groups read apart. */
+    .pickers { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+    .pickers:not(:has(> :not([hidden]))) { display: none; }
+    .picker { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--al-text-meta); white-space: nowrap; }
+    .picker select { width: auto; max-width: 140px; height: 24px; padding: 0 2px; color: var(--text); }
+    .result { display: grid; gap: 4px; }
+    .result details summary { cursor: pointer; width: max-content; }
+    .result ul { margin: 4px 0 0; padding-left: 16px; }
+    /* Placement keys run up to 120 characters with no spaces. */
+    .result li { overflow-wrap: anywhere; }
+
+    /* Fixed bottom: the error line, the selection bar slot (A.7), and the footer of the view in front. */
+    .messages { flex: none; padding: 0 12px; }
+    .messages > .error { margin: 8px 0; }
+    /* The error line takes focus on its text; the ring is drawn around the whole callout. */
+    #error:focus { outline: none; }
+    .error:has(> #error:focus-visible) { outline: 2px solid var(--focus); outline-offset: 1px; }
+    .error > .small { display: flex; width: max-content; }
+    .messages:not(:has(> :not([hidden]))) { display: none; }
+    .selection-bar { flex: none; height: 48px; border-top: 1px solid var(--border); }
+    .footer { flex: none; display: grid; gap: 0; padding: 0 12px; border-top: 1px solid var(--border); background: var(--bg); }
+    .footer > .pickers { min-height: 32px; padding-top: 8px; }
+    .footer-row { display: flex; align-items: center; gap: 8px; height: 48px; min-width: 0; }
+    .footer-text { flex: 1; display: grid; min-width: 0; }
+    .footer-text .meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .footer-row .primary { flex: none; min-width: 72px; }
+    .footer-note { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; margin-top: -4px; }
+    .footer-note:not(:has(> :not([hidden]))) { display: none; }
+    .footer-note p { flex: 1; color: var(--al-text-meta); }
+    .footer-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0; }
+    .footer-actions > button { flex: 1 1 0; max-width: 220px; }
+    /* The primary action sits on the right, whichever of Send and Sync it is. */
+    .footer-actions > .primary { order: 2; }
+
+    .spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #insert-refresh[data-busy="true"] svg { animation: spin .8s linear infinite; }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+      .spinner, #insert-refresh[data-busy="true"] svg { animation: none; }
+      .spinner { border: 0; width: auto; height: auto; } .spinner::after { content: '…'; }
+    }
+    /* Narrow windows: the chip keeps the app name, and segmented labels stay whole. */
+    @media (max-width: 399px) { .chip-workspace, .chip-sep { display: none; } }
   </style>
 </head>
 <body>
-  <header><h1>Assetlib</h1><p class="muted">Insert your app’s artwork, and send edits back to its draft.</p></header>
-  <details id="settings" open>
-    <summary>Connection <span id="connection-label" class="muted"></span></summary>
-    <p class="muted">Create an app-scoped <strong>draft</strong> token in the console’s Tokens panel. This is an Assetlib token, not a Figma token.</p>
-    <form id="connection-form">
-      <label>Console origin<select id="origin"><option value="https://console.assetlib.dev">https://console.assetlib.dev</option><option value="http://localhost:3100">http://localhost:3100 (development)</option></select></label>
-      <div class="row"><label>Organization ID<input id="org-id" required autocomplete="off" spellcheck="false"></label><label>App ID<input id="app-id" required autocomplete="off" spellcheck="false"></label></div>
-      <label>Draft token<input id="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste your draft token"></label>
-      <p id="token-prefix" class="muted"></p>
-      <button type="submit">Test connection</button>
-    </form>
-  </details>
-  <div class="tabs" role="tablist" aria-label="Assetlib">
-    <button id="tab-send" type="button" role="tab" aria-selected="true" aria-controls="panel-send">Send</button>
-    <button id="tab-insert" type="button" role="tab" aria-selected="false" aria-controls="panel-insert">Insert</button>
-  </div>
-  <div id="panel-send" role="tabpanel" aria-labelledby="tab-send">
-    <section aria-labelledby="selection-title">
-      <h2 id="selection-title">Selected artwork</h2>
-      <p id="selection-name">Reading selection…</p><p id="selection-meta" class="muted"></p>
-      <div id="file-fallback" hidden>
-        <p class="muted">Figma has not supplied this file’s key. Confirm its file URL once for this plugin session.</p>
-        <form id="file-form"><label>Figma file URL<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off"></label><button type="submit">Use this file</button></form>
+  <div id="app" class="app" data-view="shell">
+    <header class="topbar">
+      <div class="tabs" role="tablist" aria-label="Assetlib">
+        <button id="tab-insert" type="button" role="tab" aria-selected="true" aria-controls="panel-insert">Insert</button>
+        <button id="tab-send" type="button" role="tab" aria-selected="false" aria-controls="panel-send">Send</button>
       </div>
-    </section>
-    <section aria-labelledby="placement-title">
-      <h2 id="placement-title">Draft placement</h2>
-      <label>Placement<select id="placement" disabled><option value="">Test your connection to load placements</option></select></label>
-      <div class="row">
-        <label id="state-label" hidden>State<select id="state"></select></label>
-        <label id="appearance-label" hidden>Appearance<select id="appearance"></select></label>
-        <label id="arm-label" hidden>Arm<select id="arm"></select></label>
+    </header>
+    <details id="settings" class="settings">
+      <summary id="settings-summary" class="chip" title="Connection">
+        <span id="chip-warning" class="chip-warning" hidden></span>
+        <span id="account-name" class="chip-name">Connection</span>
+        <span id="connection-label" class="visually-hidden"></span>
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3"/></svg>
+      </summary>
+      <div class="panel">
+        <div id="first-run" class="first-run">
+          <svg class="lockup" viewBox="0 0 150 30" role="img" aria-label="Assetlib">
+            <path d="M2 8 15 1l13 7-13 7L2 8Z" fill="currentColor"/>
+            <path d="m2 15 13 7 13-7M2 22l13 7 13-7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <text x="38" y="25" font-family="'Instrument Sans', system-ui, sans-serif" font-size="27" font-weight="600" letter-spacing="-1.2" fill="currentColor">assetlib</text>
+          </svg>
+          <h1 class="headline">Your app’s images, in Figma</h1>
+          <p>Create a Draft token in Settings › Tokens in the Assetlib console, then paste it here. Only workspace owners can create tokens; ask an owner if you can’t.</p>
+          <a id="first-run-console" class="button wide" href="https://console.assetlib.dev/" target="_blank" rel="noopener noreferrer">Open Assetlib console</a>
+        </div>
+        <div id="account" class="account">
+          <p id="account-title" class="title"></p>
+          <p id="token-prefix" class="meta"></p>
+          <div class="account-actions">
+            <a id="open-console" class="text-action" href="https://console.assetlib.dev/" target="_blank" rel="noopener noreferrer">Open console</a>
+            <button id="disconnect" class="text-action" type="button">Disconnect</button>
+          </div>
+        </div>
+        <form id="connection-form" class="connection-form" novalidate>
+          <label class="field">Console<select id="origin"><option value="https://console.assetlib.dev">console.assetlib.dev</option><option value="http://localhost:3100">localhost:3100 (development)</option></select></label>
+          <label class="field">Draft token<input id="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="alk_…" aria-describedby="token-help connection-error"></label>
+          <p id="token-help" class="help">From Settings › Tokens in the Assetlib console. It’s an Assetlib token, not a Figma token.</p>
+          <div id="id-fields" class="pair" hidden>
+            <label class="field">Organization ID<input id="org-id" autocomplete="off" spellcheck="false"></label>
+            <label class="field">App ID<input id="app-id" autocomplete="off" spellcheck="false"></label>
+          </div>
+          <p id="connection-error" class="error" tabindex="-1" hidden></p>
+          <button id="connect" class="primary wide" type="submit">Connect</button>
+        </form>
+        <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide" target="_blank" rel="noopener noreferrer">Read the guide</a>
       </div>
-      <p id="export-note" class="muted"></p>
-      <p id="aspect-warning" class="notice" hidden></p>
-      <div class="actions"><button id="send" class="primary" disabled>Send to draft</button><button id="sync" hidden disabled></button></div>
-      <p id="sync-note" class="muted" hidden></p>
-      <p class="muted">Changes stay in draft until you publish in the console.</p>
-    </section>
-    <div id="result" aria-live="polite" hidden></div>
-  </div>
-  <div id="panel-insert" role="tabpanel" aria-labelledby="tab-insert" hidden>
-    <div class="segmented" role="radiogroup" aria-label="Browse">
-      <button id="browse-placements" type="button" role="radio" aria-checked="true">Placements</button>
-      <button id="browse-images" type="button" role="radio" aria-checked="false">Images</button>
-    </div>
-    <div class="tools">
-      <label class="search"><span class="visually-hidden">Search</span><input id="insert-search" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Search by key or screen"></label>
-      <label class="scale">Insert at<select id="insert-scale"><option value="1">1× pixels</option><option value="2">@2x (½)</option><option value="3">@3x (⅓)</option></select></label>
-    </div>
-    <div class="env-row">
-      <div id="env-group" class="segmented" role="radiogroup" aria-label="Environment">
-        <button id="env-draft" type="button" role="radio" aria-checked="true">Draft</button>
-        <button id="env-staging" type="button" role="radio" aria-checked="false">Staging</button>
-        <button id="env-production" type="button" role="radio" aria-checked="false">Production</button>
+    </details>
+
+    <main id="panel-insert" class="view" role="tabpanel" aria-labelledby="tab-insert">
+      <div class="toolbar">
+        <div class="search">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/></svg>
+          <input id="insert-search" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Search placements" aria-label="Search placements">
+          <button id="search-clear" class="icon-button" type="button" aria-label="Clear search" title="Clear search" hidden><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg></button>
+        </div>
+        <button id="insert-refresh" class="icon-button" type="button" aria-label="Refresh" title="Refresh"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.75 8A4.75 4.75 0 1 1 11.3 4.6"/><path d="M11.75 2.25v2.75H9"/></svg></button>
       </div>
-      <button id="insert-refresh" type="button">Refresh</button>
-    </div>
-    <p id="env-note" class="muted"></p>
-    <div id="insert-list"></div>
-    <div id="image-grid" class="grid" hidden></div>
-    <button id="images-more" type="button" hidden>Load more</button>
-    <div id="insert-empty" class="empty" hidden><p id="insert-empty-text" class="muted"></p><button id="insert-clear" type="button" hidden>Clear search</button></div>
-    <div id="insert-bar" class="insert-bar">
-      <div class="insert-head"><span id="insert-preview" class="thumb"><img id="insert-thumb" alt=""></span><div><p id="insert-title"></p><p id="insert-meta" class="muted"></p></div></div>
-      <div class="row">
-        <label id="insert-state-label" hidden>State<select id="insert-state"></select></label>
-        <label id="insert-appearance-label" hidden>Appearance<select id="insert-appearance"></select></label>
-        <label id="insert-arm-label" hidden>Arm<select id="insert-arm"></select></label>
+      <div class="scopebar">
+        <div class="segmented" role="radiogroup" aria-label="Browse">
+          <button id="browse-placements" type="button" role="radio" aria-checked="true">Placements</button>
+          <button id="browse-images" type="button" role="radio" aria-checked="false">Images</button>
+        </div>
+        <div id="env-group" class="segmented" role="radiogroup" aria-label="Environment">
+          <button id="env-draft" type="button" role="radio" aria-checked="true">Draft</button>
+          <button id="env-staging" type="button" role="radio" aria-checked="false">Staging</button>
+          <button id="env-production" type="button" role="radio" aria-checked="false">Production</button>
+        </div>
       </div>
-      <button id="insert" class="primary" type="button" disabled>Insert</button>
-      <p id="insert-note" class="muted"></p>
-      <div id="insert-messages" class="insert-messages"></div>
+      <p id="env-note" class="note" hidden></p>
+      <div id="list-region" class="list-region">
+        <div id="insert-list"></div>
+        <div id="image-grid" class="grid" hidden></div>
+        <button id="images-more" class="secondary" type="button" hidden>Load more</button>
+        <div id="insert-empty" class="empty" tabindex="-1" hidden>
+          <h2 id="insert-empty-title" class="headline" hidden></h2>
+          <p id="insert-empty-text"></p>
+          <div class="empty-actions">
+            <button id="insert-clear" class="secondary" type="button" hidden>Clear search</button>
+            <button id="insert-retry" class="secondary" type="button" hidden>Try again</button>
+            <button id="insert-token" class="secondary" type="button" hidden>Update token</button>
+            <button id="insert-go-send" class="secondary" type="button" hidden>Go to Send</button>
+            <a id="insert-empty-link" class="button" target="_blank" rel="noopener noreferrer" hidden></a>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <main id="panel-send" class="view" role="tabpanel" aria-labelledby="tab-send" hidden>
+      <div class="send-scroll">
+        <section class="selection-card" aria-labelledby="selection-title">
+          <h2 id="selection-title" class="visually-hidden">Selected layer</h2>
+          <p id="selection-name" class="title">Reading selection…</p>
+          <p id="selection-meta" class="meta"></p>
+        </section>
+        <div id="file-fallback" class="notice" hidden>
+          <p>Paste this file’s link so Assetlib can trace art back to it. In Figma, press Cmd+L to copy the link. The plugin asks again each time it opens.</p>
+          <form id="file-form" class="inline-form"><label class="field">File link<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off" spellcheck="false"></label><button class="secondary" type="submit">Link file</button></form>
+        </div>
+        <!-- Why Send has no placements: the connection test failed. Shown here only while the connection settings are closed. -->
+        <div id="send-problem" class="error" tabindex="-1" hidden><p id="send-problem-text"></p><button id="send-retry" class="secondary small" type="button" hidden>Try again</button><button id="send-token" class="secondary small" type="button" hidden>Update token</button></div>
+        <label class="field">Placement<select id="placement" disabled><option value="">Choose placement…</option></select></label>
+        <div class="pickers">
+          <label id="state-label" class="picker" hidden>State<select id="state"></select></label>
+          <label id="appearance-label" class="picker" hidden>Appearance<select id="appearance"></select></label>
+          <label id="arm-label" class="picker" hidden>A/B arm<select id="arm"></select></label>
+        </div>
+        <p id="export-note" class="meta"></p>
+        <div id="aspect-warning" class="notice" hidden><p id="aspect-text"></p><button id="match-ratio" class="secondary small" type="button">Match ratio</button></div>
+        <p id="sync-note" class="meta" hidden></p>
+        <div id="result" class="result" hidden></div>
+        <p class="meta">Drafts don’t go live until someone publishes in the Assetlib console.</p>
+      </div>
+    </main>
+
+    <div id="messages" class="messages">
+      <div id="error-box" class="error" hidden><p id="error" tabindex="-1" hidden></p><button id="error-action" class="secondary small" type="button" hidden></button></div>
     </div>
-  </div>
-  <div id="messages">
-    <p id="status" role="status" aria-live="polite"></p>
-    <p id="error" class="error" role="alert" hidden></p>
+    <div id="selection-bar" class="selection-bar" hidden></div>
+    <footer id="insert-bar" class="footer" hidden>
+      <div class="pickers">
+        <label id="insert-state-label" class="picker" hidden>State<select id="insert-state"></select></label>
+        <label id="insert-appearance-label" class="picker" hidden>Appearance<select id="insert-appearance"></select></label>
+        <label id="insert-arm-label" class="picker" hidden>A/B arm<select id="insert-arm"></select></label>
+      </div>
+      <div class="footer-row">
+        <span id="insert-preview" class="thumb"><img id="insert-thumb" alt=""></span>
+        <div class="footer-text"><p id="insert-title" class="title"></p><p id="insert-meta" class="meta"></p></div>
+        <div id="scale-group" class="segmented" role="radiogroup" aria-label="Insert at">
+          <button id="scale-1" type="button" role="radio" aria-checked="true" title="The image’s size in pixels">1×</button>
+          <button id="scale-2" type="button" role="radio" aria-checked="false" title="Half the size, for @2x frames drawn in points">2×</button>
+          <button id="scale-3" type="button" role="radio" aria-checked="false" title="A third of the size, for @3x frames drawn in points">3×</button>
+        </div>
+        <button id="insert" class="primary" type="button" aria-disabled="true">Insert</button>
+      </div>
+      <div class="footer-note"><p id="insert-note" hidden></p><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a></div>
+    </footer>
+    <footer id="send-bar" class="footer" hidden>
+      <div class="footer-actions"><button id="sync" class="secondary" type="button" aria-disabled="true" hidden></button><button id="send" class="primary" type="button" aria-disabled="true">Send to draft</button></div>
+    </footer>
+    <!-- One status and one alert region, fixed in the DOM: every toast, result, and error is announced through them. -->
+    <p id="status" class="visually-hidden" role="status" aria-live="polite"></p>
+    <p id="alert" class="visually-hidden" role="alert"></p>
   </div>
   <!-- ASSETLIB_SCRIPT -->
 </body>

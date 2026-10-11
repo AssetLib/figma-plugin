@@ -25,7 +25,7 @@ export async function waitFor(predicate, { timeout = 15000, message = 'condition
 }
 
 export async function bundlePlugin(root) {
-  const [mainSource, uiSource] = await Promise.all(['src/code.ts', 'src/ui.ts'].map(async entry => {
+  const [mainSource, uiSource] = await Promise.all(['src/code.ts', 'src/ui/main.ts'].map(async entry => {
     const result = await build({ absWorkingDir: root, entryPoints: [entry], bundle: true, write: false, format: 'iife' });
     return result.outputFiles[0].text;
   }));
@@ -51,12 +51,27 @@ export function pngSizeOf(bytes) {
 }
 
 const selects = ['placement', 'state', 'appearance', 'arm', 'insert-state', 'insert-appearance', 'insert-arm'];
-export const controls = ['origin', 'org-id', 'app-id', 'token', 'placement', 'state', 'appearance', 'arm', 'send', 'sync', 'file-url',
-  'tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'insert-scale', 'env-draft', 'env-staging',
-  'env-production', 'insert-refresh', 'images-more', 'insert-clear', 'insert-state', 'insert-appearance', 'insert-arm', 'insert'];
+// Tags of ui.html elements the UI tells apart: text fields and selects (focus there is never taken), and the settings.
+const staticTags = {
+  input: ['org-id', 'app-id', 'token', 'file-url', 'insert-search'], select: [...selects, 'origin'],
+  details: ['settings'], summary: ['settings-summary'], form: ['connection-form', 'file-form'], a: ['open-console', 'first-run-console', 'insert-empty-link', 'insert-note-link'],
+};
+// Where ui.html nests the connection settings (the account panel), so settings.contains() sees its controls.
+const staticParents = {
+  'settings-summary': 'settings', 'connection-label': 'settings-summary', 'account-name': 'settings-summary', 'connection-form': 'settings',
+  origin: 'connection-form', 'id-fields': 'connection-form', 'org-id': 'id-fields', 'app-id': 'id-fields', token: 'connection-form',
+  'connection-error': 'connection-form', connect: 'connection-form', account: 'settings', 'account-title': 'account', 'token-prefix': 'account',
+  'open-console': 'account', disconnect: 'account', 'first-run': 'settings', 'first-run-console': 'first-run',
+};
+export const controls = ['origin', 'org-id', 'app-id', 'token', 'connect', 'disconnect', 'placement', 'state', 'appearance', 'arm', 'send', 'sync', 'match-ratio',
+  'file-url', 'tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'search-clear', 'scale-1', 'scale-2', 'scale-3', 'env-draft',
+  'env-staging', 'env-production', 'insert-refresh', 'images-more', 'insert-clear', 'insert-retry', 'insert-token', 'insert-go-send', 'insert-state',
+  'insert-appearance', 'insert-arm', 'insert'];
 
 export class Element {
   constructor(id = '', tag = '') {
+    // Elements from getElementById are in the page; created ones are while an ancestor is.
+    this.static = false;
     this.id = id;
     this.tag = tag;
     this.value = '';
@@ -67,10 +82,20 @@ export class Element {
     this.children = [];
     this.listeners = new Map();
     this.attributes = new Map();
+    this.style = {};
+  }
+  get isConnected() { return this.static || Boolean(this.parentElement?.isConnected); }
+  get tagName() { return this.tag.toUpperCase(); }
+  // A static element's parent comes from staticParents; a created or moved one's from parentElement.
+  contains(other) {
+    for (let item = other; item; item = item.parentElement ?? item.staticParent?.() ?? null) if (item === this) return true;
+    return false;
   }
   addEventListener(type, callback) { this.listeners.set(type, callback); }
   dispatch(type) { this.listeners.get(type)?.({ preventDefault() {} }); }
   replaceChildren(...children) {
+    for (const child of this.children) if (child.parentElement === this) child.parentElement = null;
+    for (const child of children) child.parentElement = this;
     this.children = children;
     if (selects.includes(this.id)) this.value = children[0]?.value ?? '';
   }
@@ -86,6 +111,10 @@ export class Element {
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
   removeAttribute(name) { this.attributes.delete(name); if (name === 'src') this.src = ''; }
   scrollIntoView(options) { this.scrolledIntoView = options; }
+  // There is no layout: every box is empty, so the UI measures nothing (connection.ts fits the chip only in a box).
+  getBoundingClientRect() { return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 }; }
+  // The harness sets focusState, so document.activeElement follows focus() as in the DOM.
+  focus() { if (this.focusState) this.focusState.active = this; }
 }
 
 export class Option {
@@ -103,33 +132,40 @@ export function textOf(item) {
   return [item.textContent ?? '', ...(item.children ?? []).map(textOf)].join('');
 }
 
-const jsonResponse = (status, payload) => ({
+const jsonResponse = (status, payload, headers = {}) => ({
   status,
-  headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+  headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json' : headers[name.toLowerCase()] ?? null },
   async json() { return clone(payload); },
   async arrayBuffer() { return new TextEncoder().encode(JSON.stringify(payload)).buffer; },
 });
 
 /**
  * A console that answers by URL. The state is read on every call, so tests can change it mid-run:
- * statuses[route] answers with that HTTP status, failures (a Set of routes) throw a network error,
- * and gates[route] (a deferred) holds the response until resolved.
+ * statuses[route] answers with that HTTP status (and headers[route], such as retry-after, on it), failures (a Set of
+ * routes) throw a network error, and gates[route] (a deferred) holds the response until resolved. GET /api/token
+ * (route `token`) answers with state.identity, else the identity the harness registered for the bearer token, else 404
+ * as a console from before that route does.
  */
 export function fakeConsole(state) {
   state.statuses ??= {};
   state.failures ??= new Set();
   state.gates ??= {};
+  state.headers ??= {};
   return async (url, options, request) => {
     const path = /^https?:\/\/[^/]+\/api\/apps\/[^/]+\/[^/]+\/(.*)$/.exec(url)?.[1] ?? '';
     // /placements/artwork is matched before /placements.
-    const route = path === 'placements/artwork' ? 'artwork' : path === 'placements' ? 'placements'
+    const route = /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork' : path === 'placements' ? 'placements'
       : /^assets(\?.*)?$/.test(path) ? 'assets' : /^assets\/[^/?]+\/renditions\/[^/?]+$/.test(path) ? 'rendition'
         : path === 'drafts' ? 'drafts' : 'unknown';
     request.route = route;
     if (state.gates[route]) await state.gates[route].promise;
     if (state.failures.has(route)) throw new TypeError('fetch failed');
-    if (state.statuses[route]) return jsonResponse(state.statuses[route], { error: `HTTP ${state.statuses[route]} from the fake console.` });
+    if (state.statuses[route]) return jsonResponse(state.statuses[route], { error: `HTTP ${state.statuses[route]} from the fake console.` }, state.headers[route]);
     switch (route) {
+      case 'token': {
+        const identity = state.identity ?? request.identity;
+        return identity ? jsonResponse(200, identity) : jsonResponse(404, { error: 'Not found.' });
+      }
       case 'placements': return jsonResponse(200, { placements: state.placements ?? [] });
       case 'artwork': return state.artwork ? jsonResponse(200, state.artwork) : jsonResponse(404, { error: 'Not found.' });
       case 'assets': {
@@ -164,17 +200,75 @@ export function fakeConsole(state) {
 }
 
 /**
+ * IntersectionObserver for the UI, driven by the test: `isVisible(target)` decides what intersects. As in the DOM,
+ * observe() delivers each target's state asynchronously, and later only changes are delivered.
+ */
+function intersectionObservers() {
+  const observers = new Set();
+  let isVisible = () => true;
+  class IntersectionObserver {
+    constructor(callback, options = {}) { this.callback = callback; this.options = { ...options }; this.targets = new Map(); this.pending = new Set(); observers.add(this); }
+    observe(target) { if (this.targets.has(target)) return; this.targets.set(target, null); this.schedule([target]); }
+    unobserve(target) { this.targets.delete(target); this.pending.delete(target); }
+    disconnect() { this.targets.clear(); this.pending.clear(); observers.delete(this); }
+    schedule(targets) {
+      const idle = this.pending.size === 0;
+      for (const target of targets) this.pending.add(target);
+      if (idle && this.pending.size) Promise.resolve().then(() => this.deliver());
+    }
+    deliver() {
+      const entries = [];
+      for (const target of this.pending) {
+        if (!this.targets.has(target)) continue;
+        const state = Boolean(isVisible(target));
+        if (this.targets.get(target) === state) continue;
+        this.targets.set(target, state);
+        entries.push({ target, isIntersecting: state });
+      }
+      this.pending.clear();
+      if (entries.length) this.callback(entries, this);
+    }
+  }
+  return {
+    IntersectionObserver, observers,
+    /** As if the list scrolled: every observed target is checked again against `predicate`. */
+    setVisible(predicate) { isVisible = predicate; for (const observer of observers) observer.schedule([...observer.targets.keys()]); },
+  };
+}
+
+function abortError() { return Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }); }
+
+/**
  * Runs the bundled main thread and UI in node:vm. `fetch(url, options, request)` answers the UI's requests;
- * every request is recorded first. Nodes in `selection` are plain specs; `pluginData` seeds their plugin data.
+ * every request is recorded first, and one whose AbortSignal fires rejects as fetch does. Nodes in `selection` are
+ * plain specs; `pluginData` seeds their plugin data. Animation frames run at once unless `manualFrames` is set, when
+ * they wait for runFrames().
  */
 export function createHarness({
   mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', selection = [], exportBytes = () => new Uint8Array(0),
   createImageBitmap, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 } },
+  command = '', manualFrames = false,
 }) {
   const elements = new Map();
   const element = id => {
-    if (!elements.has(id)) elements.set(id, new Element(id));
+    if (!elements.has(id)) {
+      const tag = Object.keys(staticTags).find(name => staticTags[name].includes(id)) ?? '';
+      const item = new Element(id, tag);
+      item.static = true;
+      // ui.html's first console option is selected until the UI chooses another, and a <details> starts closed.
+      if (id === 'origin') item.value = 'https://console.assetlib.dev';
+      if (tag === 'details') item.open = false;
+      item.focusState = focusState;
+      if (staticParents[id]) item.staticParent = () => element(staticParents[id]);
+      elements.set(id, item);
+    }
     return elements.get(id);
+  };
+  const createElement = tag => {
+    if (tag === 'canvas') return canvas();
+    const item = new Element('', tag);
+    item.focusState = focusState;
+    return item;
   };
   const mainMessages = [];
   const uiMessages = [];
@@ -186,6 +280,18 @@ export function createHarness({
   const frames = [];
   const scrolls = [];
   const bitmaps = [];
+  const canvases = [];
+  const resizes = [];
+  const undoCommits = [];
+  const notifications = [];
+  const undoTriggers = [];
+  const externalUrls = [];
+  const uiResizes = [];
+  const relaunches = [];
+  const focusState = { active: null };
+  // Identities GET /api/token answers for tokens saveConnection typed, as the console knows its own tokens.
+  const identities = new Map();
+  const intersections = intersectionObservers();
   const timers = new Map();
   const store = new Map(storage.map(([key, value]) => [key, clone(value)]));
   const events = new Map();
@@ -206,7 +312,9 @@ export function createHarness({
   const makeNode = ({ pluginData = {}, ...spec }) => {
     const data = new Map(Object.entries(pluginData));
     return {
-      removed: false, ...spec,
+      removed: false,
+      resize(width, height) { resizes.push({ id: this.id, width, height, layoutSizingVertical: this.layoutSizingVertical }); this.width = width; this.height = height; },
+      ...spec,
       async exportAsync(settings) {
         exports.push(clone(settings));
         if (exportGate) await exportGate.promise;
@@ -214,18 +322,44 @@ export function createHarness({
       },
       getPluginData(key) { return data.get(key) ?? ''; },
       setPluginData(key, value) { data.set(key, String(value)); },
+      setRelaunchData(value) { relaunches.push({ id: this.id, data: clone(value) }); this.relaunchData = clone(value); },
+      getRelaunchData() { return clone(this.relaunchData ?? {}); },
     };
   };
-  // Frames and components the plugin creates, in order, in `frames`.
+  // A page with nodechange listeners, as PageNode.on and off. Its children are the given nodes plus created frames.
+  const makePage = nodes => {
+    const listeners = new Set();
+    return { type: 'PAGE', selection: nodes, children: [...nodes], listeners, on(type, callback) { if (type === 'nodechange') listeners.add(callback); },
+      off(type, callback) { if (type === 'nodechange') listeners.delete(callback); },
+      // As PageNode.findAllWithCriteria: by types, and by plugin data keys that are set.
+      findAllWithCriteria({ types, pluginData } = {}) {
+        const found = [];
+        const walk = items => { for (const item of items) { found.push(item); walk(item.children ?? []); } };
+        walk(this.children);
+        return found.filter(item => (!types || types.includes(item.type))
+          && (!pluginData?.keys || pluginData.keys.some(key => item.getPluginData?.(key))));
+      } };
+  };
+  const rootData = new Map();
+  // Frames and components the plugin creates, in order, in `frames` and on the current page.
   const insertable = (type, extra) => {
     const node = makeNode({ id: `${200 + frames.length}:7`, name: type === 'FRAME' ? 'Frame' : 'Component', type, width: 100, height: 100, x: 0, y: 0, fills: [], clipsContent: false, ...extra });
     node.resize = function resize(width, height) { this.width = width; this.height = height; };
     frames.push(node);
+    figma.currentPage.children.push(node);
     return node;
   };
   const figma = {
     fileKey,
-    currentPage: { selection: selection.map(makeNode) },
+    command,
+    currentPage: makePage(selection.map(makeNode)),
+    root: {
+      type: 'DOCUMENT', name: 'Untitled',
+      getPluginData(key) { return rootData.get(key) ?? ''; },
+      setPluginData(key, value) { rootData.set(key, String(value)); },
+      setRelaunchData(value) { relaunches.push({ id: '0:0', data: clone(value) }); this.relaunchData = clone(value); },
+      getRelaunchData() { return clone(this.relaunchData ?? {}); },
+    },
     viewport: { center: { ...viewport.center }, bounds: { ...viewport.bounds }, scrollAndZoomIntoView(nodes) { scrolls.push([...nodes].map(item => item.id)); } },
     clientStorage: {
       async getAsync(key) {
@@ -241,6 +375,10 @@ export function createHarness({
         if (failingWrites.includes(key)) throw new Error('Client storage is unavailable.');
         store.set(key, clone(value));
       },
+      async deleteAsync(key) {
+        if (failingWrites.includes(key)) throw new Error('Client storage is unavailable.');
+        store.delete(key);
+      },
     },
     // Figma accepts PNG, JPEG, and GIF; the fake accepts PNG only and records each image.
     createImage(bytes) {
@@ -251,30 +389,80 @@ export function createHarness({
     },
     createFrame() { return insertable('FRAME', {}); },
     createComponent() { return insertable('COMPONENT', { description: '', documentationLinks: [] }); },
-    notify(message) { notices.push(message); },
+    // notices keeps the text of each toast; notifications keeps its options (a button, a timeout) too.
+    notify(message, options) { notices.push(message); notifications.push({ message, options }); return { cancel() {} }; },
+    commitUndo() { undoCommits.push(resizes.length); },
+    triggerUndo() { undoTriggers.push(undoCommits.length); },
+    openExternal(url) { externalUrls.push(url); },
     showUI() {},
     on(type, callback) { events.set(type, callback); },
-    ui: { postMessage(message) { mainMessages.push(clone(message)); deliver(message); } },
+    ui: { postMessage(message) { mainMessages.push(clone(message)); deliver(message); }, resize(width, height) { uiResizes.push({ width, height }); } },
   };
-  vm.runInNewContext(mainSource, { figma, __html__: '' }, { filename: 'code.bundle.js' });
-  const canvas = () => ({
-    width: 0, height: 0,
-    getContext(type) { return type === '2d' ? { drawImage: bitmap => bitmaps.push({ width: bitmap.width, height: bitmap.height }) } : null; },
-    toBlob(callback, type) { callback(new Blob([pngHeader(this.width, this.height)], { type })); },
-  });
+  // Main and the UI share the fake timers; fireTimers(delay) runs either side's.
+  vm.runInNewContext(mainSource, { figma, __html__: '', setTimeout: window.setTimeout, clearTimeout: window.clearTimeout }, { filename: 'code.bundle.js' });
+  function canvas() {
+    const item = {
+      width: 0, height: 0,
+      getContext(type) { return type === '2d' ? { drawImage: bitmap => bitmaps.push({ width: bitmap.width, height: bitmap.height }) } : null; },
+      toBlob(callback, type) { callback(new Blob([pngHeader(this.width, this.height)], { type })); },
+    };
+    canvases.push(item);
+    return item;
+  }
+  const document = { getElementById: element, querySelectorAll: () => controls.map(element), createElement, get activeElement() { return focusState.active; } };
+  // Animation frames: queued callbacks run together, as one browser frame; a frame asked for during one runs after it.
+  const animationFrames = [];
+  let frameDepth = 0;
+  let frameId = 0;
+  function runFrames() {
+    frameDepth += 1;
+    try { while (animationFrames.length) animationFrames.shift().callback(); } finally { frameDepth -= 1; }
+  }
+  const requestAnimationFrame = callback => {
+    frameId += 1;
+    animationFrames.push({ id: frameId, callback });
+    if (!manualFrames && frameDepth === 0) runFrames();
+    return frameId;
+  };
+  const cancelAnimationFrame = id => {
+    const index = animationFrames.findIndex(item => item.id === id);
+    if (index >= 0) animationFrames.splice(index, 1);
+  };
   vm.runInNewContext(uiSource, {
-    parent, window, AbortController, Blob, Option,
-    document: { getElementById: element, querySelectorAll: () => controls.map(element), createElement: tag => tag === 'canvas' ? canvas() : new Element('', tag) },
+    parent, window, AbortController, Blob, Option, IntersectionObserver: intersections.IntersectionObserver, document,
+    requestAnimationFrame, cancelAnimationFrame,
     ...(createImageBitmap ? { createImageBitmap } : {}),
     async fetch(url, options = {}) {
       const request = { url, method: options.method ?? 'GET', authorization: options.headers?.Authorization,
         credentials: options.credentials, redirect: options.redirect, body: options.body ? JSON.parse(options.body) : null };
+      // Kept off the enumerable fields, so tests can compare requests as plain data.
+      Object.defineProperty(request, 'signal', { value: options.signal ?? null, enumerable: false });
+      Object.defineProperty(request, 'identity', { value: identities.get(String(options.headers?.Authorization ?? '').replace(/^Bearer /, '')) ?? null, enumerable: false });
       requests.push(request);
-      return fetch(url, options, request);
+      const { signal } = options;
+      if (signal?.aborted) throw abortError();
+      if (!signal) return fetch(url, options, request);
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(abortError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(fetch(url, options, request)).then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+      });
     },
   }, { filename: 'ui.bundle.js' });
   return {
-    figma, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers,
+    figma, document, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers,
+    canvases, resizes, undoCommits, notifications, undoTriggers, externalUrls, uiResizes, relaunches,
+    observers: intersections.observers, setVisible: intersections.setVisible,
+    activeElement: () => focusState.active,
+    /** Runs the animation frames the UI asked for (with `manualFrames`); returns how many ran. */
+    runFrames() { const count = animationFrames.length; runFrames(); return count; },
+    pendingFrames: () => animationFrames.length,
+    /** Calls the plugin's drop handler, as Figma does for a drop on the canvas, and returns its result. */
+    drop(event) { return events.get('drop')?.(event); },
+    /** Fires the current page's nodechange listeners. */
+    nodeChange(nodeChanges) { for (const listener of [...figma.currentPage.listeners]) listener({ nodeChanges }); },
+    /** Switches to a new page holding `nodes` (plain specs), as Figma's currentpagechange. */
+    changePage(nodes = []) { figma.currentPage = makePage(nodes.map(makeNode)); events.get('currentpagechange')(); return figma.currentPage; },
     drafts: () => requests.filter(request => request.method === 'POST'),
     exportMessages: () => uiMessages.filter(message => message.type === 'export'),
     insertMessages: () => uiMessages.filter(message => message.type === 'insert'),
@@ -289,11 +477,17 @@ export function createHarness({
     fireTimers(delay) {
       for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback(); }
     },
+    /**
+     * Types `next` into the connection form and submits it. The console knows a typed token's organization and app
+     * (GET /api/token), as a real console knows its own tokens; the organization and app fields are used only when the
+     * form shows them (an older console).
+     */
     saveConnection(next) {
       element('origin').value = next.origin;
       element('org-id').value = next.orgId;
       element('app-id').value = next.appId;
       element('token').value = next.token;
+      if (next.token) identities.set(next.token.trim(), { orgId: next.orgId, appId: next.appId, workspaceName: next.workspaceName ?? null, appName: next.appName ?? null, scopes: ['draft'] });
       element('connection-form').dispatch('submit');
     },
   };

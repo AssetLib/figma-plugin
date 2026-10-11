@@ -1,8 +1,9 @@
 // Local end-to-end check against a running console (npm run e2e:local -- --connection <file>). Not part of npm test.
-// It bundles src/code.ts and src/ui.ts as the tests do and runs them in node:vm with the fakes from tests/fakes.mjs,
+// It bundles src/code.ts and src/ui/main.ts as the tests do and runs them in node:vm with the fakes from tests/fakes.mjs,
 // but every HTTP call is Node's real fetch to the console. It needs no real Figma, so WebP-only images are skipped.
 // The connection file holds {"origin":"http://localhost:3100","orgId":…,"appId":…,"token":…} with a draft token;
-// keep it outside both repositories with mode 600. The token is never printed.
+// keep it outside both repositories with mode 600. The token is never printed. The run starts on the first-run screen
+// and connects with the token alone (GET /api/token); the IDs in the file check what the console answered.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
@@ -38,9 +39,10 @@ function ok(line) { checks += 1; log(`ok ${checks} - ${line}`); }
 
 // Every request the plugin makes goes through this wrapper around Node's fetch.
 const violations = [];
+const identityUrl = `${ORIGIN}/api/token`;
 async function consoleFetch(url, options = {}, request) {
   const problems = [
-    !url.startsWith(base) && `called ${url}, outside ${base}`,
+    !url.startsWith(base) && url !== identityUrl && `called ${url}, outside ${base} and ${identityUrl}`,
     url.includes(token) && 'put the token in a URL',
     options.credentials !== 'omit' && `sent credentials: ${options.credentials}`,
     options.redirect !== 'error' && `sent redirect: ${options.redirect}`,
@@ -100,26 +102,43 @@ function expectedRendition(asset) {
 const root = fileURLToPath(new URL('../', import.meta.url));
 const app = createHarness({
   ...(await bundlePlugin(root)), fetch: consoleFetch, fileKey: null, selection: [], exportBytes: exportPng,
-  storage: [['assetlib.connection.v1', { origin: connection.origin, orgId: connection.orgId, appId: connection.appId, token }]],
+  storage: [],
   viewport: { center: { x: 0, y: 0 }, bounds: { x: -2000, y: -2000, width: 4000, height: 4000 } },
 });
 const el = id => app.element(id);
-const idle = () => !el('tab-send').disabled;
-// Fake elements start visible, so an error counts only once it has text.
-const errorText = () => el('error').hidden ? '' : el('error').textContent;
+// Connect waits (aria-disabled) while a connection test, send, sync, or insert runs; a list marks itself aria-busy while it loads.
+const unavailable = id => el(id).getAttribute('aria-disabled') === 'true';
+const idle = () => !unavailable('connect') && ['insert-list', 'image-grid'].every(id => el(id).getAttribute('aria-busy') !== 'true');
+// Fake elements start visible, so an error counts only once it has text. A failed connection test shows under the token
+// field, and a list that can't load says why in its place, with an action.
+const listFailed = () => !el('insert-empty').hidden && ['insert-retry', 'insert-token', 'insert-go-send'].some(id => !el(id).hidden);
+const errorText = () => [...['error', 'connection-error'].map(el).filter(item => !item.hidden && item.textContent).map(item => item.textContent),
+  ...(listFailed() ? [el('insert-empty-text').textContent] : [])].join(' ');
 async function settled(what, timeout = 60000) {
   await waitFor(idle, { message: what, timeout });
   if (errorText()) throw new Error(`${what}: the plugin showed "${errorText()}"`);
 }
-const routeOf = request => request.url.slice(base.length).replace(/\?.*$/, '').replace(/^assets\/[^/]+\/renditions\/[^/]+$/, 'rendition');
+const routeOf = request => request.url === identityUrl ? 'token' : request.url.slice(base.length).replace(/\?.*$/, '').replace(/^assets\/[^/]+\/renditions\/[^/]+$/, 'rendition');
 const lastJson = route => app.requests.filter(request => routeOf(request) === route && request.json).at(-1)?.json;
 const rowFor = key => descendants(el('insert-list')).find(item => item.getAttribute?.('data-key') === key);
 const lastSelection = () => app.mainMessages.filter(message => message.type === 'selection').at(-1)?.selection;
 
 try {
-  // 1. The saved connection loads and the placements read succeeds.
-  await waitFor(() => el('connection-label').textContent === '· connected' || errorText(), { message: 'the placements read', timeout: 60000 });
+  // 1. The first-run screen connects with the token alone: GET /api/token names its organization and app, the connection
+  // is saved, and the placements read succeeds.
+  await waitFor(() => el('app').getAttribute('data-view') === 'first-run', { message: 'the first-run screen' });
+  el('origin').value = ORIGIN;
+  el('token').value = token;
+  el('connection-form').dispatch('submit');
+  await waitFor(() => el('connection-label').textContent === 'Connected' || errorText(), { message: 'the placements read', timeout: 60000 });
   await settled('the placements read');
+  const identity = app.requests.find(request => routeOf(request) === 'token');
+  assert.equal(identity?.status, 200);
+  assert.deepEqual([identity.json.orgId, identity.json.appId, identity.json.scopes.includes('draft')], [connection.orgId, connection.appId, true]);
+  const saved = app.storage.get('assetlib.connection.v1');
+  assert.deepEqual([saved.origin, saved.orgId, saved.appId, saved.token === token], [ORIGIN, connection.orgId, connection.appId, true]);
+  assert.equal(el('app').getAttribute('data-view'), 'shell');
+  ok(`GET /api/token 200: the token names its own organization and app (${identity.json.workspaceName ?? 'no name'} · ${identity.json.appName ?? 'no name'}); the connection is saved without typed IDs`);
   const placements = app.requests.find(request => routeOf(request) === 'placements');
   assert.equal(placements?.status, 200);
   ok(`GET placements 200: ${el('status').textContent}`);
@@ -143,7 +162,7 @@ try {
     if (!rendition || rendition.mime !== 'image/png') { skipped += 1; log(`skip - ${PLACEMENT} in ${environment} has no PNG to insert without a browser`); continue; }
     el(`env-${environment}`).dispatch('click');
     rowFor(PLACEMENT).dispatch('click');
-    assert.match(el('insert-meta').textContent, new RegExp(`^${environment[0].toUpperCase()}${environment.slice(1)} · `));
+    assert.match(el('insert-meta').textContent, new RegExp(`^${environment[0].toUpperCase()}${environment.slice(1)}( · |$)`));
     const frames = app.frames.length;
     el('insert').dispatch('click');
     await settled(`the ${environment} insert`);
@@ -164,8 +183,8 @@ try {
     assert.ok(!frame.description.includes(token), 'the marker never holds the token');
     assert.equal(lastSelection().remembered?.insertedFrom?.environment, environment);
     assert.equal(el('sync').hidden, false);
-    assert.equal(el('sync').disabled, true, 'Sync waits for the file URL');
-    assert.match(el('status').textContent, /Confirm the file URL on the Send tab to enable Sync\.$/);
+    assert.equal(unavailable('sync'), true, 'Sync waits for the file URL');
+    assert.match(el('status').textContent, /Paste this file’s link on the Send tab to enable Sync\.$/);
     inserted[environment] = frame;
     ok(`Insert ${PLACEMENT} from ${environment}: ${frame.width} × ${frame.height} component with the placement description, ${rendition.mime} ${rendition.width} × ${rendition.height} (${asset.name})`);
   }
@@ -202,7 +221,7 @@ try {
   el('file-url').value = FILE_URL;
   el('file-form').dispatch('submit');
   await settled('the file URL');
-  await waitFor(() => !el('sync').disabled, { message: 'Sync to be enabled' });
+  await waitFor(() => !unavailable('sync'), { message: 'Sync to be enabled' });
   assert.equal(el('sync').textContent, `Sync to ${PLACEMENT}`);
   assert.match(el('sync-note').textContent, /Inserted from Draft\. Sync sends this layer to that cell/);
   el('sync').dispatch('click');
@@ -213,7 +232,8 @@ try {
   assert.equal(draft.body.rebind, true);
   assert.deepEqual(draft.json.bound, { slotKey: PLACEMENT, state: null, appearance: null, arm: null });
   const created = draft.json.asset;
-  assert.equal(el('status').textContent, 'Sync target saved. Review the draft in the console.');
+  assert.equal(el('status').textContent, `Synced ${PLACEMENT} to draft`);
+  assert.equal(app.notifications.at(-1).message, `Synced ${PLACEMENT} to draft`);
   ok(`Sync POST drafts 201: asset ${created.id} ${created.width} × ${created.height}, bound to ${PLACEMENT}, ${draft.json.rebound.length} reference(s) rebound`);
 
   el('tab-insert').dispatch('click');
@@ -229,8 +249,8 @@ try {
   assert.deepEqual(base1.production, base0.production, 'production is unchanged');
   assert.deepEqual(after.environments, before.environments);
   if (after.environments.production) {
-    const tags = descendants(rowFor(PLACEMENT)).filter(item => item.className === 'tag').map(item => item.textContent);
-    assert.deepEqual(tags, [base1.production ? 'Differs from production' : 'Not in production']);
+    const tags = descendants(rowFor(PLACEMENT)).filter(item => /^tag( |$)/.test(item.className ?? '')).map(item => item.textContent);
+    assert.deepEqual(tags, [base1.production ? 'Changed' : 'Draft only']);
   }
   ok(`GET placements/artwork after Sync: draft ${PLACEMENT} is ${created.id} via its own cell; staging and production unchanged`);
 
@@ -258,17 +278,21 @@ try {
     assert.equal(preflight.headers.get('access-control-allow-methods'), 'GET, OPTIONS');
     assert.equal(preflight.headers.get('access-control-allow-credentials'), null);
   }
-  ok('OPTIONS preflights with Origin: null: 204, allow-origin *, GET, OPTIONS, no credentials');
+  const identityPreflight = await fetch(identityUrl, { method: 'OPTIONS', headers: { Origin: 'null', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'authorization' } });
+  assert.equal(identityPreflight.status, 204, '/api/token');
+  assert.equal(identityPreflight.headers.get('access-control-allow-origin'), '*', '/api/token');
+  assert.equal(identityPreflight.headers.get('access-control-allow-credentials'), null, '/api/token');
+  ok('OPTIONS preflights with Origin: null, including /api/token: 204, allow-origin *, GET, OPTIONS, no credentials');
 
   // 7. Requests, and where the token must never appear.
   assert.deepEqual(violations, []);
   const routes = [...new Set(app.requests.map(routeOf))].sort();
-  assert.deepEqual(routes, ['assets', 'drafts', 'placements', 'placements/artwork', 'rendition']);
+  assert.deepEqual(routes, ['assets', 'drafts', 'placements', 'placements/artwork', 'rendition', 'token']);
   const text = [...app.elements.values()].map(textOf).join('\n');
   const places = { notices: app.notices.join('\n'), pluginData: app.frames.map(frame => frame.getPluginData('assetlib.link.v1')).join('\n'), text,
     urls: app.requests.map(request => request.url).join('\n') };
   for (const [name, value] of Object.entries(places)) assert.ok(!value.includes(token), `the token appears in ${name}`);
-  ok(`${app.requests.length} requests, all to ${base} with the bearer, credentials: omit and redirect: error; the token is in no URL, notice, layer data, or UI text`);
+  ok(`${app.requests.length} requests, all to ${base} or ${identityUrl} with the bearer, credentials: omit and redirect: error; the token is in no URL, notice, layer data, or UI text`);
   log(`e2e:local passed: ${checks} checks; ${skipped} skipped for WebP-only artwork.`);
 } catch (error) {
   log(`not ok - ${error instanceof Error ? error.message : error}`);

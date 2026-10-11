@@ -8,9 +8,12 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.ui.json",
     "test": "node scripts/test.mjs",
+    "test:browser": "node scripts/build.mjs && node scripts/ui-browser.mjs",
     "verify": "npm run typecheck && npm test && npm run build",
+    "contrast": "node scripts/contrast.mjs",
     "e2e:local": "node scripts/e2e-local.mjs"
   },
   "devDependencies": {
