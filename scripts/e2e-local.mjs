@@ -158,12 +158,16 @@ try {
     assert.equal(download.etag, null);
     const link = JSON.parse(frame.getPluginData('assetlib.link.v1'));
     assert.deepEqual([link.placementKey, link.environment, link.assetId, link.nodeId], [PLACEMENT, environment, art.assetId, frame.id]);
+    assert.equal(frame.type, 'COMPONENT', 'placement art is a component');
+    assert.ok(frame.description.startsWith(`Assetlib placement ${PLACEMENT} (${contract.width} × ${contract.height}). `), 'its description names the placement');
+    assert.deepEqual(JSON.parse(JSON.stringify(frame.documentationLinks)), [{ uri: `${ORIGIN}/w/${connection.orgId}/${connection.appId}/placements` }]);
+    assert.ok(!frame.description.includes(token), 'the marker never holds the token');
     assert.equal(lastSelection().remembered?.insertedFrom?.environment, environment);
     assert.equal(el('sync').hidden, false);
     assert.equal(el('sync').disabled, true, 'Sync waits for the file URL');
     assert.match(el('status').textContent, /Confirm the file URL on the Send tab to enable Sync\.$/);
     inserted[environment] = frame;
-    ok(`Insert ${PLACEMENT} from ${environment}: ${frame.width} × ${frame.height} frame, ${rendition.mime} ${rendition.width} × ${rendition.height} (${asset.name})`);
+    ok(`Insert ${PLACEMENT} from ${environment}: ${frame.width} × ${frame.height} component with the placement description, ${rendition.mime} ${rendition.width} × ${rendition.height} (${asset.name})`);
   }
   assert.ok(inserted.draft, 'the draft insert ran');
 
@@ -183,6 +187,7 @@ try {
   const imageFrame = app.frames.at(-1);
   assert.deepEqual([imageFrame.width, imageFrame.height], [pick.width, pick.height]);
   assert.equal(imageFrame.getPluginData('assetlib.link.v1'), '');
+  assert.equal(imageFrame.type, 'FRAME', 'a library image stays a frame');
   assert.equal(lastSelection().remembered, null);
   assert.equal(el('sync').hidden, true);
   ok(`Insert image "${pick.name}": ${imageFrame.width} × ${imageFrame.height} frame, not linked`);

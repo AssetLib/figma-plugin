@@ -1,7 +1,7 @@
 import {
   LEGACY_PRODUCTION_ORIGIN, MAX_IMAGE_BYTES, MAX_INSERT_PIXELS, PRODUCTION_ORIGIN, chooseExportSettings, defaultPreferences,
   environmentLabel, isUint8Array, linkMatches, loadSavedConnection, parseFileKey, parsePlacements, parsePreferences,
-  parseStoredLink, pngSize, sanitizeName, validateBinding, validateConnection, validateInsertLink,
+  parseStoredLink, placementMarker, pngSize, sanitizeName, validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
 import type { Connection, NodeSelection, Preferences, StoredLink } from './shared/index.js';
 import type { MainMessage, RememberedTarget, UiMessage } from './shared/protocol.js';
@@ -196,8 +196,10 @@ async function handleMessage(message: UiMessage): Promise<void> {
         try { image = figma.createImage(bytes); } catch { throw new Error('Figma could not read this image. Refresh and try again.'); }
         const width = Math.round((frame.width / scale) * 100) / 100;
         const height = Math.round((frame.height / scale) * 100) / 100;
-        // A frame, not a rectangle: designers can add layers inside without changing the node id.
-        const node = figma.createFrame();
+        // Not a rectangle: designers can add layers inside without changing the node id. A placement's art is a
+        // component, whose description Figma's MCP server passes to coding agents; any other image is a frame.
+        const component = link ? figma.createComponent() : null;
+        const node: ComponentNode | FrameNode = component ?? figma.createFrame();
         node.name = name;
         node.resize(width, height);
         node.fills = [{ type: 'IMAGE', imageHash: image.hash, scaleMode: 'FILL' }];
@@ -205,6 +207,12 @@ async function handleMessage(message: UiMessage): Promise<void> {
         const center = figma.viewport.center;
         node.x = Math.round(center.x - width / 2);
         node.y = Math.round(center.y - height / 2);
+        if (component && link) {
+          const marker = placementMarker(connection, link.placementKey, frame);
+          component.description = marker.description;
+          // The description is what agents need; a link Figma refuses must not cost the insert.
+          if (marker.documentationUrl) try { component.documentationLinks = [{ uri: marker.documentationUrl }]; } catch { /* description only */ }
+        }
         if (link) {
           const stored: StoredLink = { v: 1, origin: connection.origin, orgId: connection.orgId, appId: connection.appId,
             ...link, nodeId: node.id, insertedAt: new Date().toISOString() };

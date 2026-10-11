@@ -7,7 +7,7 @@ import {
   cellOptions, chooseExportSettings, decodedBase64Length, defaultPreferences, encodeBase64, environmentLabel, findCell,
   insertRendition, insertUnavailable, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
   normalizeConsoleOrigin, parseArtwork, parseAssetPage, parseDraftResponse, parseFileKey, parsePlacements, parsePngDimensions,
-  parsePreferences, parseStoredLink, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
+  parsePreferences, parseStoredLink, placementMarker, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
   utf8Length, validArm, validateBinding, validateConnection, validateInsertLink,
 } from '../.test-build/shared/index.js';
 
@@ -477,4 +477,19 @@ test('preferences fall back field by field to Send, Placements, Draft, and 1×',
   assert.deepEqual(parsePreferences({ tab: 'publish', browse: 'images', environment: 'live', scale: '2' }),
     { tab: 'send', browse: 'images', environment: 'draft', scale: 1 });
   for (const value of [undefined, null, 'text', []]) assert.deepEqual(parsePreferences(value), defaultPreferences());
+});
+
+test('placementMarker names the placement for coding agents and links the console, never with the token', () => {
+  const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org_1', appId: 'app-2', token: 'alk_secret' };
+  const marker = placementMarker(connection, placement.key, placement);
+  assert.match(marker.description, /^Assetlib placement travel\.coast \(1200 × 900\)\. /);
+  assert.match(marker.description, /use the accessor generated for travel\.coast from assetlib\.catalog\.json/);
+  assert.equal(marker.documentationUrl, `${PRODUCTION_ORIGIN}/w/org_1/app-2/placements`);
+  assert.ok(!JSON.stringify(marker).includes('alk_secret'));
+  assert.equal(placementMarker({ ...connection, origin: LEGACY_PRODUCTION_ORIGIN }, 'a', placement).documentationUrl,
+    `${PRODUCTION_ORIGIN}/w/org_1/app-2/placements`, 'the legacy host links to production');
+  assert.equal(placementMarker({ ...connection, origin: DEVELOPMENT_ORIGIN }, 'a', placement).documentationUrl, `${DEVELOPMENT_ORIGIN}/w/org_1/app-2/placements`);
+  assert.equal(placementMarker({ ...connection, origin: 'https://example.com' }, 'a', placement).documentationUrl, null);
+  assert.equal(placementMarker({ ...connection, orgId: '../x' }, 'a', placement).documentationUrl, null);
+  assert.match(placementMarker(connection, ' hero\u0007.art\n ', placement).description, /^Assetlib placement hero\.art \(/, 'control characters are stripped');
 });

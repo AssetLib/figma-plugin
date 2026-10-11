@@ -267,7 +267,7 @@ function libraryAsset(n, name, width, height, extra = {}) {
 }
 function library(entries) { return { library: entries.map(entry => entry.asset), renditions: [...renditionsServed(), ...entries.flatMap(entry => entry.served)] }; }
 
-test('a placement cell inserts as a linked image frame, centered and selected, with Sync ready', async () => {
+test('a placement cell inserts as a linked image component, centered and selected, with Sync ready', async () => {
   const app = harness();
   const frame = await insertHeroCell(app);
   assert.deepEqual(app.requests.filter(request => request.route !== 'rendition').map(request => request.route), ['placements', 'artwork']);
@@ -297,6 +297,14 @@ test('a placement cell inserts as a linked image frame, centered and selected, w
   assert.deepEqual({ ...link, insertedAt: typeof link.insertedAt }, { v: 1, origin: connection.origin, orgId: 'org-one', appId: 'app-a',
     placementKey: placement.key, state: 'old', appearance: 'light', arm: 'b', environment: 'draft', assetId: armArt, nodeId: frame.id, insertedAt: 'string' });
   assert.ok(!raw.includes(connection.token), 'the link never holds the token');
+
+  // The marker coding agents read through Figma's MCP server.
+  assert.equal(frame.type, 'COMPONENT');
+  assert.equal(frame.description, 'Assetlib placement hero.artwork (1000 × 1000). This image can change after the app is released, '
+    + 'so don’t export it as a static file. In code, use the accessor generated for hero.artwork from assetlib.catalog.json, '
+    + 'which carries the bundled fallback. If hero.artwork isn’t in the catalog, add it there with a fallback image in the same change.');
+  assert.deepEqual(clone(frame.documentationLinks), [{ uri: 'https://console.assetlib.dev/w/org-one/app-a/placements' }]);
+  assert.ok(!frame.description.includes(connection.token) && !JSON.stringify(frame.documentationLinks).includes(connection.token), 'the marker never holds the token');
 
   const insertedAt = app.mainMessages.findIndex(message => message.type === 'inserted');
   const selectionAt = app.mainMessages.findIndex((message, index) => index > insertedAt && message.type === 'selection');
@@ -562,6 +570,8 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
   const frame = app.frames[0];
   assert.deepEqual([frame.name, frame.width, frame.height], ['Coast 0', 400, 200]);
   assert.equal(frame.getPluginData(LINK_KEY), '', 'a library image carries no link');
+  assert.equal(frame.type, 'FRAME', 'a library image is a frame, not a placement component');
+  assert.equal(frame.description, undefined);
   assert.equal(app.insertMessages()[0].link, null);
   assert.equal(app.mainMessages.filter(message => message.type === 'selection').at(-1).selection.remembered, null);
   assert.equal(app.element('sync').hidden, true);

@@ -6,3 +6,4 @@ export * from './export.js';
 export * from './library.js';
 export * from './placements.js';
 export { isUint8Array, validArm, validFileKey, validNodeId, validSha256, validUuid } from './validation.js';
+export * from './marker.js';

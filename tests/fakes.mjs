@@ -216,6 +216,13 @@ export function createHarness({
       setPluginData(key, value) { data.set(key, String(value)); },
     };
   };
+  // Frames and components the plugin creates, in order, in `frames`.
+  const insertable = (type, extra) => {
+    const node = makeNode({ id: `${200 + frames.length}:7`, name: type === 'FRAME' ? 'Frame' : 'Component', type, width: 100, height: 100, x: 0, y: 0, fills: [], clipsContent: false, ...extra });
+    node.resize = function resize(width, height) { this.width = width; this.height = height; };
+    frames.push(node);
+    return node;
+  };
   const figma = {
     fileKey,
     currentPage: { selection: selection.map(makeNode) },
@@ -242,12 +249,8 @@ export function createHarness({
       images.push(bytes);
       return { hash: `hash-${images.length}`, async getSizeAsync() { return size; } };
     },
-    createFrame() {
-      const frame = makeNode({ id: `${200 + frames.length}:7`, name: 'Frame', type: 'FRAME', width: 100, height: 100, x: 0, y: 0, fills: [], clipsContent: false });
-      frame.resize = function resize(width, height) { this.width = width; this.height = height; };
-      frames.push(frame);
-      return frame;
-    },
+    createFrame() { return insertable('FRAME', {}); },
+    createComponent() { return insertable('COMPONENT', { description: '', documentationLinks: [] }); },
     notify(message) { notices.push(message); },
     showUI() {},
     on(type, callback) { events.set(type, callback); },
