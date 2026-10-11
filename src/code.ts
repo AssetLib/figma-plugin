@@ -198,8 +198,10 @@ async function handleMessage(message: UiMessage): Promise<void> {
         const width = Math.round((frame.width / scale) * 100) / 100;
         const height = Math.round((frame.height / scale) * 100) / 100;
         // Not a rectangle: designers can add layers inside without changing the node id. A placement's art is a
-        // component, whose description Figma's MCP server passes to coding agents; any other image is a frame.
-        const component = link ? figma.createComponent() : null;
+        // component, whose description Figma's MCP server passes to coding agents; any other image, or a placement
+        // key outside the catalog's grammar, is a frame.
+        const marker = link ? placementMarker(connection, link.placementKey, frame) : null;
+        const component = marker ? figma.createComponent() : null;
         const node: ComponentNode | FrameNode = component ?? figma.createFrame();
         node.name = name;
         node.resize(width, height);
@@ -208,8 +210,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
         const center = figma.viewport.center;
         node.x = Math.round(center.x - width / 2);
         node.y = Math.round(center.y - height / 2);
-        if (component && link) {
-          const marker = placementMarker(connection, link.placementKey, frame);
+        if (component && marker) {
           component.description = marker.description;
           // The description is what agents need; a link Figma refuses must not cost the insert.
           if (marker.documentationUrl) try { component.documentationLinks = [{ uri: marker.documentationUrl }]; } catch { /* description only */ }

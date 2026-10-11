@@ -1,10 +1,14 @@
 // The description and documentation link on a component inserted from a placement. Figma's MCP server passes both to
 // coding agents as instructions to follow, so an agent building the screen uses the placement instead of exporting
-// the art as a static file. Anyone with the file can read them: they never hold the token.
+// the art as a static file. Anyone with the file can read them: they never hold the token. The key is the only text
+// from the console, so it must match the catalog's key grammar; anything else gets no marker, so a console response
+// can never put its own words into instructions an agent follows.
 import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN, normalizeConsoleOrigin } from './connection.js';
 import type { Connection } from './types.js';
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
+// As `assetlib.catalog.json` keys (the CLI's codegen); console-created keys are a subset.
+const PLACEMENT_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/;
 
 export interface PlacementMarker {
   description: string;
@@ -12,9 +16,10 @@ export interface PlacementMarker {
   documentationUrl: string | null;
 }
 
-export function placementMarker(connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>, placementKey: string,
-  size: { width: number; height: number }): PlacementMarker {
-  const key = placementKey.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim();
+/** Null for a key outside the catalog's grammar or a size that is not two positive integers. */
+export function placementMarker(connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>, key: string,
+  size: { width: number; height: number }): PlacementMarker | null {
+  if (!PLACEMENT_KEY.test(key) || ![size.width, size.height].every(value => Number.isSafeInteger(value) && value > 0)) return null;
   const description = `Assetlib placement ${key} (${size.width} × ${size.height}). This image can change after the app is released, `
     + 'so don’t export it as a static file. '
     + `In code, use the accessor generated for ${key} from assetlib.catalog.json, which carries the bundled fallback. `
