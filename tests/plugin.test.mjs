@@ -219,8 +219,10 @@ test('a connection saved on the legacy host loads on the current host with the s
   assert.deepEqual(loaded.connection, connection, 'only the origin changes');
   assert.deepEqual(app.storage.get('assetlib.connection.v1'), connection, 'the moved origin is saved for the next run');
   assert.equal(app.element('origin').value, connection.origin);
+  // The passing test asks the current host for the connection's names too (this console has none: nothing changes).
   assert.deepEqual(app.requests.map(request => [request.method, request.url, request.authorization]),
-    [['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, `Bearer ${connection.token}`]]);
+    [['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, `Bearer ${connection.token}`],
+      ['GET', `${connection.origin}/api/token`, `Bearer ${connection.token}`]]);
   assert.equal(off(app, 'sync'), false, 'the sync target remembered under the legacy host is still found');
 
   app.element('sync').dispatch('click');
@@ -311,7 +313,7 @@ function library(entries) { return { library: entries.map(entry => entry.asset),
 test('a placement cell inserts as a linked image component, centered and selected, with Sync ready', async () => {
   const app = harness();
   const frame = await insertHeroCell(app);
-  assert.deepEqual(app.requests.filter(request => request.route !== 'rendition').map(request => request.route), ['placements', 'artwork']);
+  assert.deepEqual(app.requests.filter(request => !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork']);
   const downloads = app.requests.filter(request => request.url.endsWith(sha(11)));
   assert.equal(downloads.length, 1, 'the largest PNG within 4 MiB is fetched once');
   assert.deepEqual(downloads[0], { url: `${connection.origin}/api/apps/org-one/app-a/assets/${armArt}/renditions/${sha(11)}`, method: 'GET',
@@ -813,7 +815,7 @@ test('preferences restore the tab, environment, and scale, changes are saved, an
   assert.equal(app.element('scale-2').getAttribute('aria-checked'), 'true');
   assert.equal(app.element('env-staging').getAttribute('aria-checked'), 'true');
   assert.equal(app.element('env-staging').title, 'The latest release published to staging. Release 3, Oct 8.');
-  assert.deepEqual(app.requests.filter(request => request.route !== 'rendition').map(request => request.route), ['placements', 'artwork'], 'Insert loads on open');
+  assert.deepEqual(app.requests.filter(request => !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork'], 'Insert loads on open');
   assert.equal(app.uiMessages.filter(message => message.type === 'save-preferences').length, 0, 'restoring does not save');
   app.element('env-draft').dispatch('click');
   await settle();
@@ -2376,6 +2378,120 @@ test('a pasted token is all the form needs: GET /api/token names its app, and th
   await settle();
   assert.equal(app.element('connection-error').textContent, 'Paste a Draft token from Settings › Tokens in the Assetlib console.');
   assert.equal(app.activeElement(), app.element('token'));
+});
+
+test('a saved connection asks GET /api/token once for its names: a connection from before names, or a renamed app, shows today’s', async () => {
+  const named = { orgId: 'org-one', appId: 'app-a', workspaceName: 'Roam', appName: 'Roam iOS', scopes: ['draft'] };
+  // Saved before the console named apps: the passing test asks once, and the names label the chip and are saved.
+  const app = harness({ console: { identity: named } });
+  await settle();
+  assert.equal(app.requests.filter(request => request.route === 'token').length, 1);
+  assert.equal(textOf(app.element('account-name')), 'Roam\u00a0·\u00a0Roam iOS');
+  assert.equal(app.element('account-title').textContent, 'Roam iOS');
+  assert.deepEqual(app.storage.get('assetlib.connection.v1'), { ...connection, workspaceName: 'Roam', appName: 'Roam iOS' }, 'saved for the next run');
+  assert.deepEqual(app.uiMessages.filter(message => message.type === 'save-names'),
+    [{ type: 'save-names', connectionGeneration: 0, orgId: 'org-one', appId: 'app-a', workspaceName: 'Roam', appName: 'Roam iOS' }]);
+  assert.equal(app.mainMessages.filter(message => message.type === 'connection').length, 1, 'the generation stays, so nothing reloads');
+  assert.equal(app.element('error').hidden, true);
+  // A test of the saved connection again asks nothing more this session.
+  app.saveConnection({ ...connection, token: '' });
+  await settle();
+  assert.equal(app.requests.filter(request => request.route === 'token').length, 1);
+
+  // Renamed in the console since: today's names replace the saved ones.
+  const renamed = harness({ saved: { ...connection, workspaceName: 'Old workspace', appName: 'Old app' }, console: { identity: named } });
+  await settle();
+  assert.equal(textOf(renamed.element('account-name')), 'Roam\u00a0·\u00a0Roam iOS');
+  assert.equal(renamed.storage.get('assetlib.connection.v1').appName, 'Roam iOS');
+
+  // Nothing changes, and nothing is said, when the names already match, the console has none (before 038), it answers
+  // about another app, or it can't be reached.
+  for (const [description, options] of [
+    ['the same names', { saved: { ...connection, workspaceName: 'Roam', appName: 'Roam iOS' }, console: { identity: named } }],
+    ['no names', { saved: { ...connection, workspaceName: 'Kept', appName: 'Kept app' }, console: { identity: { ...named, workspaceName: null, appName: null } } }],
+    ['another app', { console: { identity: { ...named, appId: 'app-z' } } }],
+    ['a server error', { console: { statuses: { token: 500 } } }],
+    ['no network', { console: { failures: new Set(['token']) } }],
+  ]) {
+    const quiet = harness(options);
+    await settle();
+    assert.equal(quiet.uiMessages.filter(message => message.type === 'save-names').length, 0, description);
+    assert.deepEqual(quiet.storage.get('assetlib.connection.v1'), options.saved ?? connection, description);
+    assert.equal(quiet.requests.filter(request => request.route === 'token').length, 1, `${description}: tried once`);
+    assert.equal(quiet.element('error').hidden, true, description);
+    assert.equal(quiet.element('connection-label').textContent, 'Connected', description);
+  }
+
+  // Main saves names only for the connection and generation the UI asked about.
+  const stale = harness();
+  await settle();
+  stale.postToMain({ type: 'save-names', connectionGeneration: 7, orgId: 'org-one', appId: 'app-a', workspaceName: 'Forged', appName: 'Forged' });
+  stale.postToMain({ type: 'save-names', connectionGeneration: 0, orgId: 'org-one', appId: 'app-b', workspaceName: 'Forged', appName: 'Forged' });
+  await settle();
+  assert.deepEqual(stale.storage.get('assetlib.connection.v1'), connection);
+  assert.equal(stale.mainMessages.filter(message => message.type === 'error').length, 0, 'never refused');
+});
+
+test('names never write a connection back: not during Disconnect, nor over one another window saved or forgot', async () => {
+  const named = { orgId: 'org-one', appId: 'app-a', workspaceName: 'Roam', appName: 'Roam iOS', scopes: ['draft'] };
+  // Disconnect while GET /api/token is out, with Figma's delete still running when the names arrive: the UI drops them.
+  const app = harness({ console: { identity: named, gates: { token: deferred() } } });
+  await settle();
+  const storage = app.figma.clientStorage;
+  const deleting = deferred();
+  const remove = storage.deleteAsync.bind(storage);
+  storage.deleteAsync = async key => { await remove(key); await deleting.promise; };
+  app.element('settings').open = true;
+  app.element('disconnect').dispatch('click');
+  await settle();
+  app.console.gates.token.resolve();
+  await settle();
+  deleting.resolve();
+  await settle();
+  assert.equal(app.uiMessages.filter(message => message.type === 'save-names').length, 0);
+  assert.equal(app.storage.has('assetlib.connection.v1'), false, 'the forgotten token stays forgotten');
+
+  // Main holds the same line for a save-names already on its way when Disconnect starts: its read of the saved
+  // connection is still out when the delete begins, and it writes nothing after.
+  const racing = harness();
+  await settle();
+  const store = racing.figma.clientStorage;
+  const reading = deferred();
+  const held = deferred();
+  const read = store.getAsync.bind(store);
+  const drop = store.deleteAsync.bind(store);
+  store.getAsync = async key => { const value = await read(key); if (key === 'assetlib.connection.v1') await reading.promise; return value; };
+  store.deleteAsync = async key => { await drop(key); await held.promise; };
+  racing.postToMain({ type: 'save-names', connectionGeneration: 0, orgId: 'org-one', appId: 'app-a', workspaceName: 'Roam', appName: 'Roam iOS' });
+  await settle();
+  racing.postToMain({ type: 'clear-connection', requestId: 41 });
+  await settle();
+  reading.resolve();
+  await settle();
+  held.resolve();
+  await settle();
+  assert.equal(racing.storage.has('assetlib.connection.v1'), false);
+
+  // Another window saved another app's connection since this one opened: the names show here, and its save stands.
+  const other = { ...connection, appId: 'app-b', token: tok('other_window') };
+  const shared = harness({ console: { identity: named, gates: { token: deferred() } } });
+  await settle();
+  shared.storage.set('assetlib.connection.v1', other);
+  shared.console.gates.token.resolve();
+  await settle();
+  assert.equal(shared.uiMessages.filter(message => message.type === 'save-names').length, 1);
+  assert.deepEqual(shared.storage.get('assetlib.connection.v1'), other);
+  assert.equal(textOf(shared.element('account-name')), 'Roam · Roam iOS');
+});
+
+test('the Connected toast keeps the app’s name when the workspace’s and the app’s together are too long', async () => {
+  const appName = `Roam ${'i'.repeat(70)}`;
+  const app = harness({ saved: null, console: { identity: { orgId: 'org-one', appId: 'app-a', workspaceName: `Workspace ${'w'.repeat(40)}`, appName, scopes: ['draft'] } } });
+  await settle();
+  app.element('token').value = connection.token;
+  app.element('connection-form').dispatch('submit');
+  await settle();
+  assert.deepEqual(app.notices, [`Connected to ${appName}`]);
 });
 
 test('GET /api/token: a refused, revoked, or declare-only token is the token field’s error; an older console asks for the IDs', async () => {

@@ -46,6 +46,9 @@ let idsUnsure = false;
 let formOpened = false;
 // A connection the person saved in this session: when its test passes, a toast says so.
 let announceConnected = false;
+// The connection whose names GET /api/token gave this session (its origin, IDs, and token): asked once per connection.
+let namesAsked = '';
+const namesKey = (connection: Connection) => [connection.origin, connection.orgId, connection.appId, connection.token].join('\n');
 // True from a failed read until a successful one: the chip shows a warning.
 let attention = false;
 // 'read' for why a read failed (the connection test, or a refused token), which a later successful read clears; 'form'
@@ -68,11 +71,17 @@ function idsShown(): boolean { return idsOrigin !== null && idsOrigin === chosen
 function appShortName(connection: Connection): string {
   return connection.appName ?? `App ${connection.appId.length > 12 ? `${connection.appId.slice(0, 8)}…` : connection.appId}`;
 }
-/** Who a toast says the plugin connected to: the names when the console gave them, never two raw IDs. */
-function connectedTo(connection: Connection): string { return connection.appName ? connectionLabel(connection) : 'Assetlib'; }
+/** Who a toast says the plugin connected to: the names when the console gave them (the app's alone when both don't fit
+ * a toast's 100 characters), never two raw IDs. */
+function connectedTo(connection: Connection): string {
+  if (!connection.appName) return 'Assetlib';
+  const label = connectionLabel(connection);
+  return `Connected to ${label}`.length <= 100 ? label : connection.appName;
+}
 
-// The chip's shortened workspace name, sized to its text (fitWorkspace); `key` names what its room depends on.
-let workspaceFit = { key: '', maxWidth: '' };
+// The chip's shortened workspace name, sized to its text (fitWorkspace); `key` names what its room depends on, and
+// `hidden` is true when not one character of it fits beside the app's name.
+let workspaceFit = { key: '', maxWidth: '', hidden: false };
 // The chip's font (ui.html): until it has loaded, the name is measured in a fallback, so it is fitted again after.
 const CHIP_FONT = '500 11px "Instrument Sans"';
 
@@ -83,12 +92,13 @@ const CHIP_FONT = '500 11px "Instrument Sans"';
  * warning glyph, and the font, so it is measured again only when one of those changes (or until the chip has a box: the
  * first run hides it, and a narrow window hides the workspace).
  */
-function fitWorkspace(workspace: HTMLElement, key: string): void {
+function fitWorkspace(workspace: HTMLElement, separator: HTMLElement, key: string): void {
   if (workspaceFit.key !== key) {
     const room = workspace.getBoundingClientRect().width;
     const text = workspace.firstChild;
-    if (!room || !text || text.nodeType !== Node.TEXT_NODE) return;
+    if (!text || text.nodeType !== Node.TEXT_NODE) return;
     let maxWidth = '';
+    let hidden = false;
     if (workspace.scrollWidth > workspace.clientWidth) {
       // Chrome keeps the longest start of the name that fits with the ellipsis; measure both as laid out.
       const range = document.createRange();
@@ -103,12 +113,17 @@ function fitWorkspace(workspace: HTMLElement, key: string): void {
         const middle = Math.ceil((low + high) / 2);
         if (start(middle) + ellipsis <= room) low = middle; else high = middle - 1;
       }
-      // Half a pixel spare, so rounding never drops the last glyph that fits.
-      maxWidth = `${(start(low) + ellipsis + 0.5).toFixed(2)}px`;
+      // Half a pixel spare, so rounding never drops the last glyph that fits. Not one character: the app's name keeps
+      // the chip, as in a narrow window, with no "·" left beside it.
+      if (low === 0) hidden = true;
+      else maxWidth = `${(start(low) + ellipsis + 0.5).toFixed(2)}px`;
     }
-    workspaceFit = { key, maxWidth };
+    if (!room && !hidden) return;
+    workspaceFit = { key, maxWidth, hidden };
   }
   workspace.style.maxWidth = workspaceFit.maxWidth;
+  workspace.hidden = workspaceFit.hidden;
+  separator.hidden = workspaceFit.hidden;
 }
 
 /**
@@ -130,8 +145,9 @@ export function renderConnection(): void {
     // A long workspace name shortens first, and a narrow window drops it (ui.html), so the app's name stays.
     // No-break spaces: a grid item drops ordinary spaces at its edges.
     const workspace = span('chip-workspace', connection.workspaceName);
-    name.replaceChildren(workspace, span('chip-sep', '\u00a0·\u00a0'), span('chip-app', connection.appName));
-    fitWorkspace(workspace, `${connection.workspaceName}\n${connection.appName}\n${attention}\n${document.fonts?.check(CHIP_FONT)}\n${window.innerWidth}`);
+    const separator = span('chip-sep', '\u00a0·\u00a0');
+    name.replaceChildren(workspace, separator, span('chip-app', connection.appName));
+    fitWorkspace(workspace, separator, `${connection.workspaceName}\n${connection.appName}\n${attention}\n${document.fonts?.check(CHIP_FONT)}\n${window.innerWidth}`);
   } else if (connection) {
     // Without names (a console that can't read them for a token), the chip names the app by the start of its ID.
     name.replaceChildren(span('chip-app', appShortName(connection)));
@@ -293,6 +309,29 @@ function failureOf(result: HttpResult, text: string): ReadFailure {
 }
 
 /**
+ * The saved connection's names, asked again once a session (GET /api/token, tried once): a connection saved before the
+ * console named apps, or a workspace or app renamed since, shows today's names, and main saves them. Any failure, a
+ * console without names, or an answer about another app changes nothing and says nothing.
+ */
+async function refreshNames(config: Connection, generation: number): Promise<void> {
+  let result: HttpResult;
+  try { result = await identify(config.origin, config.token); } catch { return; }
+  // A Disconnect or a save waiting for main replaces this connection: its names would only write it back.
+  if (result.status !== 200 || generation !== state.connectionGeneration || state.connection === null || namesKey(state.connection) !== namesKey(config)
+    || pendingDisconnect !== null || pendingConnection !== null) return;
+  let identity: ReturnType<typeof parseTokenIdentity>;
+  try { identity = parseTokenIdentity(result.payload); } catch { return; }
+  const { workspaceName, appName } = identity;
+  const current = state.connection;
+  if (identity.orgId !== config.orgId || identity.appId !== config.appId || !appName) return;
+  if ((current.workspaceName ?? null) === workspaceName && current.appName === appName) return;
+  const { origin, orgId, appId, token } = current;
+  state.connection = { origin, orgId, appId, token, ...(workspaceName ? { workspaceName } : {}), appName };
+  post({ type: 'save-names', connectionGeneration: generation, orgId, appId, workspaceName, appName });
+  scheduleRender();
+}
+
+/**
  * The connection test: reads placements for Send, and says whether the connection works. Resolves with why it failed,
  * so the Insert list can say the same, or null.
  */
@@ -317,6 +356,7 @@ export async function loadPlacements(): Promise<ReadFailure | null> {
     try { showPlacements(parsePlacements(result.payload)); }
     catch (error) { failure = { kind: 'invalid', status: 200, text: errorText(error) }; throw error; }
     markConnected();
+    if (generation !== null && namesAsked !== namesKey(config)) { namesAsked = namesKey(config); void refreshNames(config, generation); }
     // The test passed, so the settings close, unless the person is working in them (the fields stay live while it runs).
     if (!settingsInUse()) closeSettings();
     const count = state.placements.length;
@@ -459,8 +499,11 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
       // This console names a token's app, so it needs no IDs after all.
       if (idsOrigin === chosen) { idsOrigin = null; idsUnsure = false; }
       if (!identity.scopes.includes('draft')) throw fieldError(TOKEN_SCOPE, 'token');
-      return { origin: chosen, orgId: identity.orgId, appId: identity.appId, token: value,
+      const identified: Connection = { origin: chosen, orgId: identity.orgId, appId: identity.appId, token: value,
         ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}), ...(identity.appName ? { appName: identity.appName } : {}) };
+      // Its names are today's; the passing test need not ask again.
+      namesAsked = namesKey(identified);
+      return identified;
     }
     // A console from before GET /api/token answers 404, or nothing a cross-origin page can read: it needs the IDs.
     if (result.kind === 'network' || (result.kind === 'http' && result.status === 404)) { askForIds(result.kind === 'network'); return null; }
@@ -493,6 +536,8 @@ async function submit(): Promise<void> {
       // An older console: the organization and app come from the form.
       const sameApp = current && current.origin === chosen && current.orgId === orgId.value.trim() && current.appId === appId.value.trim();
       next = validateConnection({ ...(sameApp && !typed ? current : {}), origin: chosen, orgId: orgId.value, appId: appId.value, token: typed || (sameApp ? current.token : '') });
+      // This console just said it can't name a token's app; its passing test need not ask.
+      namesAsked = namesKey(next);
     } else if (!typed) {
       // Nothing pasted: test the saved connection again, when it is on this console.
       if (!current || current.origin !== chosen) throw fieldError('Paste a Draft token from Settings › Tokens in the Assetlib console.', 'token');

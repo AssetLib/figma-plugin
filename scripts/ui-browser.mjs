@@ -1215,6 +1215,20 @@ test('a failed opening connection test is said once, with at most one primary on
   } finally { await first.close(); }
 });
 
+test('an app name too long to leave the workspace a character shows alone in the chip, with no stray separator', async () => {
+  const names = { workspaceName: 'Roam', appName: `Roam for iPhone, iPad and Mac ${'with a very long name '.repeat(4)}`.trim() };
+  const page = await openUi({ declared: true, placements: 3, connection: { ...DEFAULTS.connection, ...names }, identity: { ...DEFAULTS.identity, ...names } });
+  try {
+    await page.waitFor(`${rows} === 3`);
+    await page.evaluate('document.fonts.ready.then(() => true)');
+    await page.frames();
+    assert.deepEqual(await page.evaluate(`['.chip-workspace', '.chip-sep'].map(s => document.querySelector(s).hidden)`), [true, true]);
+    // The app's name takes the chip's room and ends in an ellipsis inside it.
+    assert.deepEqual(await page.evaluate(`(() => { const chip = document.getElementById('settings-summary').getBoundingClientRect(); const app = document.querySelector('.chip-app');
+      const box = app.getBoundingClientRect(); return [app.scrollWidth > app.clientWidth, box.width > 100, box.right <= chip.right]; })()`), [true, true, true]);
+  } finally { await page.close(); }
+});
+
 test('footer, chip, grid, and tile details fit at 420 px', async () => {
   const names = { workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' };
   const page = await openUi({ declared: true, placements: 30, connection: { ...DEFAULTS.connection, ...names }, identity: { ...DEFAULTS.identity, ...names } });

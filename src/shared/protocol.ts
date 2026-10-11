@@ -74,7 +74,10 @@ export type UiMessage =
   // The grip asks for a window size (at most one a frame); main clamps it (`clampWindow`) and resizes. Never refused.
   | { type: 'resize'; width: number; height: number }
   // A double-click on the grip: main resizes to the default for the canvas now (`defaultWindowSize`). Never refused.
-  | { type: 'reset-size' };
+  | { type: 'reset-size' }
+  // The names GET /api/token gave the connection again (renamed, or saved before the console named apps). Main saves
+  // them only for that connection and generation, and changes nothing else. Never refused.
+  | { type: 'save-names'; connectionGeneration: number; orgId: string; appId: string; workspaceName: string | null; appName: string };
 
 export type NotifyButton = { text: string; url: string };
 
@@ -152,6 +155,8 @@ export function parseUiMessage(value: unknown): UiMessage {
       case 'notify': return text(m.text) && (m.button === undefined || (isRecord(m.button) && text(m.button.text) && text(m.button.url)));
       case 'resize': return Number.isFinite(m.width) && Number.isFinite(m.height);
       case 'reset-size': return true;
+      case 'save-names': return typeof m.connectionGeneration === 'number' && Number.isSafeInteger(m.connectionGeneration) && text(m.orgId)
+        && text(m.appId) && (m.workspaceName === null || text(m.workspaceName)) && text(m.appName);
       default: return false;
     }
   })();

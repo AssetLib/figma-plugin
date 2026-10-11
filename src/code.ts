@@ -22,6 +22,8 @@ let preferences: Preferences = defaultPreferences();
 // name: the layer name Insert gives the bound cell, which a layer still named for its old placement takes.
 type Exported = { config: Connection; target: StoredTarget; node: SceneNode; frame: { width: number; height: number }; name: string };
 const exported = new Map<number, Exported>();
+// True while Disconnect deletes the saved connection: a save-names then must not write it back.
+let clearing = false;
 
 const initialized = (async () => {
   let stored: unknown;
@@ -173,8 +175,10 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'clear-connection': {
       // Disconnect: this device forgets the token. It keeps working elsewhere until an owner revokes it in the console.
       const previous = main.connection;
+      clearing = true;
       try { await figma.clientStorage.deleteAsync(CONNECTION_KEY); }
       catch { throw new Error(DEVICE_STORAGE); }
+      finally { clearing = false; }
       main.connection = null;
       main.connectionGeneration += 1;
       discardDrops();
@@ -199,6 +203,24 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'reset-size': {
       const { width, height } = defaultWindow();
       resizeWindow(width, height);
+      break;
+    }
+    case 'save-names': {
+      // Only the names, and only for the connection the UI asked about; the generation stays, so nothing reloads.
+      const config = main.connection;
+      const current = () => !clearing && main.connection === config && message.connectionGeneration === main.connectionGeneration;
+      if (!config || !current() || message.orgId !== config.orgId || message.appId !== config.appId) break;
+      const { origin, orgId, appId, token } = config;
+      const named = validateConnection({ origin, orgId, appId, token, ...(message.workspaceName ? { workspaceName: message.workspaceName } : {}), appName: message.appName });
+      // Client storage is shared by every window of the plugin: one in another file may have saved another connection,
+      // or forgotten this one, since this one opened. Only this same connection is written over.
+      let stored: Connection | null = null;
+      try { const saved: unknown = await figma.clientStorage.getAsync(CONNECTION_KEY); stored = saved ? loadSavedConnection(saved) : null; } catch { stored = null; }
+      if (!current()) break;
+      main.connection = named;
+      if (stored?.origin !== origin || stored.orgId !== orgId || stored.appId !== appId || stored.token !== token) break;
+      // Unsaved, the names still show until the plugin closes.
+      try { await figma.clientStorage.setAsync(CONNECTION_KEY, named); } catch { /* this session only */ }
       break;
     }
     case 'match-ratio': {
