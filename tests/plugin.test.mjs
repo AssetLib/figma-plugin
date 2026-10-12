@@ -2586,16 +2586,29 @@ test('names never write a connection back: not during Disconnect, nor over one a
   assert.equal(textOf(dropped.element('account-name')), 'Roam\u00a0·\u00a0Roam iOS');
   assert.equal(dropped.storage.get('assetlib.connection.v1').appName, 'Roam iOS');
 
-  // A refresh main saved survives Disconnect and Undo without asking again.
+  // A refresh main saved survives Disconnect and Undo, again and again, without asking again.
   const settled = harness({ console: { identity: named } });
   await settle();
-  settled.element('settings').open = true;
-  settled.element('disconnect').dispatch('click');
+  for (const round of [1, 2]) {
+    settled.element('settings').open = true;
+    settled.element('disconnect').dispatch('click');
+    await settle();
+    settled.notifications.at(-1).options.button.action();
+    await settle();
+    assert.equal(settled.requests.filter(request => request.route === 'token').length, 1, `round ${round}`);
+    assert.equal(settled.storage.get('assetlib.connection.v1').appName, 'Roam iOS', `round ${round}`);
+  }
+
+  // The same token pasted again after a rename: its own GET /api/token names the app, and the test asks nothing more.
+  const repasted = harness({ saved: old, console: { identity: named } });
   await settle();
-  settled.notifications.at(-1).options.button.action();
+  repasted.console.identity = { ...named, appName: 'Roam iPhone' };
+  repasted.element('settings').open = true;
+  repasted.element('token').value = connection.token;
+  repasted.element('connection-form').dispatch('submit');
   await settle();
-  assert.equal(settled.requests.filter(request => request.route === 'token').length, 1);
-  assert.equal(settled.storage.get('assetlib.connection.v1').appName, 'Roam iOS');
+  assert.equal(repasted.requests.filter(request => request.route === 'token').length, 2);
+  assert.equal(repasted.storage.get('assetlib.connection.v1').appName, 'Roam iPhone');
 });
 
 test('the Connected toast keeps the app’s name when the workspace’s and the app’s together are too long', async () => {

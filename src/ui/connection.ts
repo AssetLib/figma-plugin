@@ -428,8 +428,10 @@ export function applyConnection(message: Extract<MainMessage, { type: 'connectio
   state.connection = message.connection;
   state.connectionGeneration = message.connectionGeneration;
   const back = message.connection;
-  if (back && namesPosted?.key === namesKey(back) && namesAsked === namesPosted.key
-    && ((back.workspaceName ?? null) !== namesPosted.workspaceName || back.appName !== namesPosted.appName)) namesAsked = '';
+  if (back && namesPosted?.key === namesKey(back)) {
+    if (namesAsked === namesPosted.key && ((back.workspaceName ?? null) !== namesPosted.workspaceName || back.appName !== namesPosted.appName)) namesAsked = '';
+    namesPosted = null;
+  }
   state.placements = [];
   state.placementsLoaded = false;
   state.testFailure = null;
@@ -516,6 +518,7 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
         ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}), ...(identity.appName ? { appName: identity.appName } : {}) };
       // Its names are today's; the passing test need not ask again.
       namesAsked = namesKey(identified);
+      namesPosted = null;
       return identified;
     }
     // A console from before GET /api/token answers 404, or nothing a cross-origin page can read: it needs the IDs.
@@ -551,6 +554,7 @@ async function submit(): Promise<void> {
       next = validateConnection({ ...(sameApp && !typed ? current : {}), origin: chosen, orgId: orgId.value, appId: appId.value, token: typed || (sameApp ? current.token : '') });
       // This console just said it can't name a token's app; its passing test need not ask.
       namesAsked = namesKey(next);
+      namesPosted = null;
     } else if (!typed) {
       // Nothing pasted: test the saved connection again, when it is on this console.
       if (!current || current.origin !== chosen) throw fieldError('Paste a Draft token from Settings › Tokens in the Assetlib console.', 'token');
