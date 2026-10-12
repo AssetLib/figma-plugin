@@ -1,9 +1,13 @@
-// Local end-to-end check against a running console (npm run e2e:local -- --connection <file>). Not part of npm test.
+// Local end-to-end check against a running console. Not part of npm test.
+//   npm run e2e:local -- --connection <file>     the token path
+//   npm run e2e:local -- --pair --account <file>  one-click Connect
 // It bundles src/code.ts and src/ui/main.ts as the tests do and runs them in node:vm with the fakes from tests/fakes.mjs,
 // but every HTTP call is Node's real fetch to the console. It needs no real Figma, so WebP-only images are skipped.
-// The connection file holds {"origin":"http://localhost:3100","orgId":…,"appId":…,"token":…} with a draft token;
-// keep it outside both repositories with mode 600. The token is never printed. The run starts on the first-run screen
-// and connects with the token alone (GET /api/token); the IDs in the file check what the console answered.
+// The connection file holds {"origin":"http://localhost:3100","orgId":…,"appId":…,"token":…} with a draft token; the
+// account file holds {"email":…,"password":…} for a local owner or editor. Keep both outside the repositories with mode
+// 600. No token or key is ever printed. The token run starts on the first-run screen and connects with the token alone
+// (GET /api/token); the IDs in the file check what the console answered. The --pair run connects with Connect to
+// Assetlib, approving in the console's session routes as the browser page would.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
@@ -12,51 +16,82 @@ import { crc32, deflateSync } from 'node:zlib';
 import { bundlePlugin, createHarness, dataTransfer, descendants, pngSizeOf, textOf, waitFor } from '../tests/fakes.mjs';
 
 const ORIGIN = 'http://localhost:3100';
+// The development console's sign-in, connect page, and session routes are on 127.0.0.1 only.
+const PAGE_ORIGIN = 'http://127.0.0.1:3100';
 const PLACEMENT = 'travel.coast';
 const FILE_URL = 'https://www.figma.com/design/AssetlibPluginE2E/assetlib-plugin-local-e2e';
 const MAX_INSERT_DOWNLOAD = 4 * 1024 * 1024;
 
-const flag = process.argv.indexOf('--connection');
+const pairMode = process.argv.includes('--pair');
+const flag = process.argv.indexOf(pairMode ? '--account' : '--connection');
 const file = flag >= 0 ? process.argv[flag + 1] : undefined;
 if (!file) {
-  console.error('Usage: npm run e2e:local -- --connection <file>');
+  console.error('Usage: npm run e2e:local -- --connection <file>\n       npm run e2e:local -- --pair --account <file>');
   process.exit(2);
 }
-const connection = JSON.parse(await readFile(file, 'utf8'));
-const { token } = connection;
-const redact = value => String(value).split(token).join('<token>');
+const input = JSON.parse(await readFile(file, 'utf8'));
+// What the plugin may send, and what never appears in a URL, log line, notice, layer, or UI text: the token, and with
+// --pair the request's read and write keys.
+const keys = { token: pairMode ? null : input.token, readKey: null, writeKey: null };
+const secrets = () => [keys.token, keys.readKey, keys.writeKey, pairMode ? input.password : null].filter(Boolean);
+const redact = value => secrets().reduce((text, secret) => text.split(secret).join('<secret>'), String(value));
 const log = line => console.log(redact(line));
-if (connection.origin !== ORIGIN || !/^[A-Za-z0-9_-]{1,128}$/.test(connection.orgId ?? '') || !/^[A-Za-z0-9_-]{1,128}$/.test(connection.appId ?? '')
-  || typeof token !== 'string' || token.length < 8 || /\s/.test(token)) {
+if (pairMode) {
+  if (typeof input.email !== 'string' || !input.email.includes('@') || typeof input.password !== 'string' || !input.password) {
+    console.error('The account file must hold {"email":…,"password":…} for a local owner or editor.');
+    process.exit(2);
+  }
+} else if (input.origin !== ORIGIN || !/^[A-Za-z0-9_-]{1,128}$/.test(input.orgId ?? '') || !/^[A-Za-z0-9_-]{1,128}$/.test(input.appId ?? '')
+  || typeof keys.token !== 'string' || keys.token.length < 8 || /\s/.test(keys.token)) {
   console.error(`The connection file must hold {"origin":"${ORIGIN}","orgId":…,"appId":…,"token":…}.`);
   process.exit(2);
 }
 if ((await stat(file)).mode & 0o077) log(`warning: ${file} is readable by other users; chmod 600 it.`);
-const base = `${ORIGIN}/api/apps/${connection.orgId}/${connection.appId}/`;
+const connection = pairMode ? null : input;
+// The app's routes: known from the file, or once a --pair claim names the app.
+let base = connection ? `${ORIGIN}/api/apps/${connection.orgId}/${connection.appId}/` : null;
 
 let checks = 0;
 function ok(line) { checks += 1; log(`ok ${checks} - ${line}`); }
 
-// Every request the plugin makes goes through this wrapper around Node's fetch.
+// Every request the plugin makes goes through this wrapper around Node's fetch. Starting a request sends no
+// Authorization; a claim or cancel sends the read key the start answered with; every other route sends the token.
 const violations = [];
 const identityUrl = `${ORIGIN}/api/token`;
+const pairing = { start: `${ORIGIN}/api/plugin-connections`, claim: `${ORIGIN}/api/plugin-connections/claim`, cancel: `${ORIGIN}/api/plugin-connections/cancel`,
+  current: `${ORIGIN}/api/plugin-connections/current` };
+let inFlight = 0;
 async function consoleFetch(url, options = {}, request) {
+  const auth = options.headers?.Authorization;
+  const keyed = url === pairing.claim || url === pairing.cancel;
+  const expected = url === pairing.start ? undefined : keyed ? keys.readKey && `Bearer ${keys.readKey}` : keys.token && `Bearer ${keys.token}`;
+  const allowed = (base && url.startsWith(base)) || url === identityUrl || (pairMode && Object.values(pairing).includes(url));
   const problems = [
-    !url.startsWith(base) && url !== identityUrl && `called ${url}, outside ${base} and ${identityUrl}`,
-    url.includes(token) && 'put the token in a URL',
+    !allowed && `called ${url}, outside ${base ?? 'the app'}, ${identityUrl}${pairMode ? ', and the connection request routes' : ''}`,
+    secrets().some(secret => url.includes(secret)) && 'put a token or key in a URL',
     options.credentials !== 'omit' && `sent credentials: ${options.credentials}`,
     options.redirect !== 'error' && `sent redirect: ${options.redirect}`,
-    options.headers?.Authorization !== `Bearer ${token}` && 'did not send the bearer token',
+    (expected === undefined ? auth !== undefined : auth !== expected) && `did not send the expected Authorization to ${url}`,
   ].filter(Boolean);
   if (problems.length) {
     violations.push(...problems);
     throw new TypeError(`Blocked by the e2e harness: ${problems.join('; ')}`);
   }
-  const response = await fetch(url, options);
-  Object.assign(request, { status: response.status, contentType: response.headers.get('content-type'),
-    cacheControl: response.headers.get('cache-control'), etag: response.headers.get('etag') });
-  if (request.contentType?.startsWith('application/json')) request.json = await response.clone().json().catch(() => null);
-  return response;
+  inFlight += 1;
+  try {
+    const response = await fetch(url, options);
+    Object.assign(request, { status: response.status, contentType: response.headers.get('content-type'),
+      cacheControl: response.headers.get('cache-control'), etag: response.headers.get('etag') });
+    if (request.contentType?.startsWith('application/json')) request.json = await response.clone().json().catch(() => null);
+    // The start's keys and the claim's token, so later requests can be checked and nothing prints them.
+    if (url === pairing.start && response.status === 201) Object.assign(keys, { readKey: request.json?.readKey ?? null, writeKey: request.json?.writeKey ?? null });
+    if (url === pairing.claim && request.json?.status === 'connected') {
+      const issued = request.json.connection;
+      keys.token = issued.token;
+      base = `${ORIGIN}/api/apps/${issued.orgId}/${issued.appId}/`;
+    }
+    return response;
+  } finally { inFlight -= 1; }
 }
 
 function encodePng(width, height, [red, green, blue]) {
@@ -130,7 +165,8 @@ async function selectNothing() {
   await waitFor(() => app.mainMessages.length > count && lastSelection()?.insertTarget?.mode === 'new', { message: 'an empty selection' });
 }
 
-try {
+async function runToken() {
+  const { token } = keys;
   // 1. The first-run screen connects with the token alone: GET /api/token names its organization and app, the connection
   // is saved, and the placements read succeeds.
   await waitFor(() => el('app').getAttribute('data-view') === 'first-run', { message: 'the first-run screen' });
@@ -339,6 +375,123 @@ try {
   for (const [name, value] of Object.entries(places)) assert.ok(!value.includes(token), `the token appears in ${name}`);
   ok(`${app.requests.length} requests, all to ${base} or ${identityUrl} with the bearer, credentials: omit and redirect: error; the token is in no URL, notice, layer data, or UI text`);
   log(`e2e:local passed: ${checks} checks; ${skipped} skipped for WebP-only artwork.`);
+}
+
+/** The console's session routes, as the connect page calls them: on 127.0.0.1, with its Origin and the session cookie. */
+async function session(path, body, cookie = '') {
+  const response = await fetch(`${PAGE_ORIGIN}${path}`, { method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/json', Origin: PAGE_ORIGIN, ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+  const json = await response.json().catch(() => null);
+  return { status: response.status, json, cookie: response.headers.getSetCookie().map(item => item.split(';')[0]).join('; ') };
+}
+
+/** The next poll, as its timer would fire it: once no request is in flight, and at least 2 s after the last (slow_down). */
+async function firePoll() {
+  await waitFor(() => inFlight === 0, { message: 'the poll in flight' });
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  // Connected meanwhile: the timers left are the connection test's, not a poll.
+  if (el('app').getAttribute('data-view') === 'shell') return;
+  const delays = [...app.timers.values()].map(timer => timer.delay).filter(delay => delay !== 30000);
+  if (delays.length) app.fireTimers(Math.min(...delays));
+  await waitFor(() => inFlight === 0, { message: 'the poll' });
+}
+
+async function runPair() {
+  // 1. Connect to Assetlib, then Cancel: the console is told, and a claim with that read key answers cancelled.
+  await waitFor(() => el('app').getAttribute('data-view') === 'first-run', { message: 'the first-run screen' });
+  el('origin').value = ORIGIN;
+  el('connect-browser').dispatch('click');
+  await waitFor(() => !el('pairing').hidden || !el('pairing-note').hidden, { message: 'the first request', timeout: 30000 });
+  assert.equal(el('pairing').hidden, false, `the request started: ${el('pairing-note').textContent}`);
+  const cancelled = keys.readKey;
+  el('pairing-cancel').dispatch('click');
+  await waitFor(() => app.requests.some(request => request.url === pairing.cancel && request.status), { message: 'the cancel' });
+  assert.equal(app.requests.find(request => request.url === pairing.cancel).status, 204);
+  const after = await fetch(pairing.claim, { method: 'POST', headers: { Authorization: `Bearer ${cancelled}` }, redirect: 'error' });
+  assert.deepEqual([after.status, (await after.json()).status], [410, 'cancelled']);
+  assert.equal(el('app').getAttribute('data-view'), 'first-run');
+  ok('POST /api/plugin-connections 201, Cancel 204, then a claim with its read key 410 cancelled');
+
+  // 2. Connect again: main opens the console's connect page on 127.0.0.1 with the write key in the fragment only.
+  const opened = app.externalUrls.length;
+  el('connect-browser').dispatch('click');
+  await waitFor(() => app.externalUrls.length > opened, { message: 'the connect page', timeout: 30000 });
+  const page = app.externalUrls.at(-1);
+  assert.equal(page, `${PAGE_ORIGIN}/connect/figma#${keys.writeKey}`);
+  const start = app.requests.filter(request => request.url === pairing.start).at(-1);
+  assert.deepEqual([start.status, start.authorization, start.body], [201, undefined, { client: 'figma' }]);
+  const code = el('pairing-code').textContent;
+  assert.match(code, /^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);
+  assert.deepEqual(app.storage.get('assetlib.pairing.v1').readKey, keys.readKey);
+  ok(`the plugin shows ${code} and opened ${PAGE_ORIGIN}/connect/figma#<write key>; only the read key is stored`);
+
+  // 3. The browser's part: sign in, read the request, and approve it for the first workspace that may.
+  const signIn = await session('/api/auth/sign-in/email', { email: input.email, password: input.password });
+  assert.equal(signIn.status, 200, `sign-in answered ${signIn.status}`);
+  assert.ok(signIn.cookie, 'sign-in set a session cookie');
+  const preview = await session('/api/plugin-connections/preview', { writeKey: keys.writeKey }, signIn.cookie);
+  assert.equal(preview.status, 200, `preview answered ${preview.status}`);
+  const request = preview.json.connection;
+  assert.deepEqual([request.status, request.userCode, request.signedInAs], ['pending', code, input.email]);
+  const workspace = request.workspaces.find(item => item.eligible);
+  assert.ok(workspace, `${input.email} owns or edits a workspace`);
+  const approve = await session('/api/plugin-connections/approve',
+    { writeKey: keys.writeKey, orgId: workspace.orgId, appId: workspace.appId, ...(request.sameNetwork ? {} : { startedHere: true }) }, signIn.cookie);
+  assert.deepEqual([approve.status, approve.json?.connection?.status], [200, 'approved'], `approve answered ${approve.status}`);
+  ok(`preview 200 (same network: ${request.sameNetwork}), approve 200 for ${workspace.name} · ${workspace.appName}`);
+
+  // 4. The plugin's next poll claims the token, saves a browser connection, and reads placements with it.
+  for (let poll = 0; poll < 15 && el('app').getAttribute('data-view') !== 'shell'; poll += 1) await firePoll();
+  await waitFor(() => el('connection-label').textContent === 'Connected' || errorText(), { message: 'the placements read', timeout: 60000 });
+  await settled('the placements read');
+  const saved = app.storage.get('assetlib.connection.v1');
+  assert.deepEqual([saved.origin, saved.orgId, saved.appId, saved.method, saved.connectedAs, saved.pairing, saved.token === keys.token],
+    [ORIGIN, workspace.orgId, workspace.appId, 'browser', input.email, code.replace('-', ''), true]);
+  assert.equal(app.storage.has('assetlib.pairing.v1'), false);
+  assert.equal(app.requests.filter(item => item.url === identityUrl).length, 0, 'the names came with the claim');
+  assert.equal(app.requests.filter(item => item.url === `${base}placements`).at(-1)?.status, 200);
+  const toast = app.notifications.at(-1).message;
+  assert.ok(toast.startsWith('Connected to ') && toast.endsWith(` as ${input.email}`), toast);
+  ok(`claim 200 connected: ${toast}; GET placements 200 with the issued token`);
+  el('tab-insert').dispatch('click');
+  await settled('the artwork read');
+  assert.equal(app.requests.filter(item => item.url === `${base}placements/artwork`).at(-1)?.status, 200);
+  ok('GET placements/artwork 200 with the issued token');
+
+  // 5. Disconnect ends the token: DELETE current 204, and GET /api/token then answers 403 revoked.
+  el('settings').open = true;
+  el('disconnect').dispatch('click');
+  await waitFor(() => el('app').getAttribute('data-view') === 'first-run', { message: 'Disconnect', timeout: 30000 });
+  assert.equal(app.requests.find(item => item.url === pairing.current)?.status, 204);
+  assert.deepEqual(app.uiMessages.filter(message => message.type === 'clear-connection').map(message => message.revoked), [true]);
+  assert.equal(app.notifications.at(-1).message, 'Disconnected. This connection was ended.');
+  const identity = await fetch(identityUrl, { headers: { Authorization: `Bearer ${keys.token}` }, redirect: 'error' });
+  const refused = await identity.json();
+  assert.deepEqual([identity.status, refused.code], [403, 'revoked']);
+  ok('Disconnect: DELETE current 204; GET /api/token with the ended token 403 revoked');
+
+  // 6. CORS on the four routes, which Node's fetch does not enforce.
+  for (const [url, method] of [[pairing.start, 'POST'], [pairing.claim, 'POST'], [pairing.cancel, 'POST'], [pairing.current, 'DELETE']]) {
+    const preflight = await fetch(url, { method: 'OPTIONS', headers: { Origin: 'null', 'Access-Control-Request-Method': method, 'Access-Control-Request-Headers': 'authorization, content-type' } });
+    assert.equal(preflight.status, 204, url);
+    assert.equal(preflight.headers.get('access-control-allow-origin'), '*', url);
+    assert.equal(preflight.headers.get('access-control-allow-methods'), `${method}, OPTIONS`, url);
+    assert.equal(preflight.headers.get('access-control-max-age'), '7200', url);
+    assert.equal(preflight.headers.get('access-control-allow-credentials'), null, url);
+  }
+  ok('OPTIONS preflights with Origin: null on the four connection request routes: 204, allow-origin *, the route’s method, max-age 7200, no credentials');
+
+  // 7. Requests, and where no token or key may appear.
+  assert.deepEqual(violations, []);
+  const text = [...app.elements.values()].map(textOf).join('\n');
+  const places = { notices: app.notices.join('\n'), text, urls: app.requests.map(item => item.url).join('\n'), storage: JSON.stringify(app.storage.get('assetlib.pairing.v1') ?? null) };
+  for (const [name, value] of Object.entries(places)) for (const secret of [keys.token, keys.writeKey]) assert.ok(!value.includes(secret), `a secret appears in ${name}`);
+  ok(`${app.requests.length} requests, none with cookies or redirects; the token and write key are in no URL, notice, stored record, or UI text`);
+  log(`e2e:local --pair passed: ${checks} checks.`);
+}
+
+try {
+  if (pairMode) await runPair(); else await runToken();
 } catch (error) {
   log(`not ok - ${error instanceof Error ? error.message : error}`);
   if (error instanceof assert.AssertionError) log(`  expected ${JSON.stringify(error.expected)}, actual ${JSON.stringify(error.actual)}`);
