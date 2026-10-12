@@ -138,6 +138,14 @@
     #disconnect { margin-left: auto; }
     .connection-form { display: grid; gap: 8px; }
     .first-run, .guide { display: none; }
+    /* One-click Connect: the code to compare with the browser's, and the request's actions. */
+    .pairing, .browser-path { display: grid; gap: 8px; }
+    .browser-path { justify-items: center; }
+    .pairing:focus, #pairing-note:focus { outline: none; }
+    .pair-code { padding: 8px; border-radius: 6px; background: var(--bg-secondary); color: var(--text); font-size: 20px; line-height: 28px; font-weight: 600;
+      letter-spacing: .12em; text-align: center; }
+    .pairing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    #pairing-cancel { margin-left: auto; }
 
     /* First run: no tabs and no list, one centered column. */
     .app[data-view="first-run"] .topbar, .app[data-view="first-run"] .chip, .app[data-view="first-run"] .account { display: none; }
@@ -148,7 +156,7 @@
     .app[data-view="first-run"] .guide { display: block; justify-self: start; }
     .lockup { display: block; height: 24px; width: auto; margin-bottom: 8px; color: var(--text); }
     .headline { font-size: 13px; line-height: 20px; font-weight: 600; }
-    .first-run .button { margin-top: 4px; }
+
 
     /* Views. */
     .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -355,21 +363,42 @@
             <path d="m2 15 13 7 13-7M2 22l13 7 13-7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
             <text x="38" y="25" font-family="'Instrument Sans', system-ui, sans-serif" font-size="27" font-weight="600" letter-spacing="-1.2" fill="currentColor">assetlib</text>
           </svg>
-          <h1 class="headline">Your app’s images, in Figma</h1>
-          <p>Create a Draft token in Settings › Tokens in the Assetlib console, then paste it here. Only workspace owners can create tokens; ask an owner if you can’t.</p>
-          <a id="first-run-console" class="button wide" href="https://console.assetlib.dev/" target="_blank" rel="noopener noreferrer">Open Assetlib console</a>
+          <h1 id="first-run-title" class="headline">Your app’s images, in Figma</h1>
+          <p id="first-run-text">Connect to your Assetlib workspace. Your browser opens so you can sign in and approve.</p>
         </div>
         <div id="account" class="account">
           <p id="account-title" class="title"></p>
           <p id="token-prefix" class="meta"></p>
-          <div class="account-actions">
+          <div id="account-actions" class="account-actions">
             <a id="open-console" class="text-action" href="https://console.assetlib.dev/" target="_blank" rel="noopener noreferrer">Open console</a>
+            <button id="switch-workspace" class="text-action" type="button" hidden>Switch workspace</button>
             <button id="update-token" class="text-action" type="button" hidden>Update token</button>
             <button id="disconnect" class="text-action" type="button">Disconnect</button>
           </div>
         </div>
+        <!-- One-click Connect waiting for approval in the browser: in place of the first-run copy or the account's actions. -->
+        <div id="pairing" class="pairing" tabindex="-1" hidden>
+          <h1 class="headline">Approve in your browser</h1>
+          <p id="pairing-text"></p>
+          <p id="pairing-resumed" hidden>Approve in the browser tab you opened, or cancel and start again.</p>
+          <p id="pairing-code" class="pair-code"></p>
+          <p class="help">Assetlib never asks you to type this code.</p>
+          <p id="pairing-status" class="meta"></p>
+          <div class="pairing-actions">
+            <button id="pairing-open" class="secondary small" type="button">Open browser again</button>
+            <button id="pairing-check" class="secondary small" type="button">Check now</button>
+            <button id="pairing-cancel" class="text-action" type="button">Cancel</button>
+          </div>
+        </div>
+        <!-- How a Connect request ended, or a browser that didn't open. -->
+        <p id="pairing-note" class="info" tabindex="-1" hidden></p>
+        <label id="origin-field" class="field">Console<select id="origin"><option value="https://console.assetlib.dev">console.assetlib.dev</option><option value="http://localhost:3100">localhost:3100 (development)</option></select></label>
+        <div id="browser-path" class="browser-path">
+          <button id="connect-browser" class="primary wide" type="button">Connect to Assetlib</button>
+          <button id="use-token" class="text-action" type="button">Use a token instead</button>
+        </div>
         <form id="connection-form" class="connection-form" novalidate>
-          <label class="field">Console<select id="origin"><option value="https://console.assetlib.dev">console.assetlib.dev</option><option value="http://localhost:3100">localhost:3100 (development)</option></select></label>
+          <p class="help">Paste a Draft token an owner created in Settings › Tokens.</p>
           <label class="field">Draft token<input id="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="alk_…" aria-describedby="token-help connection-error"></label>
           <p id="token-help" class="help">From Settings › Tokens in the Assetlib console. It’s an Assetlib token, not a Figma token.</p>
           <!-- Under the token field, and above the ID fields an older console's notice introduces. -->
@@ -378,7 +407,7 @@
             <label class="field">Organization ID<input id="org-id" autocomplete="off" spellcheck="false"></label>
             <label class="field">App ID<input id="app-id" autocomplete="off" spellcheck="false"></label>
           </div>
-          <button id="connect" class="primary wide" type="submit">Connect</button>
+          <button id="connect" class="secondary wide" type="submit">Connect with token</button>
         </form>
         <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide" target="_blank" rel="noopener noreferrer">Read the guide</a>
       </div>
@@ -468,6 +497,7 @@
         <a id="sync-console" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a>
         <button id="sync-match" class="secondary small" type="button" hidden>Match ratio</button>
         <button id="sync-send" class="secondary small" type="button" hidden></button>
+        <button id="sync-switch" class="secondary small" type="button" hidden>Switch workspace</button>
         <button id="sync" class="primary" type="button" aria-disabled="true" hidden>Sync to draft</button>
       </div>
     </section>

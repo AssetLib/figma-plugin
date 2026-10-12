@@ -1,7 +1,8 @@
-// Every console request goes through this module: send() for the five app routes, and identify() for GET /api/token,
-// which tells a pasted token its own organization and app. The bearer token goes only to the chosen origin, never with
-// cookies, never following a redirect, with a timeout, GET retries, and aborts on supersession or a connection change.
-import { appUrl, mapHttpError, mapNetworkError, mapTimeoutError, parseRetryAfter, requestTimeoutMs, retryDelayMs, tokenUrl } from '../shared/index.js';
+// Every console request goes through this module: send() for the five app routes, identify() for GET /api/token,
+// which tells a pasted token its own organization and app, and pairingRequest() and revokeConnection() for one-click
+// Connect's routes. The bearer token goes only to the chosen origin, never with cookies, never following a redirect,
+// with a timeout, GET retries, and aborts on supersession or a connection change.
+import { appUrl, mapHttpError, mapNetworkError, mapTimeoutError, pairingUrl, parseRetryAfter, requestTimeoutMs, retryDelayMs, tokenUrl } from '../shared/index.js';
 import type { Connection } from '../shared/index.js';
 
 export type HttpResult = {
@@ -21,7 +22,7 @@ export type HttpResult = {
 export type HttpOptions = {
   // A route under /api/apps/{orgId}/{appId}/; appUrl refuses any other. identify() names its own route.
   path: string;
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'DELETE';
   // JSON.
   body?: string;
   timeoutMs?: number;
@@ -54,6 +55,40 @@ export async function send(config: Connection, options: HttpOptions): Promise<Ht
  */
 export async function identify(origin: string, token: string): Promise<HttpResult> {
   return request(tokenUrl(origin), token, { path: 'token', retry: false });
+}
+
+// One-click Connect's requests: their own set, so a connection change (abortAll) never stops a request being polled or
+// a token being ended; Cancel stops them (abortPairing).
+const pairingActive = new Set<AbortController>();
+// The connection request routes answer at once: 10 s, tried once. The poll loop (connect.ts) owns the retries.
+const PAIRING_TIMEOUT_MS = 10000;
+
+/** Cancel: the request being started or polled stops. */
+export function abortPairing(): void {
+  for (const controller of pairingActive) controller.abort();
+  pairingActive.clear();
+}
+
+/**
+ * A connection request route (pairingUrl): start (no Authorization), or claim and cancel with the request's read key
+ * as the bearer. Never cookies, never a redirect, 10 s, never retried.
+ */
+export async function pairingRequest(url: string, options: { method: 'POST' | 'DELETE'; bearer?: string; body?: string }, abortable = true): Promise<HttpResult> {
+  const init: RequestInit = {
+    method: options.method,
+    headers: { ...(options.bearer ? { Authorization: `Bearer ${options.bearer}` } : {}), ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    ...(options.body === undefined ? {} : { body: options.body }),
+    credentials: 'omit', redirect: 'error',
+  };
+  const controller = new AbortController();
+  if (abortable) pairingActive.add(controller);
+  try { return await attemptOnce(url, init, controller, PAIRING_TIMEOUT_MS, undefined); }
+  finally { pairingActive.delete(controller); }
+}
+
+/** Ends a browser connection's token in the console (DELETE /api/plugin-connections/current). Cancel never stops it. */
+export async function revokeConnection(origin: string, token: string): Promise<HttpResult> {
+  return pairingRequest(pairingUrl(origin, 'current'), { method: 'DELETE', bearer: token }, false);
 }
 
 async function request(url: string, token: string, options: HttpOptions): Promise<HttpResult> {

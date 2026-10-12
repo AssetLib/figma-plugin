@@ -1,7 +1,8 @@
-// The UI iframe: routes main's messages to the Send, Insert, Sync bar, and connection modules, renders them once per
-// frame, and resizes the window from its grip.
+// The UI iframe: routes main's messages to the Send, Insert, Sync bar, connection, and Connect modules, renders them
+// once per frame, and resizes the window from its grip.
 import { clampWindow } from '../shared/index.js';
 import type { MainMessage } from '../shared/protocol.js';
+import { adopted, applyPairing, connectFocus, failOpenPage, hintOfCurrent, initConnect, renderConnect, saveRefused, startConnect } from './connect.js';
 import { applyConnection, failConnection, initConnection, loadPlacements, openSettings, problemInSettings, renderConnection } from './connection.js';
 import { COMMAND, arrowKeys, element, inField, post, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
 import { abortAll } from './http.js';
@@ -18,7 +19,6 @@ const app = element('app');
 const tabSend = element<HTMLButtonElement>('tab-send');
 const tabInsert = element<HTMLButtonElement>('tab-insert');
 const searchInput = element<HTMLInputElement>('insert-search');
-const tokenInput = element<HTMLInputElement>('token');
 
 function render(): void {
   // Until main's first connection message (which also brings the preferences) the connection is unknown, not absent:
@@ -36,6 +36,7 @@ function render(): void {
   element('panel-insert').hidden = firstRun || tab !== 'insert';
   element('send-bar').hidden = firstRun || tab !== 'send';
   renderConnection();
+  renderConnect();
   renderSend(problemInSettings());
   renderInsertControls();
   renderInsertBar();
@@ -43,10 +44,11 @@ function render(): void {
 }
 setRenderer({
   render, renderList, twin: rowFor,
-  // A control that disappears hands focus to the token field on the first-run screen, the search field on Insert, else
-  // the current tab, never to the page.
-  fallback: () => !state.connection ? tokenInput
-    : state.prefs.tab === 'insert' && !searchInput.disabled ? searchInput : state.prefs.tab === 'insert' ? tabInsert : tabSend,
+  // A control that disappears hands focus to a Connect request's block, or on the first-run screen to Connect to
+  // Assetlib (the token field once that form is chosen), else the search field on Insert, else the current tab, never
+  // to the page.
+  fallback: () => connectFocus()
+    ?? (state.prefs.tab === 'insert' && !searchInput.disabled ? searchInput : state.prefs.tab === 'insert' ? tabInsert : tabSend),
 });
 
 function onConnection(message: Extract<MainMessage, { type: 'connection' }>): void {
@@ -56,6 +58,8 @@ function onConnection(message: Extract<MainMessage, { type: 'connection' }>): vo
   applyFileUrl(message.savedFileUrl);
   applyPreferences(message.preferences);
   resetInsert();
+  // A Connect request's connection arrived, or main holds a request to resume.
+  applyPairing(message);
   if (!state.connection) {
     state.ops.connecting = false;
     scheduleRender();
@@ -90,7 +94,8 @@ function onError(message: Extract<MainMessage, { type: 'error' }>): void {
   if (id === undefined) { showError(message.message); return; }
   // A reply for an operation that already ended matches nothing and is dropped.
   // A refused connection save leaves the connection as it was; the Insert list picks up what the wait dropped.
-  if (failConnection(id, message.message)) { connectionKept(); return; }
+  if (failConnection(id, message.message)) { connectionKept(); saveRefused(id); return; }
+  if (failOpenPage(id)) return;
   if (failSend(id, message.message)) return;
   if (failInsert(id, message.message)) return;
   failDrop(id, message.message);
@@ -111,6 +116,7 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
     case 'remembered': remembered(message); break;
     case 'inserted': inserted(message); break;
     case 'dropped': dropped(message); break;
+    case 'adopted': adopted(message); break;
     case 'error': onError(message); break;
   }
 };
@@ -208,8 +214,9 @@ window.addEventListener('resize', () => scheduleRender());
 // Figma's Copy link shortcut, as this platform spells it.
 element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
+initConnect();
 const showSend = () => setTab('send');
-initSend({ retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, showSend });
+initSend({ retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend });
 initSyncBar({ showSend });
 initInsert(() => { setTab('send'); tabSend.focus(); });
 post({ type: 'init' });

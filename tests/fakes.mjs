@@ -55,21 +55,26 @@ const selects = ['placement', 'state', 'appearance', 'arm', 'insert-state', 'ins
 const staticTags = {
   input: ['org-id', 'app-id', 'token', 'file-url', 'insert-search'], select: [...selects, 'origin'],
   details: ['settings'], summary: ['settings-summary'], form: ['connection-form', 'file-form'],
-  a: ['open-console', 'first-run-console', 'insert-empty-link', 'insert-note-link', 'sync-console'],
+  a: ['open-console', 'insert-empty-link', 'insert-note-link', 'sync-console'],
 };
 // Where ui.html nests the connection settings (the account panel), so settings.contains() sees its controls.
 const staticParents = {
   'settings-summary': 'settings', 'connection-label': 'settings-summary', 'account-name': 'settings-summary', 'connection-form': 'settings',
-  origin: 'connection-form', 'id-fields': 'connection-form', 'org-id': 'id-fields', 'app-id': 'id-fields', token: 'connection-form',
+  'origin-field': 'settings', origin: 'origin-field', 'id-fields': 'connection-form', 'org-id': 'id-fields', 'app-id': 'id-fields', token: 'connection-form',
   'connection-error': 'connection-form', connect: 'connection-form', account: 'settings', 'account-title': 'account', 'token-prefix': 'account',
-  'open-console': 'account', 'update-token': 'account', disconnect: 'account', 'first-run': 'settings', 'first-run-console': 'first-run',
+  'account-actions': 'account', 'open-console': 'account-actions', 'switch-workspace': 'account-actions', 'update-token': 'account-actions',
+  disconnect: 'account-actions', 'first-run': 'settings', 'first-run-title': 'first-run', 'first-run-text': 'first-run',
+  // One-click Connect's block, its note, and the browser path, inside the settings.
+  pairing: 'settings', 'pairing-open': 'pairing', 'pairing-check': 'pairing', 'pairing-cancel': 'pairing', 'pairing-note': 'settings',
+  'browser-path': 'settings', 'connect-browser': 'browser-path', 'use-token': 'browser-path',
   // The file link form, so a check for focus inside it sees its field and buttons.
   'file-form': 'file-fallback', 'file-url': 'file-form', 'file-mismatch-box': 'file-fallback', 'file-anyway': 'file-mismatch-box',
 };
 export const controls = ['origin', 'org-id', 'app-id', 'token', 'connect', 'update-token', 'disconnect', 'placement', 'state', 'appearance', 'arm', 'send', 'sync', 'match-ratio',
   'file-url', 'tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'search-clear', 'scale-1', 'scale-2', 'scale-3', 'env-draft',
   'env-staging', 'env-production', 'insert-refresh', 'images-more', 'insert-clear', 'insert-retry', 'insert-token', 'insert-go-send', 'insert-state',
-  'insert-appearance', 'insert-arm', 'insert', 'insert-new', 'hint-close', 'sync-match', 'sync-send', 'file-anyway', 'file-change'];
+  'insert-appearance', 'insert-arm', 'insert', 'insert-new', 'hint-close', 'sync-match', 'sync-send', 'file-anyway', 'file-change', 'connect-browser', 'use-token',
+  'switch-workspace', 'pairing-open', 'pairing-check', 'pairing-cancel', 'sync-switch'];
 
 export class Element {
   constructor(id = '', tag = '') {
@@ -160,13 +165,26 @@ const jsonResponse = (status, payload, headers = {}) => ({
   async arrayBuffer() { return new TextEncoder().encode(JSON.stringify(payload)).buffer; },
 });
 
+// The codes a fake connection request shows, in turn (the console's alphabet, 8 letters).
+const USER_CODES = ['BCDFGHJK', 'LMNPQRST', 'VWXZBCDF'];
+const REVOKED = 'This Figma connection was ended. Connect again from the Assetlib plugin.';
+
 /**
  * A console that answers by URL. The state is read on every call, so tests can change it mid-run:
  * statuses[route] answers with that HTTP status (and headers[route], such as retry-after, on it) and errors[route] as its
  * error text (a 403 says what the console says for a token without the scope, unless errors[route] says otherwise, as
- * the console's revoked token does), failures (a Set of routes) throw a network error, and gates[route] (a deferred)
- * holds the response until resolved. GET /api/token (route `token`) answers with state.identity, else the identity the harness registered for the bearer token, else 404
- * as a console from before that route does.
+ * the console's revoked token does), codes[route] adds a refused Figma connection's `code`, failures (a Set of routes)
+ * throw a network error, and gates[route] (a deferred) holds the response until resolved. GET /api/token (route `token`)
+ * answers with state.identity, else the identity the harness registered for the bearer token, else an issued token's,
+ * else 404 as a console from before that route does.
+ *
+ * One-click Connect's routes are `start`, `claim`, `cancel`, and `current`. Each start adds a request to
+ * state.pairings ({readKey, writeKey, userCode, status, interval, hint, connection, answers}; state.pairingStart merges
+ * into its 201 answer). A claim answers its request's next scripted `answers` entry ([status, body, headers]) if any,
+ * else by its status: pending; approved, which issues a token (state.issued) for its `connection` once and is then
+ * claimed; or how it ended (410). Unknown read keys answer 410 expired. A cancel ends a pending or approved request and
+ * ends the token of a claimed one (state.revoked). DELETE current ends an issued token (204), refuses a pasted one (400),
+ * and an ended token gets 403 `revoked` from every other route.
  */
 export function fakeConsole(state) {
   state.statuses ??= {};
@@ -174,23 +192,62 @@ export function fakeConsole(state) {
   state.gates ??= {};
   state.headers ??= {};
   state.errors ??= {};
+  state.codes ??= {};
+  state.pairings ??= [];
+  state.issued ??= new Map();
+  state.revoked ??= new Set();
   return async (url, options, request) => {
     const path = /^https?:\/\/[^/]+\/api\/apps\/[^/]+\/[^/]+\/(.*)$/.exec(url)?.[1] ?? '';
+    const pairingRoute = /^https?:\/\/[^/]+\/api\/plugin-connections(?:\/(claim|cancel|current))?$/.exec(url);
     // /placements/artwork is matched before /placements.
-    const route = /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork' : path === 'placements' ? 'placements'
-      : /^assets(\?.*)?$/.test(path) ? 'assets' : /^assets\/[^/?]+\/renditions\/[^/?]+$/.test(path) ? 'rendition'
+    const route = pairingRoute ? pairingRoute[1] ?? 'start' : /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork'
+      : path === 'placements' ? 'placements' : /^assets(\?.*)?$/.test(path) ? 'assets' : /^assets\/[^/?]+\/renditions\/[^/?]+$/.test(path) ? 'rendition'
         : path === 'drafts' ? 'drafts' : 'unknown';
     request.route = route;
+    const bearer = String(options?.headers?.Authorization ?? '').replace(/^Bearer /, '');
     if (state.gates[route]) await state.gates[route].promise;
     if (state.failures.has(route)) throw new TypeError('fetch failed');
     const status = state.statuses[route];
     if (status) {
       const error = state.errors[route] ?? (status === 403 ? 'This API token lacks the required scope.' : `HTTP ${status} from the fake console.`);
-      return jsonResponse(status, { error }, state.headers[route]);
+      return jsonResponse(status, { error, ...(state.codes[route] ? { code: state.codes[route] } : {}) }, state.headers[route]);
     }
+    if (!pairingRoute && state.revoked.has(bearer)) return jsonResponse(403, { error: REVOKED, code: 'revoked' });
+    const pairing = state.pairings.find(item => item.readKey === bearer);
     switch (route) {
+      case 'start': {
+        const n = state.pairings.length + 1;
+        const started = { readKey: `alr_${String(n).padStart(43, '0')}`, writeKey: `alw_${String(n).padStart(43, 'w')}`, userCode: USER_CODES[(n - 1) % USER_CODES.length],
+          status: 'pending', interval: 2, hint: request.body?.hint ?? null, connection: null, answers: [] };
+        state.pairings.push(started);
+        const code = started.userCode;
+        return jsonResponse(201, { readKey: started.readKey, writeKey: started.writeKey, userCode: `${code.slice(0, 4)}-${code.slice(4)}`,
+          expiresAt: new Date(Date.now() + 600000).toISOString(), expiresIn: 600, interval: 2, ...state.pairingStart });
+      }
+      case 'claim': {
+        if (!/^alr_[A-Za-z0-9_-]{43}$/.test(bearer)) return jsonResponse(401, { error: 'Missing or invalid pairing key.' });
+        if (!pairing) return jsonResponse(410, { status: 'expired' });
+        if (pairing.answers.length) { const [answer, body, headers] = pairing.answers.shift(); return jsonResponse(answer, body, headers); }
+        if (pairing.status === 'pending') return jsonResponse(200, { status: 'pending', interval: pairing.interval });
+        if (pairing.status !== 'approved') return jsonResponse(410, { status: pairing.status });
+        const token = `alk_figma${String(state.issued.size + 1).padStart(38, '0')}`;
+        const { orgId, appId, workspaceName = null, appName = null } = pairing.connection;
+        state.issued.set(token, { orgId, appId, workspaceName, appName, scopes: ['draft'] });
+        Object.assign(pairing, { status: 'claimed', token });
+        return jsonResponse(200, { status: 'connected', connection: { ...pairing.connection, token } });
+      }
+      case 'cancel': {
+        if (!/^alr_[A-Za-z0-9_-]{43}$/.test(bearer)) return jsonResponse(401, { error: 'Missing or invalid pairing key.' });
+        if (pairing?.status === 'pending' || pairing?.status === 'approved') pairing.status = 'cancelled';
+        else if (pairing?.status === 'claimed' && !pairing.reused) { pairing.reused = true; state.revoked.add(pairing.token); }
+        return jsonResponse(204, null);
+      }
+      case 'current':
+        if (state.issued.has(bearer)) { state.revoked.add(bearer); return jsonResponse(204, null); }
+        return /^alk_/.test(bearer) ? jsonResponse(400, { error: 'This token was created in Settings › Tokens. An owner revokes it there.' })
+          : jsonResponse(401, { error: 'Missing or invalid API token.' });
       case 'token': {
-        const identity = state.identity ?? request.identity;
+        const identity = state.identity ?? request.identity ?? state.issued.get(bearer);
         return identity ? jsonResponse(200, identity) : jsonResponse(404, { error: 'Not found.' });
       }
       case 'placements': return jsonResponse(200, { placements: state.placements ?? [] });
@@ -269,13 +326,15 @@ function abortError() { return Object.assign(new Error('The operation was aborte
  * Runs the bundled main thread and UI in node:vm. `fetch(url, options, request)` answers the UI's requests;
  * every request is recorded first, and one whose AbortSignal fires rejects as fetch does. Nodes in `selection` are
  * plain specs; `pluginData` seeds their plugin data. Animation frames run at once unless `manualFrames` is set, when
- * they wait for runFrames().
+ * they wait for runFrames(). `now` replaces both sides' clock, and `store` is client storage shared with another harness.
  */
 export function createHarness({
   mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', selection = [], exportBytes = () => new Uint8Array(0),
   createImageBitmap, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, zoom: 1 },
-  command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false,
+  command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false, now, store: sharedStore,
 }) {
+  // `now`: a clock for Date.now() (and new Date()) on both sides, so a test can move time; the real clock otherwise.
+  const clock = now ? { Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now()])); } static now() { return now(); } } } : {};
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) {
@@ -324,7 +383,8 @@ export function createHarness({
   const identities = new Map();
   const intersections = intersectionObservers();
   const timers = new Map();
-  const store = new Map(storage.map(([key, value]) => [key, clone(value)]));
+  // `store`: client storage shared with another harness, as every window of a plugin shares it.
+  const store = sharedStore ?? new Map(storage.map(([key, value]) => [key, clone(value)]));
   const events = new Map();
   let delayTargets = false;
   let connectionWrite = null;
@@ -491,7 +551,7 @@ export function createHarness({
     },
   };
   // Main and the UI share the fake timers; fireTimers(delay) runs either side's.
-  vm.runInNewContext(mainSource, { figma, __html__: '', setTimeout: window.setTimeout, clearTimeout: window.clearTimeout }, { filename: 'code.bundle.js' });
+  vm.runInNewContext(mainSource, { figma, __html__: '', setTimeout: window.setTimeout, clearTimeout: window.clearTimeout, ...clock }, { filename: 'code.bundle.js' });
   function canvas() {
     const item = {
       width: 0, height: 0,
@@ -504,7 +564,7 @@ export function createHarness({
   // Document listeners (the search shortcut's keydown); keydown() calls them as a key press that reached the document.
   const documentListeners = new Map();
   const document = { getElementById: element, querySelectorAll: () => controls.map(element), createElement, get activeElement() { return focusState.active; },
-    addEventListener(type, callback) { documentListeners.set(type, callback); } };
+    visibilityState: 'visible', addEventListener(type, callback) { documentListeners.set(type, callback); } };
   // Animation frames: queued callbacks run together, as one browser frame; a frame asked for during one runs after it.
   const animationFrames = [];
   let frameDepth = 0;
@@ -525,7 +585,7 @@ export function createHarness({
   };
   vm.runInNewContext(uiSource, {
     parent, window, AbortController, Blob, Option, IntersectionObserver: intersections.IntersectionObserver, document, navigator: { platform: 'MacIntel' },
-    requestAnimationFrame, cancelAnimationFrame,
+    requestAnimationFrame, cancelAnimationFrame, ...clock,
     ...(createImageBitmap ? { createImageBitmap } : {}),
     async fetch(url, options = {}) {
       const request = { url, method: options.method ?? 'GET', authorization: options.headers?.Authorization,
@@ -575,6 +635,10 @@ export function createHarness({
     },
     /** Figma closing the plugin. */
     close() { events.get('close')?.(); },
+    /** The plugin window gains focus (the person came back from the browser). */
+    focusWindow() { windowListeners.get('focus')?.({ type: 'focus' }); },
+    /** The page is shown or hidden (document.visibilityState), with its visibilitychange event. */
+    setVisibility(value) { document.visibilityState = value; documentListeners.get('visibilitychange')?.({ type: 'visibilitychange' }); },
     /** Fires the current page's nodechange listeners. */
     nodeChange(nodeChanges) { for (const listener of [...figma.currentPage.listeners]) listener({ nodeChanges }); },
     /** Switches to a new page holding `nodes` (plain specs), as Figma's currentpagechange. */

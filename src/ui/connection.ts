@@ -1,14 +1,15 @@
 // The connection: the first-run screen and the account panel (the connection settings, opened from the account chip),
-// the token form and its GET /api/token step, the connection test, Disconnect, and the chip's label.
+// the token form (one-click Connect's secondary path, connect.ts) and its GET /api/token step, the connection test,
+// Disconnect, and the chip's label.
 import {
   OLDER_CONSOLE, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink, fieldError, normalizeConsoleOrigin,
-  parsePlacements, parseTokenIdentity, PRODUCTION_ORIGIN, tokenPrefix, validateConnection,
+  parsePlacements, parseTokenIdentity, PRODUCTION_ORIGIN, reconnectText, refusalCode, tokenPrefix, validateConnection,
 } from '../shared/index.js';
 import type { Connection, Placement } from '../shared/index.js';
-import { DISCONNECTED } from '../shared/protocol.js';
+import { DISCONNECTED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, toastText } from '../shared/protocol.js';
 import type { MainMessage } from '../shared/protocol.js';
-import { announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, setBusy, setStatus, setUnavailable } from './dom.js';
-import { identify, readFailure, send } from './http.js';
+import { announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, setBusy, setStatus, setUnavailable, showError } from './dom.js';
+import { identify, readFailure, revokeConnection, send } from './http.js';
 import type { HttpResult } from './http.js';
 import { clearPlacements, clearRememberedSelection, showPlacements } from './send.js';
 import { actionsBlocked, nextRequestId, state } from './state.js';
@@ -28,12 +29,18 @@ const connectionForm = element('connection-form');
 const updateButton = element<HTMLButtonElement>('update-token');
 const fields = { origin, orgId, appId, token } as const;
 
-// The save-connection request awaiting main; its error belongs under the token field. If main refuses it, the
-// connection it would have replaced stands, so the generation and placements set aside for it, and the token typed
-// for it, come back.
-let pendingConnection: { id: number; generation: number | null; placements: Placement[]; token: string } | null = null;
-// The clear-connection request (Disconnect) awaiting main.
-let pendingDisconnect: number | null = null;
+// The save-connection request awaiting main; its error belongs under the token field (a browser connection's, `quiet`,
+// is said by connect.ts). If main refuses it, the connection it would have replaced stands, so the generation and
+// placements set aside for it, and the token typed for it, come back. `next` is what it saves, and `replaced` the
+// connection it replaces, whose browser token ends once it is saved.
+let pendingConnection: { id: number; generation: number | null; placements: Placement[]; token: string; quiet: boolean; next: Connection;
+  replaced: Connection | null } | null = null;
+// The clear-connection request (Disconnect) awaiting main, and what main's toast says, which the status region repeats.
+let pendingDisconnect: { id: number; text: string } | null = null;
+// The token form was chosen on the first run (Use a token instead), or by a Connect that couldn't run; Disconnect and
+// every connection message reset it.
+let tokenChosen = false;
+let formShown = false;
 // Each GET /api/token the form starts; a newer one, or a connection change, makes an older answer stale.
 let identifyTicket = 0;
 // The console (its origin) that answered GET /api/token with 404 or without CORS in this session: it needs the
@@ -74,12 +81,16 @@ function idsShown(): boolean { return idsOrigin !== null && idsOrigin === chosen
 function appShortName(connection: Connection): string {
   return connection.appName ?? `App ${connection.appId.length > 12 ? `${connection.appId.slice(0, 8)}…` : connection.appId}`;
 }
-/** Who a toast says the plugin connected to: the names when the console gave them (the app's alone when both don't fit
- * a toast's 100 characters), never two raw IDs. */
-function connectedTo(connection: Connection): string {
-  if (!connection.appName) return 'Assetlib';
-  const label = connectionLabel(connection);
-  return `Connected to ${label}`.length <= 100 ? label : connection.appName;
+/**
+ * What the toast says the plugin connected to: the names when the console gave them, and who approved a browser
+ * connection, dropping the workspace and then the email while the words pass a toast's 100 characters; never two raw IDs.
+ */
+function connectedText(connection: Connection): string {
+  const { workspaceName, appName, connectedAs } = connection;
+  if (!appName) return 'Connected to Assetlib';
+  const as = connectedAs ? ` as ${connectedAs}` : '';
+  const choices = [workspaceName ? `Connected to ${workspaceName} · ${appName}${as}` : '', as ? `Connected to ${appName}${as}` : '', `Connected to ${appName}`];
+  return choices.find(text => text && text.length <= 100) ?? toastText(`Connected to ${appName}`);
 }
 
 // The chip's shortened workspace name, sized to its text (fitWorkspace); `key` names what its room depends on, and
@@ -135,6 +146,22 @@ function fitWorkspace(workspace: HTMLElement, separator: HTMLElement, key: strin
  */
 export function problemInSettings(): boolean { return settings.open && connectionErrorKind === 'read'; }
 
+/** True while the token form shows (as of the last render). */
+export function tokenFormShown(): boolean { return formShown; }
+
+/**
+ * Use a token instead, or a Connect that couldn't run (an older console, or one that couldn't be reached): the token
+ * form shows, with its field focused.
+ */
+export function chooseToken(): void {
+  tokenChosen = true;
+  settings.open = true;
+  scheduleRender();
+  flushRender();
+  token.focus();
+  token.scrollIntoView({ block: 'nearest' });
+}
+
 export function renderConnection(): void {
   const connection = state.connection;
   // The first-run screen is the open settings; there is no chip to open them from.
@@ -161,23 +188,32 @@ export function renderConnection(): void {
   const title = element('account-title');
   title.textContent = connection ? appShortName(connection) : '';
   title.title = connection ? `Organization ${connection.orgId} · App ${connection.appId}` : '';
-  element('token-prefix').textContent = connection
-    ? [connection.workspaceName, `Connected with token ${tokenPrefix(connection.token)}`].filter(Boolean).join(' · ') : '';
+  // A browser connection names who approved it; a pasted token, its prefix.
+  const browser = connection?.method === 'browser';
+  element('token-prefix').textContent = !connection ? ''
+    : [connection.workspaceName, browser ? connection.connectedAs && `Connected as ${connection.connectedAs}` : `Connected with token ${tokenPrefix(connection.token)}`]
+      .filter(Boolean).join(' · ');
   element<HTMLAnchorElement>('open-console').href = connection ? consoleLink(connection, 'overview') : `${chosenOrigin()}/`;
-  element<HTMLAnchorElement>('first-run-console').href = `${chosenOrigin()}/`;
   idFields.hidden = !idsShown();
-  // The account's own controls exist only with a connection (ui.html also hides the account block on the first run).
+  // The account's own controls exist only with a connection (ui.html also hides the account block on the first run);
+  // a Connect request waiting for approval takes their place.
+  element('account-actions').hidden = state.pairingActive;
   disconnectButton.hidden = !connection;
   element('open-console').hidden = !connection;
-  // A working connection's panel is a menu: the form shows on the first run, when the connection needs attention or the
-  // form has something to say, after Update token, and while it holds a typed token.
-  const form = !connection || attention || formOpened || connectionErrorKind !== null || idsShown() || Boolean(token.value);
-  connectionForm.hidden = !form;
-  updateButton.hidden = !connection || form;
-  // One primary per view: Connect is the first run's primary, and the account panel's while the connection needs
-  // attention; otherwise the footer's Insert or Send is, and the form's button is secondary.
-  connectButton.className = !connection || attention ? 'primary wide' : 'secondary wide';
-  setBusy(connectButton, state.ops.connecting ? 'Connecting…' : connection && !attention ? 'Save token' : 'Connect', state.ops.connecting);
+  // The token form is the secondary path: chosen on the first run, or for a Connect that couldn't run. A working pasted
+  // token's panel is a menu: the form shows when the connection needs attention or the form has something to say, after
+  // Update token, and while it holds a typed token. A browser connection never needs it: Connect again makes a new one.
+  formShown = !state.pairingActive && (tokenChosen || idsShown()
+    || (Boolean(connection) && !browser && (attention || formOpened || connectionErrorKind !== null || Boolean(token.value))));
+  connectionForm.hidden = !formShown;
+  // The console is chosen above both paths on the first run, and with the form.
+  element('origin-field').hidden = state.pairingActive || (Boolean(connection) && !formShown);
+  updateButton.hidden = !connection || browser || formShown;
+  // One primary per view: Connect to Assetlib is the first run's (connect.ts), and Connect the account panel's while a
+  // pasted token needs attention; otherwise the footer's Insert or Send is, and the form's button is secondary.
+  const pasted = Boolean(connection) && !browser;
+  connectButton.className = pasted && attention ? 'primary wide' : 'secondary wide';
+  setBusy(connectButton, state.ops.connecting ? 'Connecting…' : !pasted ? 'Connect with token' : attention ? 'Connect' : 'Save token', state.ops.connecting);
   setUnavailable(connectButton, actionsBlocked());
   setUnavailable(disconnectButton, actionsBlocked() || pendingDisconnect !== null);
 }
@@ -190,6 +226,8 @@ function markFocus(): void { focusMark = document.activeElement; }
  * away.
  */
 function settingsInUse(): boolean {
+  // A Connect request's block shows there.
+  if (state.pairingActive) return true;
   const active = document.activeElement;
   if (active && active !== focusMark && inField(active) && settings.contains(active)) return true;
   const saved = state.connection;
@@ -200,7 +238,7 @@ function settingsInUse(): boolean {
  * Closes the connection settings. Focus on a control inside them moves to their summary (the account chip), which
  * stays in view, so it never falls to the page when the controls hide.
  */
-function closeSettings(): void {
+export function closeSettings(): void {
   // A connection made on the first-run screen shows the chip only once the shell renders, so render first.
   flushRender();
   const active = document.activeElement;
@@ -292,7 +330,8 @@ export function needsAttention(problem?: { text: string; field: 'token' | null }
   state.attentionCount += 1;
   attention = true;
   element('connection-label').textContent = 'Needs attention';
-  if (problem) showConnectionError(problem.text, problem.field, 'read');
+  // A browser connection has no token field: the view in front says why, with Connect again (readProblem).
+  if (problem && state.connection?.method !== 'browser') showConnectionError(problem.text, problem.field, 'read');
   scheduleRender();
 }
 
@@ -308,7 +347,8 @@ export function markConnected(): void {
 }
 
 function failureOf(result: HttpResult, text: string): ReadFailure {
-  return { kind: result.kind === 'ok' || result.kind === 'aborted' ? 'http' : result.kind, status: result.status, text };
+  const code = refusalCode(result.payload);
+  return { kind: result.kind === 'ok' || result.kind === 'aborted' ? 'http' : result.kind, status: result.status, text, ...(code ? { code } : {}) };
 }
 
 /**
@@ -334,8 +374,9 @@ async function refreshNames(config: Connection, generation: number): Promise<voi
   const current = state.connection;
   if (identity.orgId !== config.orgId || identity.appId !== config.appId || !appName) return;
   if ((current.workspaceName ?? null) === workspaceName && current.appName === appName) return;
-  const { origin, orgId, appId, token } = current;
-  state.connection = { origin, orgId, appId, token, ...(workspaceName ? { workspaceName } : {}), appName };
+  // Only the names change: how the connection was made, and who approved it, stay.
+  const { origin, orgId, appId, workspaceName: _workspace, ...rest } = current;
+  state.connection = { ...rest, origin, orgId, appId, ...(workspaceName ? { workspaceName } : {}), appName };
   namesPosted = { key: namesKey(config), workspaceName, appName };
   post({ type: 'save-names', connectionGeneration: generation, orgId, appId, workspaceName, appName });
   scheduleRender();
@@ -373,9 +414,9 @@ export async function loadPlacements(): Promise<ReadFailure | null> {
     const available = count ? `${count} placement${count === 1 ? '' : 's'} available.` : 'No placements yet. Placements come from your app’s code.';
     if (announceConnected) {
       announceConnected = false;
-      const label = connectedTo(config);
-      post({ type: 'notify', text: `Connected to ${label}` });
-      setStatus(`Connected to ${label}. ${available}`);
+      const text = connectedText(config);
+      post({ type: 'notify', text });
+      setStatus(`${text}. ${available}`);
     } else setStatus(`Connected. ${available}`);
     return null;
   } catch (error) {
@@ -388,7 +429,8 @@ export async function loadPlacements(): Promise<ReadFailure | null> {
     // A refused token is the field at fault; a network or server error leaves the entries unmarked. Said under the token
     // field when the settings are open, else by the view in front (main.ts).
     const status = failure.status;
-    needsAttention({ text: errorText(error), field: status === 401 || status === 403 ? 'token' : null });
+    if (config.method === 'browser' && (status === 401 || status === 403)) needsAttention({ text: reconnectText(failure.code), field: null });
+    else needsAttention({ text: errorText(error), field: status === 401 || status === 403 ? 'token' : null });
     return failure;
   } finally {
     if (generation === state.connectionGeneration) { state.ops.connecting = false; scheduleRender(); }
@@ -421,7 +463,11 @@ async function reloadPlacements(): Promise<void> {
 
 /** Main's `connection` message: the saved connection, or none, and a new generation. */
 export function applyConnection(message: Extract<MainMessage, { type: 'connection' }>): void {
+  // A browser connection this window's save replaced ends: its token is no longer anyone's (best effort).
+  const replaced = pendingConnection && message.connection?.token === pendingConnection.next.token ? pendingConnection.replaced : null;
+  if (replaced?.method === 'browser' && replaced.token !== message.connection?.token) void revokeConnection(replaced.origin, replaced.token);
   pendingConnection = null;
+  tokenChosen = false;
   // A token being identified for the connection this replaces is no longer wanted.
   identifyTicket += 1;
   clearRememberedSelection();
@@ -448,7 +494,7 @@ export function applyConnection(message: Extract<MainMessage, { type: 'connectio
     idsOrigin = null;
     idsUnsure = false;
     orgId.value = ''; appId.value = '';
-    if (pendingDisconnect !== null) { pendingDisconnect = null; setStatus(DISCONNECTED); }
+    if (pendingDisconnect !== null) { setStatus(pendingDisconnect.text); pendingDisconnect = null; }
   }
   scheduleRender();
 }
@@ -460,9 +506,11 @@ export function applyConnection(message: Extract<MainMessage, { type: 'connectio
  * unseen meanwhile. The error stays under the token field.
  */
 export function failConnection(requestId: number, message: string): boolean {
-  if (requestId === pendingDisconnect) {
+  if (requestId === pendingDisconnect?.id) {
     pendingDisconnect = null;
-    showConnectionError(message, null, 'form');
+    // A browser connection has no token field to say it under.
+    if (state.connection?.method === 'browser') showError(message);
+    else showConnectionError(message, null, 'form');
     scheduleRender();
     return true;
   }
@@ -475,16 +523,22 @@ export function failConnection(requestId: number, message: string): boolean {
   if (!token.value) token.value = refused.token;
   state.ops.connecting = false;
   setStatus('');
-  showConnectionError(message, null, 'form');
+  if (!refused.quiet) showConnectionError(message, null, 'form');
   scheduleRender();
   return true;
 }
 
-/** Asks main to save the connection, setting aside what it replaces until main answers. */
-function save(next: Connection, typed: string): void {
+/**
+ * Asks main to save the connection, setting aside what it replaces until main answers; returns the request's id. A
+ * browser connection (connect.ts) types nothing, and its names are today's, so GET /api/token isn't asked for them; if
+ * main refuses it, connect.ts says why.
+ */
+export function saveConnection(next: Connection, typed = ''): number {
+  const quiet = next.method === 'browser';
+  if (quiet) { namesAsked = namesKey(next); namesPosted = null; }
   token.value = '';
   clearRememberedSelection();
-  pendingConnection = { id: nextRequestId(), generation: state.connectionGeneration, placements: state.placements, token: typed };
+  pendingConnection = { id: nextRequestId(), generation: state.connectionGeneration, placements: state.placements, token: typed, quiet, next, replaced: state.connection };
   state.connectionGeneration = null;
   state.placements = [];
   state.ops.connecting = true;
@@ -492,6 +546,7 @@ function save(next: Connection, typed: string): void {
   setStatus('Saving connection…');
   post({ type: 'save-connection', requestId: pendingConnection.id, connection: next });
   scheduleRender();
+  return pendingConnection.id;
 }
 
 /**
@@ -561,7 +616,38 @@ async function submit(): Promise<void> {
       next = { ...current };
     } else next = await identifyToken(chosen, typed);
   } catch (error) { showConnectionError(errorText(error), connectionErrorField(error) ?? 'token', 'form'); return; }
-  if (next) save(next, typed);
+  if (next) saveConnection(next, typed);
+}
+
+/**
+ * Disconnect. A pasted token is forgotten on this device and keeps working elsewhere (main's toast offers Undo). A
+ * browser connection's token is ended in the console first (10 s, tried once); one the console can't be told about is
+ * forgotten anyway, and main's toast says where to end it.
+ */
+async function disconnect(): Promise<void> {
+  const current = state.connection;
+  if (actionsBlocked() || !current || pendingDisconnect !== null) return;
+  clearConnectionError();
+  const id = nextRequestId();
+  if (current.method !== 'browser') {
+    pendingDisconnect = { id, text: DISCONNECTED };
+    post({ type: 'clear-connection', requestId: id });
+    scheduleRender();
+    return;
+  }
+  pendingDisconnect = { id, text: DISCONNECTED_LOCAL };
+  setStatus('Disconnecting…');
+  scheduleRender();
+  const result = await revokeConnection(current.origin, current.token);
+  // A connection saved meanwhile is not the one the person disconnected (new names alone keep the token).
+  if (pendingDisconnect?.id !== id || state.connection?.token !== current.token) {
+    if (pendingDisconnect?.id === id) { pendingDisconnect = null; setStatus(''); scheduleRender(); }
+    return;
+  }
+  // Ended now, or already: an unknown or refused token works nowhere.
+  const revoked = result.kind !== 'aborted' && (result.status === 204 || result.status === 401 || result.status === 403);
+  pendingDisconnect.text = revoked ? DISCONNECTED_BROWSER : DISCONNECTED_LOCAL;
+  post({ type: 'clear-connection', requestId: id, revoked });
 }
 
 export function initConnection(): void {
@@ -577,13 +663,7 @@ export function initConnection(): void {
     flushRender();
     token.focus();
   });
-  disconnectButton.addEventListener('click', () => {
-    if (actionsBlocked() || !state.connection || pendingDisconnect !== null) return;
-    clearConnectionError();
-    pendingDisconnect = nextRequestId();
-    post({ type: 'clear-connection', requestId: pendingDisconnect });
-    scheduleRender();
-  });
+  disconnectButton.addEventListener('click', () => { void disconnect(); });
   // Choosing another console: the ID fields show only for one that needs them, and an answer about the other is stale.
   origin.addEventListener('change', () => {
     if (connectionErrorKind === 'form') clearConnectionError();

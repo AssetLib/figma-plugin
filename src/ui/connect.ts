@@ -1,0 +1,415 @@
+// One-click Connect: the plugin starts a connection request, main opens the console's connect page in the browser, and
+// the plugin polls until the person approves there; the console then issues this plugin a draft-only token of its own,
+// saved as a browser connection. The token form (connection.ts) stays the secondary path. Every request goes through
+// http.ts (pairingRequest); the write key stays in memory, and main keeps only the read key (assetlib.pairing.v1), so a
+// reopened plugin resumes the request.
+import { DEVICE_STORAGE, PRODUCTION_ORIGIN, formatUserCode, mapHttpError, normalizeConsoleOrigin, pairingUrl, parseClaim, parsePairingStart, validUuid } from '../shared/index.js';
+import type { ClaimAnswer, ClaimedConnection, Connection, PairingHint, PairingRecord, PairingStart } from '../shared/index.js';
+import {
+  OLDER_CONSOLE_CONNECT, OPEN_PAGE_FAILED, PAIRING_BUSY, PAIRING_CANCELLED, PAIRING_DENIED, PAIRING_EXPIRED, PAIRING_FAILED, PAIRING_REUSED, PAIRING_UNREACHABLE,
+} from '../shared/protocol.js';
+import type { MainMessage } from '../shared/protocol.js';
+import { chooseToken, closeSettings, saveConnection, tokenFormShown } from './connection.js';
+import { announceError, element, flushRender, post, scheduleRender, setBusy, setStatus, setUnavailable } from './dom.js';
+import { abortPairing, pairingRequest, revokeConnection } from './http.js';
+import { nextRequestId, state } from './state.js';
+
+type Phase = 'idle' | 'starting' | 'waiting' | 'saving' | 'ended';
+type EndKind = 'denied' | 'expired' | 'cancelled' | 'reused' | 'older' | 'unreachable' | 'busy' | 'error';
+
+// What each end says. A request that ended as it may (declined, expired, cancelled, used, an older console) is a
+// neutral step; one that couldn't run is an error.
+const ENDED: Record<EndKind, string> = { denied: PAIRING_DENIED, expired: PAIRING_EXPIRED, cancelled: PAIRING_CANCELLED, reused: PAIRING_REUSED,
+  older: OLDER_CONSOLE_CONNECT, unreachable: PAIRING_UNREACHABLE, busy: PAIRING_BUSY, error: PAIRING_FAILED };
+const NEUTRAL: readonly EndKind[] = ['denied', 'expired', 'cancelled', 'reused', 'older'];
+// A poll that got no answer, or a server error, waits longer each time (seconds).
+const BACKOFF = [2, 4, 8, 15];
+
+const settings = element<HTMLDetailsElement>('settings');
+const originSelect = element<HTMLSelectElement>('origin');
+const tokenInput = element<HTMLInputElement>('token');
+const block = element('pairing');
+const connectButton = element<HTMLButtonElement>('connect-browser');
+const useTokenButton = element<HTMLButtonElement>('use-token');
+const switchButton = element<HTMLButtonElement>('switch-workspace');
+const openButton = element<HTMLButtonElement>('pairing-open');
+const checkButton = element<HTMLButtonElement>('pairing-check');
+const cancelButton = element<HTMLButtonElement>('pairing-cancel');
+const note = element('pairing-note');
+
+const pairing = {
+  phase: 'idle' as Phase,
+  origin: PRODUCTION_ORIGIN,
+  readKey: '',
+  // The browser page's key: in memory only, so a resumed request can't open the page again.
+  writeKey: null as string | null,
+  userCode: '',
+  // Local epoch ms: the console's expiresIn from when its answer arrived (a plugin window can't read the Date header).
+  deadline: 0,
+  interval: 2,
+  lastSentAt: 0,
+  timer: null as number | null,
+  countdown: null as number | null,
+  inFlight: false,
+  failures: 0,
+  hint: null as PairingHint | null,
+  ended: null as EndKind | null,
+  // Resumed from main's record when the plugin opened: the browser tab is the one opened before.
+  resumed: false,
+  // What the panel says about the request (how it ended, or a browser that didn't open), and its tone.
+  note: '',
+  noteKind: 'info' as 'info' | 'error',
+  // Every start, Cancel, and end moves it on, so an answer for an earlier request is dropped.
+  ticket: 0,
+  openRequest: null as number | null,
+  adoptRequest: null as number | null,
+  saveRequest: null as number | null,
+  saving: null as Connection | null,
+  // Connect again from a view opened the settings to show the request; Cancel closes them again.
+  openedSettings: false,
+};
+// Workspaces this page's linked layers name (main's connection message), while there is no connection.
+let hints: PairingHint[] = [];
+
+/** The connected app, so Connect again offers its workspace first; null unless its IDs are UUIDs. */
+export function hintOfCurrent(): PairingHint | null {
+  const connection = state.connection;
+  return connection && validUuid(connection.orgId) && validUuid(connection.appId) ? { origin: connection.origin, orgId: connection.orgId, appId: connection.appId } : null;
+}
+
+function chosenOrigin(): string {
+  try { return normalizeConsoleOrigin(originSelect.value); } catch { return PRODUCTION_ORIGIN; }
+}
+function record(): PairingRecord {
+  const { origin, readKey, userCode, deadline, interval } = pairing;
+  return { v: 1, origin, readKey, userCode, deadline, interval };
+}
+/** True when focus is in the connection settings, or nowhere: the person is following the request there. */
+function followed(): boolean {
+  const active = document.activeElement;
+  return !active || active === document.body || settings.contains(active);
+}
+function clearTimer(): void {
+  if (pairing.timer !== null) window.clearTimeout(pairing.timer);
+  pairing.timer = null;
+}
+function stopTimers(): void {
+  clearTimer();
+  if (pairing.countdown !== null) window.clearTimeout(pairing.countdown);
+  pairing.countdown = null;
+}
+/** The next poll, after `ms` (never past the deadline, which the poll then ends). Never two, never while one runs. */
+function schedule(ms: number): void {
+  clearTimer();
+  if (pairing.phase !== 'waiting' || pairing.inFlight) return;
+  pairing.timer = window.setTimeout(() => { pairing.timer = null; void poll(); }, Math.min(ms, Math.max(0, pairing.deadline - Date.now())));
+}
+/** The countdown in the waiting line, renewed every 30 s. */
+function countdown(): void {
+  if (pairing.countdown !== null) window.clearTimeout(pairing.countdown);
+  pairing.countdown = window.setTimeout(() => {
+    pairing.countdown = null;
+    if (pairing.phase !== 'waiting') return;
+    scheduleRender();
+    countdown();
+  }, 30000);
+}
+/** Tells the console the request is over (fire and forget): a pending one is cancelled, and a token claimed from it ends. */
+function cancelOnConsole(origin: string, readKey: string): void {
+  void pairingRequest(pairingUrl(origin, 'cancel'), { method: 'POST', bearer: readKey }, false);
+}
+
+/**
+ * Connect to Assetlib (and Switch workspace, Connect again, the Sync bar's Switch workspace): starts a request on the
+ * chosen console, offering a workspace to preselect (`hint`, else one this page's links name), keeps its read key with
+ * main, and asks main to open the console's connect page. Never `ops.connecting`: Insert and Send keep working while it waits.
+ */
+export async function startConnect(hint?: PairingHint | null): Promise<void> {
+  if (pairing.phase === 'starting' || pairing.phase === 'waiting' || pairing.phase === 'saving' || state.ops.connecting) return;
+  const origin = chosenOrigin();
+  const chosen = hint?.origin === origin ? hint : hints.find(item => item.origin === origin) ?? null;
+  const ticket = ++pairing.ticket;
+  Object.assign(pairing, { phase: 'starting', origin, hint: chosen, ended: null, note: '', readKey: '', writeKey: null, userCode: '', resumed: false, failures: 0 });
+  // Connect again from a view: the request shows in the connection settings.
+  pairing.openedSettings = Boolean(state.connection) && !settings.open;
+  settings.open = true;
+  setStatus('Connecting…');
+  scheduleRender();
+  const body = JSON.stringify({ client: 'figma', ...(chosen ? { hint: { orgId: chosen.orgId, appId: chosen.appId } } : {}) });
+  const result = await pairingRequest(pairingUrl(origin, 'start'), { method: 'POST', body });
+  if (ticket !== pairing.ticket || result.kind === 'aborted') return;
+  if (result.kind === 'ok' && result.status === 201) {
+    let started: PairingStart;
+    try { started = parsePairingStart(result.payload); } catch { end('error'); return; }
+    const now = Date.now();
+    Object.assign(pairing, { readKey: started.readKey, writeKey: started.writeKey, userCode: started.userCode, interval: started.interval,
+      deadline: now + started.expiresIn * 1000, lastSentAt: now });
+    post({ type: 'save-pairing', pairing: record() });
+    openPage();
+    wait();
+    return;
+  }
+  // A console from before one-click Connect answers 404. No answer at all may be one without the route's CORS headers,
+  // or no network: the person chooses.
+  if (result.kind === 'http' && result.status === 404) end('older');
+  else if (result.kind === 'network' || result.kind === 'timeout') end('unreachable');
+  else if (result.status === 429) end('busy');
+  else end('error', mapHttpError(result.status, result.payload));
+}
+
+/** Waiting for approval: polls every `interval` seconds, the first after one interval (or at once for a resumed request). */
+function wait(): void {
+  pairing.phase = 'waiting';
+  state.pairingActive = true;
+  const focus = followed();
+  setStatus(`Approve in your browser. The code is ${[...pairing.userCode].join(' ')}.`);
+  countdown();
+  scheduleRender();
+  if (focus) { flushRender(); checkButton.focus({ preventScroll: true }); }
+  if (pairing.resumed) pollIfDue(); else schedule(pairing.interval * 1000);
+}
+
+/** Main's record of a request this device waits for (the plugin was closed while it waited): it carries on. */
+function resume(saved: PairingRecord): void {
+  ++pairing.ticket;
+  Object.assign(pairing, { origin: saved.origin, readKey: saved.readKey, writeKey: null, userCode: saved.userCode, deadline: saved.deadline,
+    interval: saved.interval, lastSentAt: 0, failures: 0, hint: null, ended: null, note: '', resumed: true });
+  pairing.openedSettings = Boolean(state.connection) && !settings.open;
+  settings.open = true;
+  wait();
+}
+
+async function poll(): Promise<void> {
+  clearTimer();
+  if (pairing.phase !== 'waiting' || pairing.inFlight) return;
+  const now = Date.now();
+  // Past its deadline the console has ended it: nothing to ask.
+  if (now >= pairing.deadline) { end('expired'); return; }
+  const ticket = pairing.ticket;
+  const { origin, readKey } = pairing;
+  pairing.inFlight = true;
+  pairing.lastSentAt = now;
+  const result = await pairingRequest(pairingUrl(origin, 'claim'), { method: 'POST', bearer: readKey });
+  if (ticket !== pairing.ticket) return;
+  pairing.inFlight = false;
+  if (result.kind === 'aborted') return;
+  if (result.kind === 'network' || result.kind === 'timeout' || result.status >= 500) {
+    pairing.failures += 1;
+    schedule(BACKOFF[Math.min(pairing.failures, BACKOFF.length) - 1]! * 1000);
+    return;
+  }
+  let answer: ClaimAnswer | null;
+  // An answer it can't read may have carried a token: the console ends the request, and with it any token it issued.
+  try { answer = parseClaim(result.status, result.payload); } catch { cancelOnConsole(origin, readKey); end('error'); return; }
+  if (!answer) {
+    // The console's rate limit: as long as it asks, at least the interval. A 401 is a key it can't read.
+    if (result.status === 429) schedule(Math.max(pairing.interval, result.retryAfter ?? 5) * 1000);
+    else end('error');
+    return;
+  }
+  switch (answer.status) {
+    case 'pending':
+      pairing.interval = answer.interval ?? pairing.interval;
+      pairing.failures = 0;
+      schedule(pairing.interval * 1000);
+      break;
+    // Asked too soon: the console's interval for this request, which grew.
+    case 'slow_down':
+      pairing.interval = answer.interval ?? Math.min(pairing.interval + 5, 30);
+      schedule(pairing.interval * 1000);
+      break;
+    case 'connected': finish(answer.connection); break;
+    case 'claimed': adopt(); break;
+    default: end(answer.status);
+  }
+}
+
+/** A focus or visibility change, as the person comes back from the browser: a poll now, if one is due. */
+function pollIfDue(): void {
+  if (pairing.phase !== 'waiting' || pairing.inFlight) return;
+  if (Date.now() - pairing.lastSentAt >= pairing.interval * 1000) void poll();
+}
+/** Check now: a poll now, if one is due, else as soon as one is (sooner than a backoff or a rate limit's wait). */
+function checkNow(): void {
+  if (pairing.phase !== 'waiting' || pairing.inFlight) return;
+  const left = pairing.interval * 1000 - (Date.now() - pairing.lastSentAt);
+  if (left <= 0) void poll(); else schedule(left);
+}
+
+/** Approved: the token the console issued is saved as a browser connection, with the names it gave. */
+function finish(claimed: ClaimedConnection): void {
+  stopTimers();
+  pairing.phase = 'saving';
+  const next: Connection = { origin: pairing.origin, ...claimed, method: 'browser', pairing: pairing.userCode };
+  pairing.saving = next;
+  pairing.saveRequest = saveConnection(next);
+  scheduleRender();
+}
+
+/**
+ * The console says the request was claimed already: by another window of the plugin (they share client storage), or by
+ * this one before its answer was lost. Main looks for the connection saved from it.
+ */
+function adopt(): void {
+  stopTimers();
+  pairing.phase = 'saving';
+  pairing.adoptRequest = nextRequestId();
+  post({ type: 'adopt-connection', requestId: pairing.adoptRequest, userCode: pairing.userCode });
+  scheduleRender();
+}
+
+/** Back to no request: its record goes, and so does the write key. */
+function reset(): void {
+  stopTimers();
+  if (pairing.userCode) post({ type: 'clear-pairing', userCode: pairing.userCode });
+  Object.assign(pairing, { phase: 'idle', writeKey: null, inFlight: false, saving: null, saveRequest: null, adoptRequest: null, openRequest: null });
+  state.pairingActive = false;
+}
+
+/** The request ended without a connection: the panel says why, with what to do next. */
+function end(kind: EndKind, text?: string): void {
+  const focus = followed();
+  ++pairing.ticket;
+  reset();
+  Object.assign(pairing, { phase: 'ended', ended: kind, note: text ?? ENDED[kind], noteKind: NEUTRAL.includes(kind) ? 'info' : 'error' });
+  if (pairing.noteKind === 'error') announceError(pairing.note); else setStatus(pairing.note);
+  // An older console needs a token: the form opens at its field.
+  if (kind === 'older') { chooseToken(); return; }
+  scheduleRender();
+  if (!focus) return;
+  flushRender();
+  (state.connection ? note : connectButton).focus({ preventScroll: true });
+}
+
+/** Cancel: the console is told (fire and forget), and the panel goes back to where the request started. */
+function cancel(): void {
+  if (pairing.phase !== 'waiting') return;
+  ++pairing.ticket;
+  abortPairing();
+  cancelOnConsole(pairing.origin, pairing.readKey);
+  reset();
+  Object.assign(pairing, { ended: null, note: '' });
+  setStatus('');
+  if (pairing.openedSettings && state.connection) { closeSettings(); return; }
+  scheduleRender();
+  flushRender();
+  (state.connection ? state.connection.method === 'browser' ? switchButton : element('settings-summary') : connectButton).focus({ preventScroll: true });
+}
+
+function openPage(): void {
+  if (!pairing.writeKey) return;
+  if (pairing.note === OPEN_PAGE_FAILED) pairing.note = '';
+  pairing.openRequest = nextRequestId();
+  post({ type: 'open-connect-page', requestId: pairing.openRequest, origin: pairing.origin, writeKey: pairing.writeKey });
+  scheduleRender();
+}
+
+/** Main's connection message: the request's connection was saved, or main holds a request to resume. */
+export function applyPairing(message: Extract<MainMessage, { type: 'connection' }>): void {
+  hints = message.hints ?? [];
+  const saving = pairing.saving;
+  if (pairing.phase === 'saving' && saving && message.connection?.token === saving.token) {
+    // Saved (connection.ts ends a browser token it replaced). The connection test then says Connected.
+    reset();
+    pairing.note = '';
+    return;
+  }
+  if (pairing.phase === 'idle' && message.pairing) resume(message.pairing);
+}
+
+/** Main's answer to adopt-connection: another window's connection is this one's now, or the request was used elsewhere. */
+export function adopted(message: Extract<MainMessage, { type: 'adopted' }>): void {
+  if (message.requestId !== pairing.adoptRequest) return;
+  if (message.adopted) {
+    // The connection arrived with main's connection message; the other window said Connected.
+    reset();
+    pairing.note = '';
+    scheduleRender();
+    return;
+  }
+  // Nobody on this device has it: the console ends the token it issued.
+  cancelOnConsole(pairing.origin, pairing.readKey);
+  end('reused');
+}
+
+/** Main couldn't open the browser (an error for open-connect-page); false when the error is another operation's. */
+export function failOpenPage(requestId: number): boolean {
+  if (requestId !== pairing.openRequest) return false;
+  pairing.openRequest = null;
+  if (pairing.phase !== 'waiting') return true;
+  Object.assign(pairing, { note: OPEN_PAGE_FAILED, noteKind: 'error' });
+  announceError(OPEN_PAGE_FAILED);
+  scheduleRender();
+  return true;
+}
+
+/** Main refused to save the request's connection; false when the error is another operation's. Its token ends. */
+export function saveRefused(requestId: number): boolean {
+  const saving = pairing.saving;
+  if (requestId !== pairing.saveRequest || !saving) return false;
+  void revokeConnection(saving.origin, saving.token);
+  end('error', DEVICE_STORAGE);
+  return true;
+}
+
+/** Where focus goes when the focused control hides: in the request's block, or on the first run its path; else null. */
+export function connectFocus(): HTMLElement | null {
+  if (state.pairingActive) return pairing.phase === 'waiting' ? checkButton : block;
+  if (state.connection) return null;
+  return tokenFormShown() ? tokenInput : connectButton;
+}
+
+function waitingLine(): string {
+  const minutes = Math.floor((pairing.deadline - Date.now()) / 60000);
+  return `Waiting for approval · expires in ${minutes >= 1 ? `${minutes} min` : 'less than a minute'}`;
+}
+
+export function renderConnect(): void {
+  const { phase } = pairing;
+  const active = state.pairingActive;
+  const connected = Boolean(state.connection);
+  // The request's block takes the place of the first-run copy (connection.ts hides the account's actions).
+  block.hidden = !active;
+  element('first-run-title').hidden = active;
+  element('first-run-text').hidden = active;
+  if (active) {
+    const host = pairing.origin === PRODUCTION_ORIGIN ? 'console.assetlib.dev' : '127.0.0.1:3100';
+    element('pairing-text').textContent = `Assetlib opened ${host} in your browser. Sign in, check that it shows this code, and approve.`;
+    element('pairing-resumed').hidden = !pairing.resumed;
+    const code = element('pairing-code');
+    code.textContent = formatUserCode(pairing.userCode);
+    code.setAttribute('aria-label', `Connection code ${[...pairing.userCode].join(' ')}`);
+    element('pairing-status').textContent = phase === 'saving' ? 'Saving connection…' : waitingLine();
+    openButton.hidden = phase !== 'waiting' || !pairing.writeKey;
+    checkButton.hidden = phase !== 'waiting';
+    cancelButton.hidden = phase !== 'waiting';
+  }
+  note.hidden = !pairing.note;
+  note.textContent = pairing.note;
+  note.className = pairing.noteKind;
+  // The browser path: Connect to Assetlib, the first run's primary (Try again after a console that couldn't be reached),
+  // and Use a token instead until the token form shows. With a connection, only after a Connect that couldn't reach
+  // the console; Switch workspace starts the others.
+  const unreachable = phase === 'ended' && pairing.ended === 'unreachable';
+  element('browser-path').hidden = active || (connected && !unreachable);
+  connectButton.className = connected ? 'secondary wide' : 'primary wide';
+  setBusy(connectButton, phase === 'starting' ? 'Connecting…' : unreachable ? 'Try again' : 'Connect to Assetlib', phase === 'starting' && !connected);
+  setUnavailable(connectButton, phase === 'starting' || state.ops.connecting);
+  useTokenButton.hidden = tokenFormShown();
+  switchButton.hidden = state.connection?.method !== 'browser';
+  setBusy(switchButton, phase === 'starting' ? 'Connecting…' : 'Switch workspace', phase === 'starting');
+  setUnavailable(switchButton, phase === 'starting' || state.ops.connecting);
+}
+
+export function initConnect(): void {
+  // Again after an end: the same workspace is offered first.
+  connectButton.addEventListener('click', () => { void startConnect(pairing.phase === 'ended' ? pairing.hint : undefined); });
+  useTokenButton.addEventListener('click', chooseToken);
+  switchButton.addEventListener('click', () => { void startConnect(); });
+  openButton.addEventListener('click', openPage);
+  checkButton.addEventListener('click', checkNow);
+  cancelButton.addEventListener('click', cancel);
+  // Back from the browser: Chromium runs a hidden page's timers once a minute at most, so the return itself polls.
+  window.addEventListener('focus', pollIfDue);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollIfDue(); });
+}

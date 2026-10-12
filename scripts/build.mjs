@@ -10,8 +10,9 @@ import { fileURLToPath } from 'node:url';
 const args = new Set(process.argv.slice(2));
 const watching = args.has('--watch');
 const dev = watching || args.has('--dev');
-// The release budget for dist/ui.html, embedded font included: 160 KB, in decimal units.
-const MAX_UI_BYTES = 160_000;
+// The release budget for dist/ui.html, embedded font included: 176 KB, in decimal units (raised from 160 KB for one-click
+// Connect on October 11, 2026).
+const MAX_UI_BYTES = 176_000;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const templateUrl = new URL('../src/ui.html', import.meta.url);
 const marker = '<!-- ASSETLIB_SCRIPT -->';

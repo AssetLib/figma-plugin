@@ -2,6 +2,7 @@
 // linked to and Sync to draft, or why it can't sync (a ratio that's off, a placement that's gone, a Cmd+D copy, another
 // app's link) with the one action that helps. Opened from a layer's Sync to Assetlib button, the plugin focuses it.
 import { consoleLink } from '../shared/index.js';
+import { startConnect } from './connect.js';
 import { element, flushRender, setBusy, setUnavailable } from './dom.js';
 import { linkedArt } from './insert.js';
 import { beginSync, matchRatio, prefillSend, sendElsewhere, sendRatioPlacement, syncAvailable, syncBar } from './send.js';
@@ -13,6 +14,7 @@ const bar = element('selection-bar');
 const syncButton = element<HTMLButtonElement>('sync');
 const matchButton = element<HTMLButtonElement>('sync-match');
 const sendButton = element<HTMLButtonElement>('sync-send');
+const switchButton = element<HTMLButtonElement>('sync-switch');
 const consoleAnchor = element<HTMLAnchorElement>('sync-console');
 const thumb = element<HTMLImageElement>('sync-thumb');
 
@@ -31,7 +33,8 @@ export function renderSyncBar(): void {
   const title = !shown ? '' : shown.kind === 'linked' || shown.kind === 'removed' ? `Linked to ${shown.key}` : shown.kind === 'copy' ? 'Copy of a linked frame'
     : 'Linked to another workspace';
   const meta = !shown ? '' : shown.kind === 'linked' ? ratio ?? shown.meta : shown.kind === 'copy' ? `Copies aren’t linked. Send it to replace ${shown.key}’s draft.`
-    : shown.kind === 'removed' ? `This ${shown.cell ? 'cell' : 'placement'} no longer exists in this app.` : 'Connect to that workspace to sync it.';
+    : shown.kind === 'removed' ? `This ${shown.cell ? 'cell' : 'placement'} no longer exists in this app.`
+      : shown.hint ? 'Switch to that workspace to sync it.' : 'Connect to that workspace to sync it.';
   element('sync-title').textContent = title;
   element('sync-meta').textContent = meta;
   element('sync-meta').hidden = !meta;
@@ -53,6 +56,8 @@ export function renderSyncBar(): void {
   setUnavailable(matchButton, actionsBlocked());
   sendButton.hidden = shown?.kind !== 'copy' && shown?.kind !== 'removed';
   sendButton.textContent = shown?.kind === 'copy' ? 'Send…' : 'Send elsewhere…';
+  // Another app on this console: Connect, offering that workspace first.
+  switchButton.hidden = !(shown?.kind === 'other' && shown.hint);
   consoleAnchor.hidden = !(linked?.assetId && state.connection) || Boolean(ratio);
   if (linked?.assetId && state.connection) consoleAnchor.href = consoleLink(state.connection, 'images', linked.assetId);
   if (focusOnLaunch && state.connectionGeneration !== null) {
@@ -60,7 +65,7 @@ export function renderSyncBar(): void {
     if (!state.connection) focusOnLaunch = false;
     else if (state.selectionGeneration === state.connectionGeneration) {
       focusOnLaunch = false;
-      if (shown) ([syncButton, sendButton, matchButton].find(button => !button.hidden) ?? bar).focus();
+      if (shown) ([syncButton, sendButton, matchButton, switchButton].find(button => !button.hidden) ?? bar).focus();
     }
   }
 }
@@ -79,6 +84,7 @@ export function initSyncBar(actions: { showSend: () => void }): void {
   showSend = actions.showSend;
   syncButton.addEventListener('click', () => beginSync());
   matchButton.addEventListener('click', () => { if (shown?.kind === 'linked' && shown.placement && !actionsBlocked()) matchRatio(shown.placement); });
+  switchButton.addEventListener('click', () => { if (shown?.kind === 'other' && shown.hint) void startConnect(shown.hint); });
   // A copy is sent to its link's placement and cell, without rebind; a removed target to a placement the person chooses.
   sendButton.addEventListener('click', () => {
     const current = shown;

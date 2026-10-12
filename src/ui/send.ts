@@ -3,9 +3,9 @@
 import {
   DRAFT_MAY_HAVE_ARRIVED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
   consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel,
-  sizeLabel, validateBinding,
+  reconnectText, refusalCode, sizeLabel, tokenRefused, validUuid, validateBinding,
 } from '../shared/index.js';
-import type { Appearance, CellBinding, Connection, DraftResult, InsertLink, Placement } from '../shared/index.js';
+import type { Appearance, CellBinding, Connection, DraftResult, InsertLink, PairingHint, Placement } from '../shared/index.js';
 import type { MainMessage, RememberedTarget } from '../shared/protocol.js';
 import {
   announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, sentence, setBusy, setStatus, setUnavailable, showError,
@@ -39,6 +39,8 @@ let afterFile: { rebind: boolean; nodeId: string } | null = null;
 let mismatch: { url: string; slug: string; name: string } | null = null;
 // Leaves the Send tab in front (main.ts), for the file link a Sync from the Insert tab asks for.
 let showSend: () => void = () => {};
+// Connect again (connect.ts, through main.ts): a browser connection the console no longer accepts is made again.
+let reconnect: () => void = () => {};
 let selectionIdentity = '';
 // The connection generation the placement picker was filled for; a choice never carries over to another connection.
 let pickerGeneration: number | null = null;
@@ -175,7 +177,8 @@ export type SyncBar =
     cell: Pick<CellBinding, 'state' | 'appearance' | 'arm'> }
   | { kind: 'removed'; key: string; cell: boolean }
   | { kind: 'copy'; key: string; link: InsertLink }
-  | { kind: 'other' };
+  // `hint`: that app on this console, by UUID, which Switch workspace offers first; null for another console's.
+  | { kind: 'other'; hint: PairingHint | null };
 
 /** The cell as the bar names it: the axes the placement declares, or, before the placements load, those the target sets. */
 function cellLabel(placement: Placement | null, cell: Pick<RememberedTarget, 'state' | 'appearance' | 'arm'>): string[] {
@@ -207,7 +210,11 @@ export function syncBar(): SyncBar | null {
       assetId: sameCell ? link.assetId : null, cell: { state: remembered.state, appearance: remembered.appearance, arm: remembered.arm } };
   }
   if (link?.kind === 'copy') return { kind: 'copy', key: link.placementKey, link };
-  if (link?.kind === 'other') return { kind: 'other' };
+  if (link?.kind === 'other') {
+    const { origin, orgId, appId } = link;
+    const hint = origin === state.connection.origin && validUuid(orgId) && validUuid(appId) ? { origin, orgId, appId } : null;
+    return { kind: 'other', hint };
+  }
   return null;
 }
 /** Sync can run now: the bar's button is available. */
@@ -243,7 +250,7 @@ export function sendElsewhere(): void {
  * settings say it under the token field (`inSettings`).
  */
 function sendProblemShown(inSettings: boolean): ReadProblem | null {
-  return state.connection && state.testFailure && !inSettings ? readProblem(state.testFailure) : null;
+  return state.connection && state.testFailure && !inSettings ? readProblem(state.testFailure, state.connection.method) : null;
 }
 let problemShown = false;
 
@@ -253,7 +260,9 @@ export function renderSend(inSettings: boolean): void {
   sendProblem.hidden = !problem;
   element('send-problem-text').textContent = problem?.text ?? '';
   element('send-retry').hidden = problem?.action !== 'retry';
-  element('send-token').hidden = problem?.action !== 'token';
+  // A browser connection is made again (Connect again), never with a token.
+  element('send-token').hidden = problem?.action !== 'token' && problem?.action !== 'reconnect';
+  element('send-token').textContent = problem?.action === 'reconnect' ? 'Connect again' : 'Update token';
   setUnavailable(element('send-retry'), actionsBlocked());
   const { selection } = state;
   const node = selection.node;
@@ -426,6 +435,12 @@ export async function sendExport(message: Extract<MainMessage, { type: 'exported
     if (result.kind === 'aborted') { endSend(); setStatus(''); return; }
     if (result.kind === 'timeout') throw new Error(mapTimeoutError(result.timeoutSeconds, 'send'));
     if (result.kind === 'network') throw new Error(`${mapNetworkError(operation.connection.origin)} ${DRAFT_MAY_HAVE_ARRIVED}`);
+    if (operation.connection.method === 'browser' && result.kind === 'http' && tokenRefused(result.status, result.payload)) {
+      // The console refused the token, so the draft wasn't saved: the browser connection is made again.
+      endSend(); setStatus('');
+      showError(reconnectText(refusalCode(result.payload)), { label: 'Connect again', run: reconnect });
+      return;
+    }
     if (result.status !== 201 && result.status !== 409) throw new Error(mapHttpError(result.status, result.payload));
     let draft: DraftResult;
     try { draft = parseDraftResponse(result.payload); }
@@ -508,10 +523,13 @@ export function failSend(requestId: number, message: string): boolean {
   return true;
 }
 
-export function initSend(actions: { retry: () => void; updateToken: () => void; showSend: () => void }): void {
+export function initSend(actions: { retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void }): void {
   showSend = actions.showSend;
+  reconnect = actions.reconnect;
   element('send-retry').addEventListener('click', () => { if (!actionsBlocked()) actions.retry(); });
-  element('send-token').addEventListener('click', actions.updateToken);
+  element('send-token').addEventListener('click', () => {
+    if (sendProblemShown(false)?.action === 'reconnect') actions.reconnect(); else actions.updateToken();
+  });
   element<HTMLFormElement>('file-form').addEventListener('submit', event => {
     event.preventDefault();
     mismatch = null;

@@ -1,4 +1,4 @@
-import { MISSING_INSERT, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, defaultPreferences } from '../shared/index.js';
+import { MISSING_INSERT, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, defaultPreferences, reconnectText } from '../shared/index.js';
 import type { CanvasTarget, Connection, Placement, Preferences } from '../shared/index.js';
 import type { SelectionState } from '../shared/protocol.js';
 
@@ -9,19 +9,25 @@ import type { SelectionState } from '../shared/protocol.js';
  */
 export type Ops = { connecting: boolean; sending: boolean; syncing: boolean; inserting: boolean; loadingList: 'placements' | 'images' | null };
 
-/** Why a read failed, for the state shown in place of the Insert list. `invalid` is an answer that could not be parsed. */
-export type ReadFailure = { kind: 'http' | 'timeout' | 'network' | 'invalid'; status: number; text: string };
+/**
+ * Why a read failed, for the state shown in place of the Insert list. `invalid` is an answer that could not be parsed.
+ * `code`: why the console refused a Figma connection's token (refusalCode).
+ */
+export type ReadFailure = { kind: 'http' | 'timeout' | 'network' | 'invalid'; status: number; text: string; code?: string };
 
-/** What a view says about a failed read, in place of what it could not load, and the one action that helps. */
-export type ReadProblem = { text: string; action: 'retry' | 'token' | 'send' };
+/**
+ * What a view says about a failed read, in place of what it could not load, and the one action that helps. A browser
+ * connection the console refused offers Connect again (`reconnect`), never the token form.
+ */
+export type ReadProblem = { text: string; action: 'retry' | 'token' | 'send' | 'reconnect' };
 /** The console refused the token itself (a 401, or a revoked token's 403), not only what it may read. */
 export function refusedToken(failure: ReadFailure): boolean {
   return failure.kind === 'http' && (failure.status === 401 || failure.text === TOKEN_REFUSED);
 }
-export function readProblem(failure: ReadFailure | null): ReadProblem {
+export function readProblem(failure: ReadFailure | null, method?: Connection['method']): ReadProblem {
   if (!failure) return { text: 'Assetlib couldn’t load this list. Try again.', action: 'retry' };
-  if (refusedToken(failure)) return { text: TOKEN_NO_LONGER_ACCEPTED, action: 'token' };
-  if (failure.kind === 'http' && failure.status === 403) return { text: failure.text, action: 'token' };
+  if (refusedToken(failure)) return method === 'browser' ? { text: reconnectText(failure.code), action: 'reconnect' } : { text: TOKEN_NO_LONGER_ACCEPTED, action: 'token' };
+  if (failure.kind === 'http' && failure.status === 403) return { text: failure.text, action: method === 'browser' ? 'reconnect' : 'token' };
   if (failure.text === MISSING_INSERT) return { text: failure.text, action: 'send' };
   return { text: failure.text, action: 'retry' };
 }
@@ -50,6 +56,9 @@ export const state = {
   // Replaces the environment note while previews are paused.
   previewNote: '',
   ops: { connecting: false, sending: false, syncing: false, inserting: false, loadingList: null } as Ops,
+  // A one-click Connect request waits for approval, or its connection is being saved: its block shows in the
+  // connection settings (connect.ts), in place of the first-run copy or the account's actions.
+  pairingActive: false,
   sequence: 0,
 };
 

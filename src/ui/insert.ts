@@ -1,14 +1,15 @@
 // The Insert tab: placements by screen and the image library, the cell pickers, Insert, and dragging rows and tiles onto the canvas.
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_REFUSED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, consoleLink,
-  environmentLabel, fillRendition, findCell, insertRendition, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
-  placementMeta, pngSize, renditionPath, tokenRefused,
+  environmentLabel, fillRendition, findCell, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
+  placementMeta, pngSize, reconnectText, refusalCode, renditionPath, tokenRefused,
 } from '../shared/index.js';
 import type {
   Appearance, ArtworkResponse, CanvasTarget, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
 } from '../shared/index.js';
 import type { InsertDestination, MainMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
+import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
 import {
   announceError, arrowKeys, clearError, element, errorText, flushRender, inField, keyOf, post, postDrop, preferFocus, rovingStops, scheduleRender, sentence,
@@ -55,7 +56,7 @@ const DOWNLOAD_KEEP_MS = 60000;
  * token field, so the list steps aside while they are open.
  */
 type ListState = {
-  title?: string; text: string; action: 'clear' | 'retry' | 'token' | 'send' | 'link' | null; link?: { text: string; href: string }; connection?: boolean;
+  title?: string; text: string; action: 'clear' | 'retry' | 'token' | 'reconnect' | 'send' | 'link' | null; link?: { text: string; href: string }; connection?: boolean;
 };
 
 // Everything here resets on every connection message.
@@ -404,8 +405,10 @@ function renderEmpty(current: ListState | null): void {
   element('insert-empty-text').textContent = empty?.text ?? '';
   element('insert-clear').hidden = empty?.action !== 'clear';
   element('insert-retry').hidden = empty?.action !== 'retry';
-  // With the settings open, the token field is on screen already.
-  element('insert-token').hidden = empty?.action !== 'token' || element<HTMLDetailsElement>('settings').open;
+  // With the settings open, the token field is on screen already. A browser connection is made again, never with a token.
+  const tokenAction = element('insert-token');
+  tokenAction.hidden = empty?.action !== 'reconnect' && (empty?.action !== 'token' || element<HTMLDetailsElement>('settings').open);
+  tokenAction.textContent = empty?.action === 'reconnect' ? 'Connect again' : 'Update token';
   element('insert-go-send').hidden = empty?.action !== 'send';
   const link = element<HTMLAnchorElement>('insert-empty-link');
   link.hidden = empty?.action !== 'link' || !empty.link;
@@ -589,7 +592,7 @@ export function enterInsert(): void {
  * person is in a field. A refused token the open settings already say (needsAttention) is left to them.
  */
 function showListError(failure: ReadFailure): void {
-  listError = { ...readProblem(failure), connection: refusedToken(failure) };
+  listError = { ...readProblem(failure, state.connection?.method), connection: refusedToken(failure) };
   presentListError();
 }
 function presentListError(): void {
@@ -602,14 +605,15 @@ function presentListError(): void {
   emptyState.scrollIntoView({ block: 'nearest' });
 }
 function readFailureOf(result: HttpResult, text: string): ReadFailure {
-  return { kind: result.kind === 'ok' || result.kind === 'aborted' ? 'http' : result.kind, status: result.status, text };
+  const code = refusalCode(result.payload);
+  return { kind: result.kind === 'ok' || result.kind === 'aborted' ? 'http' : result.kind, status: result.status, text, ...(code ? { code } : {}) };
 }
 /**
  * The connection test failed, so the list says why and waits for its action. `present`, when the Insert tab is in
  * front: the list announces it and takes focus, as any failed list does (unless the open settings say it).
  */
 export function listUnavailable(failure: ReadFailure | null, present: boolean): void {
-  listError = { ...readProblem(failure), connection: true };
+  listError = { ...readProblem(failure, state.connection?.method), connection: true };
   if (present) presentListError(); else scheduleRender(true);
 }
 function startList(kind: 'placements' | 'images', query = ''): number {
@@ -721,7 +725,11 @@ async function loadImages(reset: boolean): Promise<void> {
   } catch (error) {
     if (generation !== state.connectionGeneration || ticket !== listTicket) return;
     // A failed Load more keeps the pages already shown, and says so in the error line.
-    if (!reset) { images = previous; showError(errorText(error)); }
+    if (!reset) {
+      images = previous;
+      // A browser connection the console refused offers Connect again there too.
+      showInsertError(failure && refusedToken(failure) && config.method === 'browser' ? reconnectText(failure.code) : errorText(error));
+    }
     else showListError(failure ?? { kind: 'invalid', status: 200, text: errorText(error) });
   } finally { endList(ticket, generation); }
 }
@@ -738,7 +746,10 @@ async function fetchPng(config: Connection, generation: number, asset: LibraryAs
   const result = await send(config, { path: renditionPath(asset.id, rendition.sha256), bytes: rendition.bytes });
   if (generation !== state.connectionGeneration || result.kind === 'aborted') return null;
   if (result.status !== 200) {
-    if (tokenRefused(result.status, result.payload)) needsAttention();
+    const refused = tokenRefused(result.status, result.payload);
+    if (refused) needsAttention();
+    // A browser connection the console refused is made again (showInsertError offers Connect again).
+    if (refused && config.method === 'browser') throw new Error(reconnectText(refusalCode(result.payload)));
     // This console listed the image, so a 404 means the image went away, not that the console lacks Insert.
     throw new Error(result.kind === 'http' && result.status === 404 ? GONE_IMAGE : readFailure(result, config, 'insert'));
   }
@@ -815,9 +826,13 @@ async function beginInsert(asNew = false): Promise<void> {
     scheduleRender();
   }
 }
-/** An insert or a drop failed; an image removed since the list loaded offers Refresh, which brings the list up to date. */
+/**
+ * An insert or a drop failed; an image removed since the list loaded offers Refresh, which brings the list up to date,
+ * and a browser connection the console no longer accepts offers Connect again.
+ */
 function showInsertError(text: string): void {
-  showError(text, text === GONE_IMAGE ? { label: 'Refresh', run: refreshList } : undefined);
+  showError(text, text === GONE_IMAGE ? { label: 'Refresh', run: refreshList }
+    : isReconnectText(text) ? { label: 'Connect again', run: () => { void startConnect(hintOfCurrent()); } } : undefined);
 }
 
 // ---- Drag to canvas ----
@@ -1124,7 +1139,7 @@ export function initInsert(goToSend: () => void): void {
   searchClear.addEventListener('click', () => { clearSearch(); searchInput.focus(); });
   element('insert-refresh').addEventListener('click', refreshList);
   element('insert-retry').addEventListener('click', refreshList);
-  element('insert-token').addEventListener('click', openSettings);
+  element('insert-token').addEventListener('click', () => { if (listError?.action === 'reconnect') void startConnect(hintOfCurrent()); else openSettings(); });
   element('insert-go-send').addEventListener('click', goToSend);
   element('images-more').addEventListener('click', () => { void loadImages(false); });
   for (const picker of [insertStatePicker, insertAppearancePicker, insertArmPicker]) {
