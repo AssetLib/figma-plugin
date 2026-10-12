@@ -440,7 +440,7 @@ export function renderList(): void {
       if (loading('placements')) listChildren.push(...skeletons('placements'));
       else empty = listError;
     } else if (!current.placements.length) {
-      empty = { title: 'No placements yet', text: 'Placements come from your app’s code. When an engineer adds one and runs assetlib sync, it appears here.',
+      empty = { title: 'No placements yet', text: 'Placements come from your app’s code. When an engineer adds one and runs assetlib sync, or someone requests one in the console, it appears here.',
         action: 'link', link: { text: 'Read the guide', href: GUIDE_URL } };
     } else {
       const matches = current.placements.filter(item => !lower || item.key.toLowerCase().includes(lower) || item.screen.toLowerCase().includes(lower));
