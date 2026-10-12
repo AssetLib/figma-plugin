@@ -258,6 +258,20 @@ function adopt(): void {
   scheduleRender();
 }
 
+/**
+ * The request's connection is this window's: its block goes, and focus in it moves to the account chip (shown once the
+ * shell renders), as after a token's Connect; the passing connection test then closes the settings.
+ */
+function connected(): void {
+  const inBlock = block.contains(document.activeElement);
+  reset();
+  pairing.note = '';
+  scheduleRender();
+  if (!inBlock) return;
+  flushRender();
+  element('settings-summary').focus({ preventScroll: true });
+}
+
 /** Back to no request: its record goes, and so does the write key. */
 function reset(): void {
   stopTimers();
@@ -308,25 +322,16 @@ function openPage(): void {
 export function applyPairing(message: Extract<MainMessage, { type: 'connection' }>): void {
   hints = message.hints ?? [];
   const saving = pairing.saving;
-  if (pairing.phase === 'saving' && saving && message.connection?.token === saving.token) {
-    // Saved (connection.ts ends a browser token it replaced). The connection test then says Connected.
-    reset();
-    pairing.note = '';
-    return;
-  }
+  // Saved (connection.ts ends a browser token it replaced). The connection test then says Connected.
+  if (pairing.phase === 'saving' && saving && message.connection?.token === saving.token) { connected(); return; }
   if (pairing.phase === 'idle' && message.pairing) resume(message.pairing);
 }
 
 /** Main's answer to adopt-connection: another window's connection is this one's now, or the request was used elsewhere. */
 export function adopted(message: Extract<MainMessage, { type: 'adopted' }>): void {
   if (message.requestId !== pairing.adoptRequest) return;
-  if (message.adopted) {
-    // The connection arrived with main's connection message; the other window said Connected.
-    reset();
-    pairing.note = '';
-    scheduleRender();
-    return;
-  }
+  // The connection arrived with main's connection message; the other window said Connected.
+  if (message.adopted) { connected(); return; }
   // Nobody on this device has it: the console ends the token it issued.
   cancelOnConsole(pairing.origin, pairing.readKey);
   end('reused');

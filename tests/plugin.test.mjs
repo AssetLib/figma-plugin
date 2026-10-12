@@ -4779,6 +4779,7 @@ test('a request approved in the browser saves a browser connection, without aski
   assert.equal(app.requests.at(-1).url, `${connection.origin}/api/apps/${orgUuid}/${appUuid}/placements`);
   assert.equal(app.requests.at(-1).authorization, `Bearer ${token}`);
   assert.deepEqual([app.element('app').getAttribute('data-view'), app.element('settings').open, app.element('pairing').hidden], ['shell', false, true]);
+  assert.equal(app.activeElement(), app.element('settings-summary'), 'focus left the request’s block for the account chip');
   assert.equal(app.element('token').value, '', 'an issued token is never in a field');
   assert.ok(!JSON.stringify([...app.elements.values()].map(textOf)).includes(token), 'nor shown');
   assert.deepEqual(pollDelays(app), [], 'no poll left');

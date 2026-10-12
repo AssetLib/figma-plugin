@@ -214,11 +214,27 @@ function installFakes(config) {
     window.setTimeout = (callback, delay, ...rest) => original(callback, delay >= 20000 ? 300 : delay, ...rest);
   }
   const log = [];
-  const delays = { placements: 10, artwork: 10, assets: 10, rendition: 10, drafts: 10, token: 10, ...config.delays };
+  const delays = { placements: 10, artwork: 10, assets: 10, rendition: 10, drafts: 10, token: 10, start: 10, claim: 10, cancel: 10, current: 10, ...config.delays };
   const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   function respond(route, path) {
-    // config.statuses[route] answers that route with an error status instead.
-    if (config.statuses?.[route]) return json(config.statuses[route], { error: `HTTP ${config.statuses[route]} from the fake console.` });
+    // config.statuses[route] answers that route with an error status instead (config.codes[route] adds a refused Figma
+    // connection's code).
+    if (config.statuses?.[route]) {
+      return json(config.statuses[route], { error: `HTTP ${config.statuses[route]} from the fake console.`, ...(config.codes?.[route] ? { code: config.codes[route] } : {}) });
+    }
+    // One-click Connect: a request, claimed as config.pairingStatus says (__harness.approve() approves it).
+    if (route === 'start') {
+      return json(201, { readKey: `alr_${'r'.repeat(43)}`, writeKey: `alw_${'w'.repeat(43)}`, userCode: 'BCDF-GHJK', expiresAt: new Date(Date.now() + 600000).toISOString(),
+        expiresIn: 600, interval: 2 });
+    }
+    if (route === 'claim') {
+      const status = config.pairingStatus ?? 'pending';
+      if (status === 'pending') return json(200, { status: 'pending', interval: 2 });
+      if (status !== 'approved') return json(410, { status });
+      config.pairingStatus = 'claimed';
+      return json(200, { status: 'connected', connection: { ...config.claimed, token: `alk_${'f'.repeat(43)}` } });
+    }
+    if (route === 'cancel' || route === 'current') return new Response(null, { status: 204 });
     // GET /api/token: the token's own organization and app, as the console answers it.
     if (route === 'token') return json(200, config.identity);
     if (route === 'placements') return json(200, { placements: placements.map(({ cells, ...placement }) => placement) });
@@ -247,8 +263,10 @@ function installFakes(config) {
   window.fetch = (input, init = {}) => new Promise((resolve, reject) => {
     const url = String(input);
     const path = url.replace(/^https?:\/\/[^/]+\/api\/apps\/[^/]+\/[^/]+\//, '');
-    const route = /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork' : path === 'placements' ? 'placements'
-      : /^assets(\?|$)/.test(path) ? 'assets' : /^assets\/[^/]+\/renditions\/[^/]+$/.test(path) ? 'rendition' : path === 'drafts' ? 'drafts' : 'unknown';
+    const pairing = /^https?:\/\/[^/]+\/api\/plugin-connections(?:\/(claim|cancel|current))?$/.exec(url);
+    const route = pairing ? pairing[1] ?? 'start' : /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork'
+      : path === 'placements' ? 'placements' : /^assets(\?|$)/.test(path) ? 'assets' : /^assets\/[^/]+\/renditions\/[^/]+$/.test(path) ? 'rendition'
+        : path === 'drafts' ? 'drafts' : 'unknown';
     const entry = { route, url, started: performance.now(), done: false, aborted: false };
     log.push(entry);
     const { signal } = init;
@@ -282,6 +300,10 @@ function installFakes(config) {
   // Each pluginDrop the UI posted (Figma's, not a plugin message), and the drop each insert names (null for none).
   const drops = [];
   const insertDrops = [];
+  // The pages main opened (one-click Connect's connect page), and the request main keeps (config.pairing resumes one).
+  const opened = [];
+  const connection = () => ({ type: 'connection', connectionGeneration: generation, connection: config.connection, savedFileUrl: '', preferences: config.preferences,
+    pairing: config.pairing ?? null, hints: [] });
   function handle(message) {
     received.push(message.type);
     switch (message.type) {
@@ -290,7 +312,7 @@ function installFakes(config) {
         if (config.command) reply({ type: 'launch', command: config.command });
         // delays.connection: main's client storage reads take that long before the connection message.
         setTimeout(() => {
-          reply({ type: 'connection', connectionGeneration: generation, connection: config.connection, savedFileUrl: '', preferences: config.preferences });
+          reply(connection());
           reply(selection());
         }, delays.connection ?? 0);
         break;
@@ -303,7 +325,8 @@ function installFakes(config) {
         }
         generation += 1;
         config.connection = message.connection;
-        reply({ type: 'connection', connectionGeneration: generation, connection: message.connection, savedFileUrl: '', preferences: config.preferences });
+        reply(connection());
+        if (message.connection.pairing && config.pairing?.userCode === message.connection.pairing) config.pairing = null;
         reply(selection());
         break;
       case 'save-file-url':
@@ -331,9 +354,14 @@ function installFakes(config) {
       case 'clear-connection':
         generation += 1;
         config.connection = null;
-        reply({ type: 'connection', connectionGeneration: generation, connection: null, savedFileUrl: '', preferences: config.preferences });
+        reply(connection());
         reply(selection());
         break;
+      // As code.ts does: the connect page opens in the browser, and the request's record is kept and forgotten.
+      case 'open-connect-page': opened.push(`https://console.assetlib.dev/connect/figma#${message.writeKey}`); break;
+      case 'save-pairing': config.pairing = message.pairing; break;
+      case 'clear-pairing': if (config.pairing?.userCode === message.userCode) config.pairing = null; break;
+      case 'adopt-connection': reply({ type: 'adopted', requestId: message.requestId, adopted: false }); break;
       case 'insert': {
         targets.push(message.target);
         insertDrops.push(message.drop ?? null);
@@ -365,7 +393,8 @@ function installFakes(config) {
   } };
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   // Tests may change `delays` mid-test; each request reads its route's delay when it starts.
-  window.__harness = { log, received, notices, uuid, delays, targets, drops, insertDrops, resizes, saved, inserted: () => frames };
+  window.__harness = { log, received, notices, uuid, delays, targets, drops, insertDrops, resizes, saved, opened, inserted: () => frames,
+    approve: () => { config.pairingStatus = 'approved'; } };
 }
 
 // Tokens as the console mints them: alk_ and 43 base64url characters. Fake, for these pages only.
@@ -376,7 +405,13 @@ const DEFAULTS = {
   preferences: { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1 },
   selection: { node: null, reason: 'Select a frame or layer to send.', fileKey: 'abc123', remembered: null },
   delays: {},
+  // What the console issues when one-click Connect is approved: the workspace, the app, and who approved it.
+  claimed: { orgId: '00000000-0000-4000-8000-0000000000a1', appId: '00000000-0000-4000-8000-0000000000b2', workspaceName: 'Sample workspace', appName: 'Sample app',
+    connectedAs: 'dana@example.com' },
 };
+// A connection one-click Connect saved.
+const browserConnection = { origin: 'https://console.assetlib.dev', orgId: DEFAULTS.claimed.orgId, appId: DEFAULTS.claimed.appId, token: fakeToken('figma'),
+  workspaceName: 'Sample workspace', appName: 'Sample app', method: 'browser', connectedAs: 'dana@example.com', pairing: 'BCDFGHJK' };
 const theme = JSON.parse(await readFile(join(root, 'tests/fixtures/figma-theme.json'), 'utf8'));
 
 let browser;
@@ -826,6 +861,10 @@ test('the first run connects with only a token, and an older console asks for th
     assert.deepEqual(await page.evaluate(`['.topbar', '#settings-summary', '#panel-insert', '#insert-bar'].map(s => getComputedStyle(document.querySelector(s)).display)`),
       ['none', 'none', 'none', 'none'], 'no tabs, chip, list, or footer');
     assert.equal(await page.evaluate(`document.querySelector('.first-run h1').textContent`), 'Your app’s images, in Figma');
+    // Connect to Assetlib leads; the token form is the secondary path, shown once chosen.
+    assert.equal(await page.evaluate(`document.getElementById('connection-form').checkVisibility()`), false);
+    await page.click('#use-token');
+    assert.equal(await page.focused(), 'token');
     assert.equal(await page.evaluate(shown('id-fields')), false, 'a token is all it asks for');
     await page.click('#token');
     await page.type('not-a-token');
@@ -844,18 +883,20 @@ test('the first run connects with only a token, and an older console asks for th
     assert.equal((await page.evaluate(textOf('account-name'))).replace(/\u00a0/g, ' '), 'Sample workspace · Sample app');
     await page.waitFor(`${rows} === 7`, { message: 'the list' });
 
-    // Disconnect: back to the first run, and the token field has focus.
+    // Disconnect: back to the first run, and Connect to Assetlib has focus.
     await page.click('#settings-summary');
     await page.click('#disconnect');
     await page.waitFor(`document.getElementById('app').dataset.view === 'first-run'`, { message: 'the first run again' });
     await page.frames();
-    assert.equal(await page.focused(), 'token');
+    assert.equal(await page.focused(), 'connect-browser');
+    assert.equal(await page.evaluate(`document.getElementById('connection-form').checkVisibility()`), false, 'the token form waits to be chosen again');
     assert.equal(await page.evaluate(textOf('status')), 'Disconnected. The token still works elsewhere until an owner revokes it.');
   } finally { await page.close(); }
 
   for (const [description, options] of [['answers 404', { statuses: { token: 404 } }], ['sends no CORS headers', { failures: ['token'] }]]) {
     const older = await openUi({ connection: null, ...options });
     try {
+      await older.click('#use-token');
       await older.click('#token');
       await older.type(fakeToken('older'));
       await older.press('Enter');
@@ -876,6 +917,60 @@ test('the first run connects with only a token, and an older console asks for th
       assert.equal(await older.evaluate(`__harness.log.filter(entry => entry.route === 'token').length`), 1, `${description}: the IDs are used without asking again`);
     } finally { await older.close(); }
   }
+});
+
+test('one-click Connect shows the code to compare, cancels, connects without a typed token, and Disconnect ends it', async () => {
+  const page = await openUi({ connection: null });
+  try {
+    await page.waitFor(`document.getElementById('app').dataset.view === 'first-run'`, { message: 'the first-run screen' });
+    await page.click('#connect-browser');
+    await page.waitFor(shown('pairing'), { message: 'the request' });
+    assert.equal(await page.evaluate(textOf('pairing-code')), 'BCDF-GHJK');
+    assert.equal(await page.evaluate(`document.getElementById('pairing-code').getAttribute('aria-label')`), 'Connection code B C D F G H J K');
+    assert.equal(await page.focused(), 'pairing-check');
+    assert.deepEqual(await page.evaluate('__harness.opened'), [`https://console.assetlib.dev/connect/figma#alw_${'w'.repeat(43)}`]);
+    assert.deepEqual(await page.evaluate(`['first-run-title', 'origin-field', 'browser-path', 'connection-form'].map(id => document.getElementById(id).checkVisibility())`),
+      [false, false, false, false], 'the request takes the first run’s place');
+    for (const id of ['pairing-code', 'pairing-open', 'pairing-check', 'pairing-cancel']) assert.equal(await page.evaluate(inViewport(id)), true, id);
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('pairing-code')).fontSize`), '20px');
+    // Cancel tells the console and goes back, with focus on Connect to Assetlib.
+    await page.click('#pairing-cancel');
+    assert.equal(await page.focused(), 'connect-browser');
+    await page.waitFor(`__harness.log.filter(entry => entry.route === 'cancel').length === 1`, { message: 'the cancel' });
+    // Approved in the browser: the next poll connects, with no token typed and no GET /api/token.
+    await page.click('#connect-browser');
+    await page.waitFor(shown('pairing'));
+    await page.evaluate('__harness.approve()');
+    await page.waitFor(`/^Connected to /.test(document.getElementById('status').textContent)`, { timeout: 8000, message: 'the claim' });
+    await page.frames();
+    assert.equal(await page.evaluate(`document.getElementById('app').dataset.view`), 'shell');
+    assert.deepEqual(await page.evaluate('__harness.notices'), ['Connected to Sample workspace · Sample app as dana@example.com']);
+    assert.equal(await page.focused(), 'settings-summary', 'focus moves to the account chip, never the page');
+    assert.equal(await page.evaluate(`__harness.log.filter(entry => entry.route === 'token').length`), 0);
+    // The account panel names who approved it, with Switch workspace and no token form.
+    await page.click('#settings-summary');
+    assert.equal(await page.evaluate(textOf('token-prefix')), 'Sample workspace · Connected as dana@example.com');
+    assert.deepEqual(await page.evaluate(`['switch-workspace', 'update-token', 'connection-form', 'origin-field'].map(id => document.getElementById(id).checkVisibility())`),
+      [true, false, false, false]);
+    // Disconnect ends the token, then the first run.
+    await page.click('#disconnect');
+    await page.waitFor(`document.getElementById('app').dataset.view === 'first-run'`, { message: 'the first run again' });
+    assert.equal(await page.evaluate(`__harness.log.filter(entry => entry.route === 'current').length`), 1);
+    assert.equal(await page.evaluate(textOf('status')), 'Disconnected. This connection was ended.');
+  } finally { await page.close(); }
+
+  // A browser connection the console refuses says why where it happened, with Connect again, and never opens the token form.
+  const refused = await openUi({ connection: browserConnection, statuses: { placements: 403 }, codes: { placements: 'member' } });
+  try {
+    await refused.waitFor(shown('insert-empty'), { message: 'the refusal' });
+    assert.equal(await refused.evaluate(textOf('insert-empty-text')), 'Your role no longer allows sending drafts. Ask a workspace owner, then connect again.');
+    assert.equal(await refused.evaluate(textOf('insert-token')), 'Connect again');
+    assert.equal(await refused.evaluate(`document.getElementById('settings').open`), false);
+    await refused.click('#insert-token');
+    await refused.waitFor(shown('pairing'), { message: 'Connect again' });
+    assert.equal(await refused.evaluate(`document.getElementById('connection-form').checkVisibility()`), false);
+    assert.equal(await refused.evaluate(inViewport('pairing-check')), true);
+  } finally { await refused.close(); }
 });
 
 test('≥7 placement rows visible at 420×720 with a selection and cell pickers', async () => {
@@ -936,6 +1031,12 @@ test('no overflow at 320×480, 420×720, 640×900', async () => {
   const remembered = { fileKey: 'abc123', nodeId: tall.id, placementKey: 'home.banner', state: null, appearance: null, arm: null, insertedFrom: null };
   const scenarios = [
     ['the first run', { connection: null }, null],
+    ['the first run with the token form', { connection: null }, async page => { await page.click('#use-token'); }],
+    ['Connect waiting for approval', { connection: null }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing')); }],
+    ['a Connect that couldn’t reach the console', { connection: null, failures: ['start'] }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
+    ['Switch workspace waiting', { connection: browserConnection }, async page => {
+      await page.waitFor(`${rows} === 7`); await page.click('#settings-summary'); await page.click('#switch-workspace'); await page.waitFor(shown('pairing'));
+    }],
     ['the list with a selection and pickers', { placements: 30, declared: true }, async page => { await page.waitFor(`${rows} === 30`); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
     ['the image grid', { preferences: { browse: 'images' }, imageNames: longImageNames }, async page => { await page.waitFor(`${tiles} === 24`); await page.click('#image-grid .tile'); }],
     ['the open account panel', {}, async page => { await page.waitFor(`${rows} === 7`); await page.click('#settings-summary'); }],
@@ -1206,12 +1307,14 @@ test('a failed opening connection test is said once, with at most one primary on
     assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
     assert.equal(await page.evaluate(`document.getElementById('connect').className`), 'secondary wide');
   } finally { await page.close(); }
-  // The first run's Connect is its primary.
+  // The first run's Connect to Assetlib is its primary, and stays so with the token form chosen.
   const first = await openUi({ connection: null });
   try {
     await first.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
     await first.frames();
-    assert.deepEqual(await first.evaluate(inkPrimaries), ['connect']);
+    assert.deepEqual(await first.evaluate(inkPrimaries), ['connect-browser']);
+    await first.click('#use-token');
+    assert.deepEqual(await first.evaluate(inkPrimaries), ['connect-browser']);
   } finally { await first.close(); }
 });
 
@@ -1899,6 +2002,7 @@ test('a running action keeps its ink and a spinner, and the shell gives names an
     await first.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
     await first.frames();
     assert.ok(await first.evaluate(`document.querySelector('.first-run h1').getBoundingClientRect().top`) > 150, 'not stuck to the top');
+    await first.click('#use-token');
     await first.click('#token');
     await first.type('not-a-token');
     await first.press('Enter');
@@ -1918,10 +2022,25 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     await page.waitFor(`document.getElementById('placement').options.length > 1`, { message: 'the placements' });
     await page.evaluate(choose('placement', 'home.banner'));
   };
-  const submit = text => async page => { await page.click('#token'); await page.type(text); await page.press('Enter'); await page.waitFor(shown('connection-error')); };
+  const submit = text => async page => {
+    await page.click('#use-token'); await page.click('#token'); await page.type(text); await page.press('Enter'); await page.waitFor(shown('connection-error'));
+  };
+  const waiting = async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing')); };
   const askForLink = async page => { await pickBanner(page); await page.click('#send'); await page.waitFor(shown('file-fallback')); };
   const states = [
     ['first-run', { connection: null }],
+    ['first-run-token', { connection: null }, page => page.click('#use-token')],
+    // One-click Connect: waiting for approval, resumed after a reopen, and how a request that couldn't run ends.
+    ['connect-waiting', { connection: null }, waiting],
+    ['connect-resumed', { connection: null, pairing: { v: 1, origin: 'https://console.assetlib.dev', readKey: `alr_${'r'.repeat(43)}`, userCode: 'BCDFGHJK',
+      deadline: Date.now() + 420000, interval: 2 } }, page => page.waitFor(shown('pairing'))],
+    ['connect-older-console', { connection: null, statuses: { start: 404 } }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
+    ['connect-unreachable', { connection: null, failures: ['start'] }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
+    ['connect-declined', { connection: null, pairingStatus: 'denied' }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note'), { timeout: 5000 }); }],
+    ['account-panel-browser', { connection: browserConnection }, async page => { await page.waitFor(`${rows} > 0`); await page.click('#settings-summary'); }],
+    ['switch-waiting', { connection: browserConnection }, async page => { await page.waitFor(`${rows} > 0`); await page.click('#settings-summary'); await page.click('#switch-workspace'); await page.waitFor(shown('pairing')); }],
+    ['reconnect-list', { connection: browserConnection, statuses: { placements: 403 }, codes: { placements: 'member' } }, page => page.waitFor(shown('insert-empty'))],
+    ['reconnect-send', { connection: browserConnection, statuses: { placements: 403 }, codes: { placements: 'revoked' }, preferences: { tab: 'send' } }, page => page.waitFor(shown('send-problem'))],
     ['first-run-bad-format', { connection: null }, submit('not-a-token')],
     ['first-run-refused', { connection: null, statuses: { token: 401 } }, submit(fakeToken('revoked'))],
     ['first-run-scope', { connection: null, identity: { ...DEFAULTS.identity, scopes: ['declare'] } }, submit(fakeToken('declare'))],
@@ -2016,6 +2135,8 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
   ['narrow-send-problem', { statuses: { placements: 401 }, preferences: { tab: 'send' } }, page => page.waitFor(shown('send-problem'))],
   ['narrow-sync-long-key', longRebound, async page => { await page.click('#sync'); await page.waitFor(shown('result')); await page.click('#result summary'); }],
   ['narrow-older-console', { connection: null, statuses: { token: 404 } }, submit(fakeToken('older'))],
+  ['narrow-connect-waiting', { connection: null }, waiting],
+  ['narrow-switch-waiting', { connection: browserConnection }, async page => { await page.waitFor(`${rows} > 0`); await page.click('#settings-summary'); await page.click('#switch-workspace'); await page.waitFor(shown('pairing')); }],
   ['narrow-account', { connection: { ...DEFAULTS.connection, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' }, identity: { ...DEFAULTS.identity, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' } },
     async page => { await ready(page); await page.click('#settings-summary'); }],
   ['narrow-images', { preferences: { browse: 'images' }, imageNames: longImageNames }, page => page.waitFor(`${tiles} === 24`)]];
