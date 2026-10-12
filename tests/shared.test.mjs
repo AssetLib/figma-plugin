@@ -13,6 +13,7 @@ import {
   OLDER_CONSOLE, TOKEN_REFUSED, TOKEN_SCOPE, appearanceLabel, checkTokenFormat, connectionLabel, consoleLink, isConsoleLink, parseTokenIdentity,
   placementMeta, serverError, tokenUrl, classifyInsertTarget, fillRendition, insideInstance, isPlacementMarker,
   linkInApp, linkNamesFile, parseFileIdentity, parseFileLink, slugify, syncDescription, WINDOW_LIMITS, clampWindow, defaultWindowSize,
+  connectPageUrl, formatUserCode, isConnectPageUrl, isReconnectText, pairingUrl, parseClaim, parsePairingStart, reconnectText, refusalCode,
 } from '../.test-build/shared/index.js';
 import { UNREADABLE_MESSAGE, messageRequestId, parseUiMessage, toastText } from '../.test-build/shared/protocol.js';
 
@@ -94,6 +95,8 @@ test('manifest, origin picker, and connection rules name the same origins, with 
   assert.ok(picker, 'the origin picker exists');
   const options = [...picker[1].matchAll(/<option value="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(options, [PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN], 'new connections default to the current host and never offer the legacy one');
+  // Figma rejects IP-literal domains: 127.0.0.1 is only the development connect page, a navigation (links.ts).
+  for (const path of ['manifest.json', 'src/shared/connection.ts']) assert.doesNotMatch(await readText(path), /127\.0\.0\.1/, path);
 });
 
 test('placements parse stateless and stateful picker data without importing bindings', () => {
@@ -643,6 +646,13 @@ test('main reads only well-formed messages from the UI', () => {
     // Main clamps the size itself.
     { type: 'resize', width: 1, height: 99999.5 },
     { type: 'reset-size' },
+    // One-click Connect: main checks the origin, key, and record values itself.
+    { type: 'clear-connection', requestId: 7, revoked: true },
+    { type: 'clear-connection', requestId: 7, revoked: false },
+    { type: 'open-connect-page', requestId: 8, origin: 'https://evil.test', writeKey: 'x' },
+    { type: 'save-pairing', pairing: {} },
+    { type: 'clear-pairing', userCode: 'BCDFGHJK' },
+    { type: 'adopt-connection', requestId: 9, userCode: 'BCDFGHJK' },
   ];
   for (const message of good) assert.equal(parseUiMessage(message), message, message.type);
   const bad = [
@@ -662,6 +672,12 @@ test('main reads only well-formed messages from the UI', () => {
     { type: 'remember', requestId: 4, assetId: 5 }, { type: 'save-file-url', requestId: 2, url: 'https://www.figma.com/design/abc/x', force: 'yes' },
     { type: 'resize' }, { type: 'resize', width: 500 }, { type: 'resize', width: '500', height: 600 }, { type: 'resize', width: Number.NaN, height: 600 },
     { type: 'resize', width: 500, height: -Infinity },
+    { type: 'clear-connection', requestId: 7, revoked: 'yes' }, { type: 'clear-connection', requestId: 7, revoked: null },
+    { type: 'open-connect-page', origin: PRODUCTION_ORIGIN, writeKey: 'x' }, { type: 'open-connect-page', requestId: 8, writeKey: 'x' },
+    { type: 'open-connect-page', requestId: 8, origin: PRODUCTION_ORIGIN, writeKey: 5 }, { type: 'open-connect-page', requestId: 8, origin: null, writeKey: 'x' },
+    { type: 'save-pairing' }, { type: 'save-pairing', pairing: 'record' }, { type: 'save-pairing', pairing: [] },
+    { type: 'clear-pairing' }, { type: 'clear-pairing', userCode: 8 },
+    { type: 'adopt-connection', userCode: 'BCDFGHJK' }, { type: 'adopt-connection', requestId: 0, userCode: 'BCDFGHJK' }, { type: 'adopt-connection', requestId: 9 },
   ];
   for (const message of bad) assert.throws(() => parseUiMessage(message), { message: UNREADABLE_MESSAGE }, JSON.stringify(message));
   assert.equal(messageRequestId({ type: 'x', requestId: 7 }), 7);
@@ -858,4 +874,87 @@ test('a link is in the connected app on the legacy host too, and its relaunch de
     'onboarding.hero · welcome · Dark · b, from Staging. Sync sends edits to its draft.');
   const longest = syncDescription({ placementKey: `k${'x'.repeat(119)}`, state: `s${'x'.repeat(39)}`, appearance: 'light', arm: `a${'x'.repeat(19)}`, environment: 'production' });
   assert.ok(longest.length <= 1000, String(longest.length));
+});
+
+// ---- One-click Connect ----
+const readKey = `alr_${'r'.repeat(43)}`;
+const writeKey = `alw_${'w'.repeat(43)}`;
+const uuidA = '11111111-1111-4111-8111-111111111111';
+const uuidB = '22222222-2222-4222-8222-222222222222';
+
+test('the connect page is built from a fixed map of the two consoles and a well-formed write key', () => {
+  assert.equal(connectPageUrl(PRODUCTION_ORIGIN, writeKey), `https://console.assetlib.dev/connect/figma#${writeKey}`);
+  assert.equal(connectPageUrl(DEVELOPMENT_ORIGIN, writeKey), `http://127.0.0.1:3100/connect/figma#${writeKey}`, 'the development console signs in on 127.0.0.1');
+  for (const [origin, key] of [[LEGACY_PRODUCTION_ORIGIN, writeKey], ['http://127.0.0.1:3100', writeKey], [`${PRODUCTION_ORIGIN}/`, writeKey], ['constructor', writeKey],
+    ['__proto__', writeKey], [null, writeKey], [PRODUCTION_ORIGIN, readKey], [PRODUCTION_ORIGIN, `${writeKey}x`], [PRODUCTION_ORIGIN, `alw_${'w'.repeat(42)}!`],
+    [PRODUCTION_ORIGIN, `${writeKey}#more`], [PRODUCTION_ORIGIN, undefined]]) {
+    assert.throws(() => connectPageUrl(origin, key), { message: 'The plugin can’t open that page.' }, `${origin} ${key}`);
+  }
+  for (const url of [`https://console.assetlib.dev/connect/figma#${writeKey}`, `http://127.0.0.1:3100/connect/figma#${writeKey}`]) assert.equal(isConnectPageUrl(url), true, url);
+  for (const url of [`http://localhost:3100/connect/figma#${writeKey}`, `https://console.assetlib.dev/connect/figma#${readKey}`, `https://console.assetlib.dev/connect/figma?${writeKey}`,
+    `https://console.assetlib.dev.evil.test/connect/figma#${writeKey}`, `https://console.assetlib.dev/connect/figma#${writeKey}\n`, `${LEGACY_PRODUCTION_ORIGIN}/connect/figma#${writeKey}`, 5]) {
+    assert.equal(isConnectPageUrl(url), false, String(url));
+  }
+});
+
+test('connection request routes are on the two console origins only', () => {
+  assert.equal(pairingUrl(PRODUCTION_ORIGIN, 'start'), 'https://console.assetlib.dev/api/plugin-connections');
+  assert.equal(pairingUrl(DEVELOPMENT_ORIGIN, 'claim'), 'http://localhost:3100/api/plugin-connections/claim');
+  assert.equal(pairingUrl(PRODUCTION_ORIGIN, 'cancel'), 'https://console.assetlib.dev/api/plugin-connections/cancel');
+  assert.equal(pairingUrl(PRODUCTION_ORIGIN, 'current'), 'https://console.assetlib.dev/api/plugin-connections/current');
+  for (const origin of [LEGACY_PRODUCTION_ORIGIN, 'http://127.0.0.1:3100', 'https://evil.test']) assert.throws(() => pairingUrl(origin, 'start'), /console\.assetlib\.dev/);
+});
+
+test('a browser connection keeps how it was made, who approved it, and its code; anything else is dropped', () => {
+  const base = { origin: PRODUCTION_ORIGIN, orgId: uuidA, appId: uuidB, token: `alk_${'a'.repeat(43)}` };
+  assert.deepEqual(validateConnection({ ...base, method: 'browser', connectedAs: 'dana@example.com', pairing: 'BCDFGHJK' }),
+    { ...base, method: 'browser', connectedAs: 'dana@example.com', pairing: 'BCDFGHJK' });
+  assert.deepEqual(validateConnection({ ...base, method: 'token', connectedAs: 'not an email', pairing: 'BCDF-GHJK' }), base);
+  for (const extra of [{ method: 'oauth' }, { connectedAs: `${'a'.repeat(65)}@example.com` }, { connectedAs: 'a@b c' }, { pairing: 'AEIOUAEI' }, { pairing: 'BCDFGHJ' }, { pairing: 5 }]) {
+    assert.deepEqual(validateConnection({ ...base, ...extra }), base, JSON.stringify(extra));
+  }
+  // Older saves load as they are; a browser connection loads with its fields.
+  assert.deepEqual(loadSavedConnection({ ...base, method: 'browser', pairing: 'BCDFGHJK' }), { ...base, method: 'browser', pairing: 'BCDFGHJK' });
+  assert.equal(formatUserCode('BCDFGHJK'), 'BCDF-GHJK');
+});
+
+test('a started request and each claim answer are checked; a claim’s origin is never taken', () => {
+  const started = { readKey, writeKey, userCode: 'BCDF-GHJK', expiresAt: '2026-10-11T12:10:00.000Z', expiresIn: 600, interval: 2 };
+  assert.deepEqual(parsePairingStart(started), { readKey, writeKey, userCode: 'BCDFGHJK', expiresIn: 600, interval: 2 });
+  for (const bad of [null, { ...started, readKey: writeKey }, { ...started, writeKey: readKey }, { ...started, userCode: 'BCDFGHJK' }, { ...started, userCode: 'AEIO-UAEI' },
+    { ...started, expiresIn: 0 }, { ...started, expiresIn: 901 }, { ...started, expiresIn: '600' }, { ...started, interval: 1 }, { ...started, interval: 31 }, { ...started, interval: 2.5 }]) {
+    assert.throws(() => parsePairingStart(bad), /can’t read/, JSON.stringify(bad));
+  }
+  const token = `alk_${'t'.repeat(43)}`;
+  assert.deepEqual(parseClaim(200, { status: 'pending', interval: 7 }), { status: 'pending', interval: 7 });
+  assert.deepEqual(parseClaim(200, { status: 'pending' }), { status: 'pending', interval: null });
+  assert.deepEqual(parseClaim(429, { status: 'slow_down', interval: 12 }), { status: 'slow_down', interval: 12 });
+  assert.equal(parseClaim(429, { error: 'Too many requests. Please try again shortly.' }), null, 'a rate limit is not about the request');
+  for (const status of ['denied', 'expired', 'cancelled', 'claimed']) assert.deepEqual(parseClaim(410, { status }), { status });
+  assert.deepEqual(parseClaim(410, { status: 'gone' }), { status: 'expired' });
+  assert.deepEqual(parseClaim(410, null), { status: 'expired' });
+  for (const status of [401, 404, 500]) assert.equal(parseClaim(status, { error: 'x' }), null);
+  const connection = { orgId: uuidA, appId: uuidB, token, workspaceName: 'Roam\u0007', appName: 'Roam iOS', connectedAs: 'dana@example.com' };
+  assert.deepEqual(parseClaim(200, { status: 'connected', connection: { ...connection, origin: 'https://evil.test', method: 'token' } }),
+    { status: 'connected', connection: { orgId: uuidA, appId: uuidB, token, workspaceName: 'Roam', appName: 'Roam iOS', connectedAs: 'dana@example.com' } });
+  assert.deepEqual(parseClaim(200, { status: 'connected', connection: { ...connection, workspaceName: null, appName: 5, connectedAs: 'nobody' } }),
+    { status: 'connected', connection: { orgId: uuidA, appId: uuidB, token } }, 'labels that can’t be used are dropped');
+  for (const bad of [{ status: 'connected' }, { status: 'connected', connection: { ...connection, orgId: 'org-one' } }, { status: 'connected', connection: { ...connection, token: 'draft' } },
+    { status: 'connected', connection: { ...connection, appId: '../x' } }, { status: 'approved' }, null]) {
+    assert.throws(() => parseClaim(200, bad), /can’t read/, JSON.stringify(bad));
+  }
+});
+
+test('a refused Figma connection’s code names why, and Connect again says it', () => {
+  for (const code of ['revoked', 'member', 'expired']) assert.equal(refusalCode({ error: 'x', code }), code);
+  for (const payload of [null, {}, { code: 'scope' }, { code: 5 }, 'revoked']) assert.equal(refusalCode(payload), null);
+  assert.equal(reconnectText('revoked'), 'This Figma connection was ended. Connect again to keep working.');
+  assert.equal(reconnectText('member'), 'Your role no longer allows sending drafts. Ask a workspace owner, then connect again.');
+  assert.equal(reconnectText('expired'), 'This Figma connection expired. Connect again to keep working.');
+  assert.equal(reconnectText(null), 'Assetlib no longer accepts this connection. Connect again.');
+  assert.equal(isReconnectText(reconnectText('member')), true);
+  assert.equal(isReconnectText(TOKEN_REFUSED), false);
+  // The plugin's 403 rule already reads a Figma connection's refusal as a refused token, not a scope.
+  assert.equal(mapHttpError(403, { error: 'Your role in this workspace no longer allows drafts. Ask an owner, then connect again.', code: 'member' }), TOKEN_REFUSED);
+  assert.equal(requestTimeoutMs('DELETE'), requestTimeoutMs('GET'), 'Disconnect’s DELETE is timed as a read');
 });

@@ -50,10 +50,84 @@ export function validateConnection(value: Connection): Connection {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(orgId)) throw fieldError('Enter the organization ID from Settings › General in the Assetlib console.', 'orgId');
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(appId)) throw fieldError('Enter the app ID from Settings › General in the Assetlib console.', 'appId');
   if (!token || /\s/.test(token)) throw fieldError('Paste a Draft token from Settings › Tokens in the Assetlib console.', 'token');
-  // The names only label the connection; an unusable one is dropped, never an error.
+  // The names only label the connection; an unusable one is dropped, never an error. So are a browser connection's
+  // labels: who approved it, and its request's code.
   const workspaceName = labelName(value.workspaceName);
   const appName = labelName(value.appName);
-  return { origin, orgId, appId, token, ...(workspaceName ? { workspaceName } : {}), ...(appName ? { appName } : {}) };
+  const browser = value.method === 'browser';
+  const connectedAs = typeof value.connectedAs === 'string' && EMAIL.test(value.connectedAs) ? value.connectedAs : undefined;
+  const pairing = typeof value.pairing === 'string' && USER_CODE.test(value.pairing) ? value.pairing : undefined;
+  return { origin, orgId, appId, token, ...(workspaceName ? { workspaceName } : {}), ...(appName ? { appName } : {}),
+    ...(browser ? { method: 'browser' as const } : {}), ...(connectedAs ? { connectedAs } : {}), ...(pairing ? { pairing } : {}) };
+}
+
+const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,189}$/;
+// A connection request's code: 8 letters a person can't misread, without the hyphen the wire puts after 4.
+const USER_CODE = /^[BCDFGHJKLMNPQRSTVWXZ]{8}$/;
+const READ_KEY = /^alr_[A-Za-z0-9_-]{43}$/;
+const WRITE_KEY = /^alw_[A-Za-z0-9_-]{43}$/;
+const WIRE_CODE = /^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/;
+
+/** A read key (the plugin polls with it) as the console mints it. */
+export function validReadKey(value: unknown): value is string { return typeof value === 'string' && READ_KEY.test(value); }
+/** A write key (the browser page approves with it) as the console mints it. */
+export function validWriteKey(value: unknown): value is string { return typeof value === 'string' && WRITE_KEY.test(value); }
+/** A request's code as stored: 8 letters without the hyphen. */
+export function validUserCode(value: unknown): value is string { return typeof value === 'string' && USER_CODE.test(value); }
+/** A stored code as people read it: the hyphen after 4. */
+export function formatUserCode(code: string): string { return `${code.slice(0, 4)}-${code.slice(4)}`; }
+
+/** The plugin-facing connection request routes on a console origin: start (POST), claim, cancel, and DELETE current. */
+export function pairingUrl(origin: string, route: 'start' | 'claim' | 'cancel' | 'current'): string {
+  return `${normalizeConsoleOrigin(origin)}/api/plugin-connections${route === 'start' ? '' : `/${route}`}`;
+}
+
+export type PairingStart = { readKey: string; writeKey: string; userCode: string; expiresIn: number; interval: number };
+
+/** The answer to a started request (201), or an error when it is not one. `userCode` loses its hyphen. */
+export function parsePairingStart(value: unknown): PairingStart {
+  if (!isRecord(value) || !validReadKey(value.readKey) || !validWriteKey(value.writeKey) || typeof value.userCode !== 'string' || !WIRE_CODE.test(value.userCode)
+    || !Number.isInteger(value.expiresIn) || (value.expiresIn as number) < 1 || (value.expiresIn as number) > 900 || !validInterval(value.interval)) {
+    throw new Error('The console sent an answer the plugin can’t read. Try again.');
+  }
+  return { readKey: value.readKey, writeKey: value.writeKey, userCode: value.userCode.replace('-', ''), expiresIn: value.expiresIn as number, interval: value.interval };
+}
+
+/** Seconds between polls, as the console stores them per request. */
+export function validInterval(value: unknown): value is number { return Number.isInteger(value) && (value as number) >= 2 && (value as number) <= 30; }
+
+/** What a claim gave the plugin. The console sends no origin: the plugin uses the one it started on. */
+export type ClaimedConnection = Pick<Connection, 'orgId' | 'appId' | 'token' | 'workspaceName' | 'appName' | 'connectedAs'>;
+export type ClaimAnswer =
+  | { status: 'pending' | 'slow_down'; interval: number | null }
+  | { status: 'connected'; connection: ClaimedConnection }
+  | { status: 'denied' | 'expired' | 'cancelled' | 'claimed' };
+
+/**
+ * A claim's answer about the request: 200 pending or connected, 410 with how it ended, or 429 slow_down. Null for any
+ * other answer (a rate limit, a malformed key, a server error), which the poller handles by its status. A 200 it can't
+ * read throws.
+ */
+export function parseClaim(status: number, value: unknown): ClaimAnswer | null {
+  const body = isRecord(value) ? value : {};
+  if (status === 410) {
+    const ended = body.status;
+    // Unknown keys answer expired, so an unexpected word is read as that too.
+    return { status: ended === 'denied' || ended === 'cancelled' || ended === 'claimed' ? ended : 'expired' };
+  }
+  if (status === 429) return body.status === 'slow_down' ? { status: 'slow_down', interval: validInterval(body.interval) ? body.interval : null } : null;
+  if (status !== 200) return null;
+  if (body.status === 'pending') return { status: 'pending', interval: validInterval(body.interval) ? body.interval : null };
+  const connection = body.connection;
+  if (body.status !== 'connected' || !isRecord(connection) || !validUuid(connection.orgId) || !validUuid(connection.appId)
+    || typeof connection.token !== 'string' || !TOKEN_FORMAT.test(connection.token)) {
+    throw new Error('The console sent an answer the plugin can’t read. Try again.');
+  }
+  const workspaceName = labelName(connection.workspaceName);
+  const appName = labelName(connection.appName);
+  const connectedAs = typeof connection.connectedAs === 'string' && EMAIL.test(connection.connectedAs) ? connection.connectedAs : undefined;
+  return { status: 'connected', connection: { orgId: connection.orgId, appId: connection.appId, token: connection.token,
+    ...(workspaceName ? { workspaceName } : {}), ...(appName ? { appName } : {}), ...(connectedAs ? { connectedAs } : {}) } };
 }
 
 // The console mints app tokens as alk_ and 43 base64url characters.

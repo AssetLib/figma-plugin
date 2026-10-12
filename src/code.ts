@@ -1,14 +1,16 @@
 // The main thread in Figma's sandbox: routes the UI's messages, keeps the connection, exports for Send, and watches the
 // selection. Selection reporting is in main/selection.ts, and Insert and drops on the canvas in main/insert.ts.
 import {
-  DEVICE_STORAGE, MAX_IMAGE_BYTES, SELECTION_CHANGED, chooseExportSettings, clampWindow, defaultPreferences, defaultWindowSize, isConsoleLink, layerName, linkNamesFile,
-  loadSavedConnection, mapHttpError, matchedHeight, parseFileLink, parsePlacements, parsePreferences, validateBinding, validateConnection, validateInsertLink,
+  CONNECT_PAGE_REFUSED, DEVICE_STORAGE, MAX_IMAGE_BYTES, SELECTION_CHANGED, chooseExportSettings, clampWindow, connectPageUrl, defaultPreferences, defaultWindowSize,
+  isConnectPageUrl, isConsoleLink, layerName, linkNamesFile, loadSavedConnection, mapHttpError, matchedHeight, parseFileLink, parsePlacements, parsePreferences,
+  validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
 import type { Connection, InsertLink, Preferences } from './shared/index.js';
-import { DISCONNECTED, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
+import { DISCONNECTED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { UiMessage } from './shared/protocol.js';
 import { currentFileKey, linkFile } from './main/identity.js';
 import { discardDrops, discardPlaceholder, drop, dropPending, insert, renameRelinked, retireUndo, retireUndoOnEdit, writeMarker } from './main/insert.js';
+import { clearPairing, loadPairing, pageHints, parsePairing, savePairing } from './main/pairing.js';
 import { describeNode, nodeLink, reportSelection, selectedNode, storeTarget, writeLink } from './main/selection.js';
 import type { StoredTarget } from './main/selection.js';
 import { SELECTION_MOVED, main, post } from './main/state.js';
@@ -47,6 +49,9 @@ const initialized = (async () => {
   } catch { savedFileUrl = ''; }
   try { preferences = parsePreferences(await figma.clientStorage.getAsync(PREFERENCES_KEY)); }
   catch { preferences = defaultPreferences(); }
+  main.pairing = await loadPairing();
+  // The connection saved from this request is here: the save finished, and the record outlived it.
+  if (main.pairing && main.connection?.pairing === main.pairing.userCode) await clearPairing(main.pairing.userCode);
 })();
 
 /** The last file link pasted on this device, to fill in the field, only when its name matches this file's. */
@@ -54,7 +59,13 @@ function fileUrlForThisFile(): string {
   try { return savedFileUrl && linkNamesFile(parseFileLink(savedFileUrl).slug, figma.root.name) ? savedFileUrl : ''; } catch { return ''; }
 }
 function postConnection(): void {
-  post({ type: 'connection', connectionGeneration: main.connectionGeneration, connection: main.connection, savedFileUrl: fileUrlForThisFile(), preferences });
+  post({ type: 'connection', connectionGeneration: main.connectionGeneration, connection: main.connection, savedFileUrl: fileUrlForThisFile(), preferences,
+    pairing: main.pairing, hints: main.connection ? [] : pageHints() });
+}
+
+/** The one way main opens a page in the browser: a console link (a toast's button) or the connect page, checked first. */
+function openUrl(url: string): void {
+  figma.openExternal(url);
 }
 
 /**
@@ -100,6 +111,9 @@ async function handleMessage(message: UiMessage): Promise<void> {
       // A drop's image from the old connection won't come.
       discardDrops();
       postConnection();
+      // Saved from a Connect request: the request is done. Forgotten after the connection is written, so a save cut
+      // short between the two is recognised on the next load (initialized).
+      if (next.pairing) await clearPairing(next.pairing);
       await reportSelection();
       break;
     }
@@ -179,7 +193,8 @@ async function handleMessage(message: UiMessage): Promise<void> {
       discardPlaceholder(message.nodeId);
       break;
     case 'clear-connection': {
-      // Disconnect: this device forgets the token. It keeps working elsewhere until an owner revokes it in the console.
+      // Disconnect: this device forgets the token. A pasted token keeps working elsewhere until an owner revokes it in
+      // the console; a browser connection's token was ended first (`revoked`), unless the console couldn't be reached.
       const previous = main.connection;
       try { await writeConnection(() => figma.clientStorage.deleteAsync(CONNECTION_KEY)); }
       catch { throw new Error(DEVICE_STORAGE); }
@@ -187,15 +202,35 @@ async function handleMessage(message: UiMessage): Promise<void> {
       main.connectionGeneration += 1;
       discardDrops();
       postConnection();
-      // Only an owner can create another token, so the toast can put this one back while nothing else was saved.
-      figma.notify(DISCONNECTED, previous ? { timeout: 6000, button: { text: 'Undo', action: () => { void reconnect(previous); } } } : undefined);
+      // A browser connection's token is ended, so there is nothing to put back. Only an owner can create another pasted
+      // token, so that toast can put this one back while nothing else was saved.
+      if (previous?.method === 'browser') figma.notify(message.revoked ? DISCONNECTED_BROWSER : DISCONNECTED_LOCAL);
+      else figma.notify(DISCONNECTED, previous ? { timeout: 6000, button: { text: 'Undo', action: () => { void reconnect(previous); } } } : undefined);
       await reportSelection();
       break;
     }
+    case 'open-connect-page': {
+      // Only the console's connect page for one of the two origins, never a URL the UI built.
+      const url = connectPageUrl(message.origin, message.writeKey);
+      if (!isConnectPageUrl(url)) throw new Error(CONNECT_PAGE_REFUSED);
+      openUrl(url);
+      break;
+    }
+    case 'save-pairing': {
+      const record = parsePairing(message.pairing);
+      if (record) await savePairing(record);
+      break;
+    }
+    case 'clear-pairing':
+      await clearPairing(message.userCode);
+      break;
+    case 'adopt-connection':
+      post({ type: 'adopted', requestId: message.requestId, adopted: await adopt(message.userCode) });
+      break;
     case 'notify': {
       const { button } = message;
       // Only a link into the connected app's console; any other button is dropped, and the toast still shows.
-      const action = button && isConsoleLink(button.url, main.connection) ? { text: toastText(button.text).slice(0, 24), action: () => { figma.openExternal(button.url); } } : null;
+      const action = button && isConsoleLink(button.url, main.connection) ? { text: toastText(button.text).slice(0, 24), action: () => { openUrl(button.url); } } : null;
       figma.notify(toastText(message.text), action ? { button: action } : undefined);
       break;
     }
@@ -216,8 +251,9 @@ async function handleMessage(message: UiMessage): Promise<void> {
       const current = () => writes.running === 0 && writes.started === started && main.connection === config
         && message.connectionGeneration === main.connectionGeneration;
       if (!config || !current() || message.orgId !== config.orgId || message.appId !== config.appId) break;
-      const { origin, orgId, appId, token } = config;
-      const named = validateConnection({ origin, orgId, appId, token, ...(message.workspaceName ? { workspaceName: message.workspaceName } : {}), appName: message.appName });
+      const { origin, orgId, appId, token, workspaceName: _workspace, ...rest } = config;
+      // Everything else about the connection (how it was made, who approved it) stays.
+      const named = validateConnection({ ...rest, origin, orgId, appId, token, ...(message.workspaceName ? { workspaceName: message.workspaceName } : {}), appName: message.appName });
       // Client storage is shared by every window of the plugin: one in another file may have saved another connection,
       // or forgotten this one, since this one opened. Only this same connection is written over.
       let stored: Connection | null = null;
@@ -256,6 +292,29 @@ async function handleMessage(message: UiMessage): Promise<void> {
       break;
     }
   }
+}
+
+/**
+ * A request this window polled was claimed already: by another window of the plugin (they share client storage), or by
+ * this one before its answer was lost. The connection saved from it, found now or within 3 s, becomes this window's.
+ */
+async function adopt(userCode: string): Promise<boolean> {
+  if (main.connection?.pairing === userCode) return true;
+  for (const wait of [0, 1000, 2000]) {
+    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+    let stored: Connection | null = null;
+    try { const saved: unknown = await figma.clientStorage.getAsync(CONNECTION_KEY); stored = saved ? loadSavedConnection(saved) : null; } catch { stored = null; }
+    if (main.connection?.pairing === userCode) return true;
+    if (stored?.pairing !== userCode) continue;
+    main.connection = stored;
+    main.connectionGeneration += 1;
+    discardDrops();
+    await clearPairing(userCode);
+    postConnection();
+    await reportSelection();
+    return true;
+  }
+  return false;
 }
 
 /** Disconnect's Undo: the connection comes back, unless another was saved meanwhile. */

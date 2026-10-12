@@ -50,6 +50,25 @@ export function tokenRefused(status: number, payload: unknown): boolean {
   return status === 401 || (status === 403 && !/\bscope\b/i.test(consoleMessage(payload) ?? ''));
 }
 
+/** Why the console refused a Figma connection's token (its 403 says, in `code`), or null for any other refusal. */
+export function refusalCode(payload: unknown): 'revoked' | 'member' | 'expired' | null {
+  const code = isRecord(payload) ? payload.code : null;
+  return code === 'revoked' || code === 'member' || code === 'expired' ? code : null;
+}
+
+// A browser connection the console no longer accepts: why, and that Connect again makes a new one. Never the token form.
+export const RECONNECT_REVOKED = 'This Figma connection was ended. Connect again to keep working.';
+export const RECONNECT_MEMBER = 'Your role no longer allows sending drafts. Ask a workspace owner, then connect again.';
+export const RECONNECT_EXPIRED = 'This Figma connection expired. Connect again to keep working.';
+export const RECONNECT_REFUSED = 'Assetlib no longer accepts this connection. Connect again.';
+
+export function reconnectText(code: string | null | undefined): string {
+  return code === 'revoked' ? RECONNECT_REVOKED : code === 'member' ? RECONNECT_MEMBER : code === 'expired' ? RECONNECT_EXPIRED : RECONNECT_REFUSED;
+}
+export function isReconnectText(text: string): boolean {
+  return [RECONNECT_REVOKED, RECONNECT_MEMBER, RECONNECT_EXPIRED, RECONNECT_REFUSED].includes(text);
+}
+
 export function mapHttpError(status: number, payload: unknown, action: 'send' | 'insert' = 'send'): string {
   if (tokenRefused(status, payload)) return TOKEN_REFUSED;
   if (status === 403 && action === 'insert') return 'This token can’t read this app’s images. Create a token with Draft permission.';

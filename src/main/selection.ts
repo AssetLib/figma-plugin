@@ -81,7 +81,12 @@ function selectedLink(node: SceneNode, config: Connection | null): SelectedLink 
   const link = config ? storedLink(node) : null;
   if (!link || !config) return null;
   const { placementKey, state, appearance, arm, environment, assetId } = link;
-  return { kind: !linkInApp(link, config) ? 'other' : link.nodeId === node.id ? 'linked' : 'copy', placementKey, state, appearance, arm, environment, assetId };
+  // Another app's link names that app, so the Sync bar can offer to switch to it.
+  if (!linkInApp(link, config)) {
+    const origin = link.origin === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : link.origin;
+    return { kind: 'other', placementKey, state, appearance, arm, environment, assetId, origin, orgId: link.orgId, appId: link.appId };
+  }
+  return { kind: link.nodeId === node.id ? 'linked' : 'copy', placementKey, state, appearance, arm, environment, assetId };
 }
 
 /**

@@ -1,5 +1,6 @@
 import type {
-  CanvasTarget, CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, InsertMode, NodeSelection, Placement, Preferences,
+  CanvasTarget, CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, InsertMode, NodeSelection, PairingHint, PairingRecord, Placement,
+  Preferences,
 } from './index.js';
 import { isRecord } from './validation.js';
 
@@ -25,9 +26,9 @@ export type RememberedTarget = {
 /**
  * The selected layer's own link (pluginData `assetlib.link.v1`), as main read it: `linked`, written on this layer for the
  * connected app; `copy`, written for this app on another layer (a Cmd+D copy keeps the data, not the node id); or `other`,
- * written for another console app.
+ * written for another console app, which also names that app (its origin, the legacy host as production, and IDs).
  */
-export type SelectedLink = InsertLink & { kind: 'linked' | 'copy' | 'other' };
+export type SelectedLink = InsertLink & { kind: 'linked' | 'copy' | 'other'; origin?: string; orgId?: string; appId?: string };
 
 /**
  * Where `fileKey` came from: Figma itself (`figma`), the identity saved in this document (`document`), or a link pasted
@@ -66,8 +67,17 @@ export type UiMessage =
   | { type: 'save-preferences'; preferences: Preferences }
   // Keeps the node's width and sets its height to the placement's ratio (width and height are the placement's).
   | { type: 'match-ratio'; requestId: number; nodeId: string; width: number; height: number }
-  // Forgets the saved connection on this device (Disconnect). The token itself keeps working until an owner revokes it.
-  | { type: 'clear-connection'; requestId: number }
+  // Forgets the saved connection on this device (Disconnect). A pasted token keeps working until an owner revokes it; a
+  // browser connection's token was ended first (`revoked`), unless the console couldn't be reached.
+  | { type: 'clear-connection'; requestId: number; revoked?: boolean }
+  // One-click Connect: main opens the console's connect page for this write key, built from a fixed map (connectPageUrl).
+  | { type: 'open-connect-page'; requestId: number; origin: string; writeKey: string }
+  // The request waiting for approval, kept so a reopened plugin resumes it, and forgotten once it ends. Never refused.
+  | { type: 'save-pairing'; pairing: PairingRecord }
+  | { type: 'clear-pairing'; userCode: string }
+  // The console said this request was claimed already: main looks for the connection another window saved from it.
+  // Always answered with `adopted`.
+  | { type: 'adopt-connection'; requestId: number; userCode: string }
   // A Figma toast for a finished operation. Main shortens the text to 100 characters and opens only a console link
   // for the connected app from the button.
   | { type: 'notify'; text: string; button?: NotifyButton }
@@ -82,7 +92,12 @@ export type UiMessage =
 export type NotifyButton = { text: string; url: string };
 
 export type MainMessage =
-  | { type: 'connection'; connectionGeneration: number; connection: Connection | null; savedFileUrl: string; preferences: Preferences }
+  // `pairing`: a Connect request waiting for approval (resumed by the UI); `hints`: workspaces linked on this page, while
+  // there is no connection.
+  | { type: 'connection'; connectionGeneration: number; connection: Connection | null; savedFileUrl: string; preferences: Preferences;
+    pairing: PairingRecord | null; hints: PairingHint[] }
+  // Whether a connection saved from a claimed request (another window's) was found and is now this window's.
+  | { type: 'adopted'; requestId: number; adopted: boolean }
   | { type: 'selection'; connectionGeneration: number; selection: SelectionState }
   // `session`: the document couldn't keep the key (a view-only file), so it lasts until the plugin closes.
   | { type: 'file-saved'; requestId: number; fileKey: string; session: boolean }
@@ -105,8 +120,22 @@ export type MainMessage =
 export type DropMetadata = { assetlib: 1; dropId: number; connectionGeneration: number; name: string; frame: { width: number; height: number };
   scale: 1 | 2 | 3; link: InsertLink | null };
 
-// Main's toast after Disconnect; the UI announces the same words.
+// Main's toasts after Disconnect; the UI announces the same words. A browser connection's token ends with it, so it has
+// no Undo; one the console couldn't be told about is ended in the console.
 export const DISCONNECTED = 'Disconnected. The token still works elsewhere until an owner revokes it.';
+export const DISCONNECTED_BROWSER = 'Disconnected. This connection was ended.';
+export const DISCONNECTED_LOCAL = 'Disconnected on this device. End the connection in the console under Settings › Profile.';
+
+// One-click Connect (ui/connect.ts): how a request that didn't connect ended, and what to do next.
+export const PAIRING_DENIED = 'The request was declined in the browser.';
+export const PAIRING_EXPIRED = 'The request expired before it was approved. Connect again for a new code.';
+export const PAIRING_CANCELLED = 'The request was cancelled. Connect again when you’re ready.';
+export const PAIRING_REUSED = 'This request was already used, so Assetlib stopped it. Connect again.';
+export const OLDER_CONSOLE_CONNECT = 'This console can’t connect from Figma yet. Use a token instead.';
+export const PAIRING_UNREACHABLE = 'Assetlib couldn’t be reached. Check your connection and try again, or use a token instead.';
+export const PAIRING_BUSY = 'Too many connection requests. Wait a minute and try again.';
+export const PAIRING_FAILED = 'Assetlib couldn’t finish connecting. Connect again.';
+export const OPEN_PAGE_FAILED = 'Figma couldn’t open your browser. Choose Open browser again.';
 
 /** A toast's text: at most 100 characters, the last one an ellipsis when it was longer. */
 export function toastText(value: string): string {
@@ -151,7 +180,12 @@ export function parseUiMessage(value: unknown): UiMessage {
       case 'discard-placeholder': return text(m.nodeId);
       case 'save-preferences': return 'preferences' in m;
       case 'match-ratio': return requestId(m.requestId) && text(m.nodeId) && size(m.width) && size(m.height);
-      case 'clear-connection': return requestId(m.requestId);
+      case 'clear-connection': return requestId(m.requestId) && (m.revoked === undefined || typeof m.revoked === 'boolean');
+      case 'open-connect-page': return requestId(m.requestId) && text(m.origin) && text(m.writeKey);
+      // Main checks the record's values itself.
+      case 'save-pairing': return isRecord(m.pairing);
+      case 'clear-pairing': return text(m.userCode);
+      case 'adopt-connection': return requestId(m.requestId) && text(m.userCode);
       case 'notify': return text(m.text) && (m.button === undefined || (isRecord(m.button) && text(m.button.text) && text(m.button.url)));
       case 'resize': return Number.isFinite(m.width) && Number.isFinite(m.height);
       case 'reset-size': return true;

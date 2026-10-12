@@ -48,7 +48,21 @@ export interface Connection {
   // Names from GET /api/token, kept to label the connection. Optional: older saves and the ID form have none.
   workspaceName?: string;
   appName?: string;
+  // How it was made: 'browser', one-click Connect, whose draft-only token the console issued to this plugin; absent (or
+  // 'token') for a pasted token. A browser connection also keeps who approved it and its request's code (8 letters).
+  method?: 'browser' | 'token';
+  connectedAs?: string;
+  pairing?: string;
 }
+
+/**
+ * A one-click Connect request waiting for approval, in client storage (`assetlib.pairing.v1`) so a reopened plugin
+ * resumes it. Never the write key. `deadline` is local epoch ms; `interval` the seconds between polls (2 to 30).
+ */
+export interface PairingRecord { v: 1; origin: string; readKey: string; userCode: string; deadline: number; interval: number }
+
+/** A workspace the console may preselect on its connect page: a linked layer's, on one of the two console origins. */
+export interface PairingHint { origin: string; orgId: string; appId: string }
 
 /** What GET /api/token says about the presented token. Names are null while the console can't read them for a token. */
 export interface TokenIdentity {

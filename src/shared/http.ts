@@ -12,9 +12,9 @@ export const MAX_RETRY_AFTER_SECONDS = 30;
 
 /**
  * How long one attempt may take, in whole seconds so the timeout message is exact. `bytes` is the body sent, or for
- * a download the size the console listed.
+ * a download the size the console listed. A DELETE (ending a Figma connection) is timed as a GET.
  */
-export function requestTimeoutMs(method: 'GET' | 'POST', bytes = 0): number {
+export function requestTimeoutMs(method: 'GET' | 'POST' | 'DELETE', bytes = 0): number {
   const base = method === 'POST' ? POST_TIMEOUT_MS : GET_TIMEOUT_MS;
   return base + Math.round((TIMEOUT_MS_PER_MIB / 1000) * (Math.max(0, bytes) / MIB)) * 1000;
 }
