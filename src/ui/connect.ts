@@ -397,7 +397,10 @@ export function renderConnect(): void {
   // the console; Switch workspace starts the others.
   const unreachable = phase === 'ended' && pairing.ended === 'unreachable';
   element('browser-path').hidden = active || (connected && !unreachable);
-  connectButton.className = connected ? 'secondary wide' : 'primary wide';
+  // After an older console the token form is the way in, so its Connect (connection.ts) is the one primary instead.
+  const older = phase === 'ended' && pairing.ended === 'older' && tokenFormShown();
+  connectButton.className = connected || older ? 'secondary wide' : 'primary wide';
+  if (older && !connected) element('connect').className = 'primary wide';
   setBusy(connectButton, phase === 'starting' ? 'Connecting…' : unreachable ? 'Try again' : 'Connect to Assetlib', phase === 'starting' && !connected);
   setUnavailable(connectButton, phase === 'starting' || state.ops.connecting);
   useTokenButton.hidden = tokenFormShown();

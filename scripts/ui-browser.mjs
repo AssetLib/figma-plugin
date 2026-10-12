@@ -959,6 +959,17 @@ test('one-click Connect shows the code to compare, cancels, connects without a t
     assert.equal(await page.evaluate(textOf('status')), 'Disconnected. This connection was ended.');
   } finally { await page.close(); }
 
+  // An older console: the token form opens at its field, and its Connect is the one primary.
+  const older = await openUi({ connection: null, statuses: { start: 404 } });
+  try {
+    await older.click('#connect-browser');
+    await older.waitFor(shown('pairing-note'), { message: 'the older console' });
+    assert.deepEqual(await older.evaluate(`[document.getElementById('pairing-note').className, document.getElementById('pairing-note').textContent]`),
+      ['info', 'This console can’t connect from Figma yet. Use a token instead.']);
+    assert.equal(await older.focused(), 'token');
+    assert.deepEqual(await older.evaluate(inkPrimaries), ['connect']);
+  } finally { await older.close(); }
+
   // A browser connection the console refuses says why where it happened, with Connect again, and never opens the token form.
   const refused = await openUi({ connection: browserConnection, statuses: { placements: 403 }, codes: { placements: 'member' } });
   try {

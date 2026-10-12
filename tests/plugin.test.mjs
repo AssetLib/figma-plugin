@@ -5147,6 +5147,7 @@ test('an older console opens the token form; one that can’t be reached, or is 
   await startConnect(older);
   assert.deepEqual([older.element('pairing-note').textContent, older.element('pairing-note').className], ['This console can’t connect from Figma yet. Use a token instead.', 'info']);
   assert.deepEqual([older.element('connection-form').hidden, older.element('use-token').hidden], [false, true]);
+  assert.deepEqual([older.element('connect').className, older.element('connect-browser').className], ['primary wide', 'secondary wide'], 'the token is the way in now');
   assert.equal(older.activeElement(), older.element('token'));
   assert.deepEqual([older.externalUrls, posted(older, 'save-pairing')], [[], []]);
   // The ID fields of a console without GET /api/token still work through the form.
