@@ -48,6 +48,9 @@ let formOpened = false;
 let announceConnected = false;
 // The connection whose names GET /api/token gave this session (its origin, IDs, and token): asked once per connection.
 let namesAsked = '';
+// The names this session last posted for a connection (its key and names): main may drop them (a Disconnect or save
+// began meanwhile), so the same connection coming back with other names is asked again.
+let namesPosted: { key: string; workspaceName: string | null; appName: string } | null = null;
 const namesKey = (connection: Connection) => [connection.origin, connection.orgId, connection.appId, connection.token].join('\n');
 // True from a failed read until a successful one: the chip shows a warning.
 let attention = false;
@@ -333,6 +336,7 @@ async function refreshNames(config: Connection, generation: number): Promise<voi
   if ((current.workspaceName ?? null) === workspaceName && current.appName === appName) return;
   const { origin, orgId, appId, token } = current;
   state.connection = { origin, orgId, appId, token, ...(workspaceName ? { workspaceName } : {}), appName };
+  namesPosted = { key: namesKey(config), workspaceName, appName };
   post({ type: 'save-names', connectionGeneration: generation, orgId, appId, workspaceName, appName });
   scheduleRender();
 }
@@ -423,6 +427,9 @@ export function applyConnection(message: Extract<MainMessage, { type: 'connectio
   clearRememberedSelection();
   state.connection = message.connection;
   state.connectionGeneration = message.connectionGeneration;
+  const back = message.connection;
+  if (back && namesPosted?.key === namesKey(back) && namesAsked === namesPosted.key
+    && ((back.workspaceName ?? null) !== namesPosted.workspaceName || back.appName !== namesPosted.appName)) namesAsked = '';
   state.placements = [];
   state.placementsLoaded = false;
   state.testFailure = null;

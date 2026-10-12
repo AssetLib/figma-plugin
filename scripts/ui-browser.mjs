@@ -1967,8 +1967,8 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
       await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]');
       await page.evaluate(choose('insert-appearance', 'dark')); await page.evaluate(choose('insert-arm', 'b'));
     }],
-    ['long-names', { connection: { ...DEFAULTS.connection, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' } }, ready],
-    ['no-names-panel', { connection: { ...DEFAULTS.connection, workspaceName: undefined, appName: undefined } }, async page => { await ready(page); await page.click('#settings-summary'); }],
+    ['long-names', { connection: { ...DEFAULTS.connection, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' }, identity: { ...DEFAULTS.identity, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' } }, ready],
+    ['no-names-panel', { connection: { ...DEFAULTS.connection, workspaceName: undefined, appName: undefined }, identity: { ...DEFAULTS.identity, workspaceName: null, appName: null } }, async page => { await ready(page); await page.click('#settings-summary'); }],
     ['account-panel', {}, async page => { await ready(page); await page.click('#settings-summary'); }],
     ['send-no-selection', { preferences: { tab: 'send' } }],
     ['send-several', { preferences: { tab: 'send' }, selection: { node: null, reason: 'Select one layer. Sending several at once isn’t supported yet.', fileKey: 'abc123', remembered: null } }],
@@ -2016,7 +2016,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
   ['narrow-send-problem', { statuses: { placements: 401 }, preferences: { tab: 'send' } }, page => page.waitFor(shown('send-problem'))],
   ['narrow-sync-long-key', longRebound, async page => { await page.click('#sync'); await page.waitFor(shown('result')); await page.click('#result summary'); }],
   ['narrow-older-console', { connection: null, statuses: { token: 404 } }, submit(fakeToken('older'))],
-  ['narrow-account', { connection: { ...DEFAULTS.connection, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' } },
+  ['narrow-account', { connection: { ...DEFAULTS.connection, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' }, identity: { ...DEFAULTS.identity, workspaceName: 'A workspace with quite a long name that goes on', appName: 'Roam iOS' } },
     async page => { await ready(page); await page.click('#settings-summary'); }],
   ['narrow-images', { preferences: { browse: 'images' }, imageNames: longImageNames }, page => page.waitFor(`${tiles} === 24`)]];
   // A window dragged wider and taller (A.8): the meta column, more tiles a row, and only the list grown.
