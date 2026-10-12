@@ -5093,6 +5093,20 @@ test('Switch workspace keeps Insert working while it waits, and ends the token i
   await settle();
   assert.deepEqual([app.element('pairing').hidden, app.element('account-actions').hidden, app.storage.get('assetlib.connection.v1').token], [true, false, figmaToken]);
   assert.equal(app.activeElement(), app.element('switch-workspace'));
+  // Declined: the panel says so, and the note goes once the settings close.
+  app.element('switch-workspace').dispatch('click');
+  await settle();
+  app.console.pairings.at(-1).status = 'denied';
+  app.fireTimers(2000);
+  await settle();
+  assert.deepEqual([app.element('pairing-note').textContent, app.element('pairing-note').hidden, app.element('account-actions').hidden],
+    ['The request was declined in the browser.', false, false]);
+  assert.equal(app.activeElement(), app.element('pairing-note'));
+  app.element('settings').open = false;
+  app.element('settings').dispatch('toggle');
+  app.element('settings').open = true;
+  app.element('settings').dispatch('toggle');
+  assert.equal(app.element('pairing-note').hidden, true, 'seen, it goes');
   // Approved for another app: saved, and the token it replaces is ended.
   const otherApp = '44444444-4444-4444-8444-444444444444';
   app.element('switch-workspace').dispatch('click');

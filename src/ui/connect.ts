@@ -56,9 +56,11 @@ const pairing = {
   ended: null as EndKind | null,
   // Resumed from main's record when the plugin opened: the browser tab is the one opened before.
   resumed: false,
-  // What the panel says about the request (how it ended, or a browser that didn't open), and its tone.
+  // What the panel says about the request (how it ended, or a browser that didn't open), and its tone; `noteSeen` once
+  // it showed in the open settings, so it goes when they close.
   note: '',
   noteKind: 'info' as 'info' | 'error',
+  noteSeen: false,
   // Every start, Cancel, and end moves it on, so an answer for an earlier request is dropped.
   ticket: 0,
   openRequest: null as number | null,
@@ -285,7 +287,7 @@ function end(kind: EndKind, text?: string): void {
   const focus = followed();
   ++pairing.ticket;
   reset();
-  Object.assign(pairing, { phase: 'ended', ended: kind, note: text ?? ENDED[kind], noteKind: NEUTRAL.includes(kind) ? 'info' : 'error' });
+  Object.assign(pairing, { phase: 'ended', ended: kind, note: text ?? ENDED[kind], noteKind: NEUTRAL.includes(kind) ? 'info' : 'error', noteSeen: false });
   if (pairing.noteKind === 'error') announceError(pairing.note); else setStatus(pairing.note);
   // An older console needs a token: the form opens at its field.
   if (kind === 'older') { chooseToken(); return; }
@@ -342,7 +344,7 @@ export function failOpenPage(requestId: number): boolean {
   if (requestId !== pairing.openRequest) return false;
   pairing.openRequest = null;
   if (pairing.phase !== 'waiting') return true;
-  Object.assign(pairing, { note: OPEN_PAGE_FAILED, noteKind: 'error' });
+  Object.assign(pairing, { note: OPEN_PAGE_FAILED, noteKind: 'error', noteSeen: false });
   announceError(OPEN_PAGE_FAILED);
   scheduleRender();
   return true;
@@ -370,9 +372,14 @@ function waitingLine(): string {
 }
 
 export function renderConnect(): void {
-  const { phase } = pairing;
   const active = state.pairingActive;
   const connected = Boolean(state.connection);
+  // With a connection, how a request ended goes once the person saw it and closed the settings (the first run is them).
+  if (connected && pairing.note && !active) {
+    if (settings.open) pairing.noteSeen = true;
+    else if (pairing.noteSeen) Object.assign(pairing, { note: '', noteSeen: false, ...(pairing.phase === 'ended' ? { phase: 'idle', ended: null } : {}) });
+  }
+  const { phase } = pairing;
   // The request's block takes the place of the first-run copy (connection.ts hides the account's actions).
   block.hidden = !active;
   element('first-run-title').hidden = active;
