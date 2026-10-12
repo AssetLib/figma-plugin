@@ -22,8 +22,14 @@ let preferences: Preferences = defaultPreferences();
 // name: the layer name Insert gives the bound cell, which a layer still named for its old placement takes.
 type Exported = { config: Connection; target: StoredTarget; node: SceneNode; frame: { width: number; height: number }; name: string };
 const exported = new Map<number, Exported>();
-// True while Disconnect deletes the saved connection: a save-names then must not write it back.
-let clearing = false;
+// This window's own writes of the saved connection (a save, Disconnect, and Disconnect's Undo): how many started, and how
+// many still run. A save-names that began before one, or runs beside one, writes nothing, so it never undoes it.
+const writes = { started: 0, running: 0 };
+async function writeConnection(write: () => Promise<void>): Promise<void> {
+  writes.started += 1;
+  writes.running += 1;
+  try { await write(); } finally { writes.running -= 1; }
+}
 
 const initialized = (async () => {
   let stored: unknown;
@@ -87,7 +93,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       break;
     case 'save-connection': {
       const next = validateConnection(message.connection);
-      try { await figma.clientStorage.setAsync(CONNECTION_KEY, next); }
+      try { await writeConnection(() => figma.clientStorage.setAsync(CONNECTION_KEY, next)); }
       catch { throw new Error(DEVICE_STORAGE); }
       main.connection = next;
       main.connectionGeneration += 1;
@@ -175,10 +181,8 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'clear-connection': {
       // Disconnect: this device forgets the token. It keeps working elsewhere until an owner revokes it in the console.
       const previous = main.connection;
-      clearing = true;
-      try { await figma.clientStorage.deleteAsync(CONNECTION_KEY); }
+      try { await writeConnection(() => figma.clientStorage.deleteAsync(CONNECTION_KEY)); }
       catch { throw new Error(DEVICE_STORAGE); }
-      finally { clearing = false; }
       main.connection = null;
       main.connectionGeneration += 1;
       discardDrops();
@@ -208,7 +212,9 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'save-names': {
       // Only the names, and only for the connection the UI asked about; the generation stays, so nothing reloads.
       const config = main.connection;
-      const current = () => !clearing && main.connection === config && message.connectionGeneration === main.connectionGeneration;
+      const started = writes.started;
+      const current = () => writes.running === 0 && writes.started === started && main.connection === config
+        && message.connectionGeneration === main.connectionGeneration;
       if (!config || !current() || message.orgId !== config.orgId || message.appId !== config.appId) break;
       const { origin, orgId, appId, token } = config;
       const named = validateConnection({ origin, orgId, appId, token, ...(message.workspaceName ? { workspaceName: message.workspaceName } : {}), appName: message.appName });
@@ -256,7 +262,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
 async function reconnect(previous: Connection): Promise<void> {
   await initialized;
   if (main.connection) return;
-  try { await figma.clientStorage.setAsync(CONNECTION_KEY, previous); }
+  try { await writeConnection(() => figma.clientStorage.setAsync(CONNECTION_KEY, previous)); }
   catch { figma.notify(DEVICE_STORAGE); return; }
   if (main.connection) return;
   main.connection = previous;

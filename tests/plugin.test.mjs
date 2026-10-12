@@ -2472,16 +2472,74 @@ test('names never write a connection back: not during Disconnect, nor over one a
   await settle();
   assert.equal(racing.storage.has('assetlib.connection.v1'), false);
 
-  // Another window saved another app's connection since this one opened: the names show here, and its save stands.
-  const other = { ...connection, appId: 'app-b', token: tok('other_window') };
-  const shared = harness({ console: { identity: named, gates: { token: deferred() } } });
+  // Another window saved another connection since this one opened (another app, this app's rotated token, or the same IDs
+  // on the other console): the names show here, and its save stands.
+  for (const [description, other] of [
+    ['another app', { ...connection, appId: 'app-b', token: tok('other_window') }],
+    ['a rotated token', { ...connection, token: tok('rotated') }],
+    ['the other console', { ...connection, origin: 'http://localhost:3100' }],
+  ]) {
+    const shared = harness({ console: { identity: named, gates: { token: deferred() } } });
+    await settle();
+    shared.storage.set('assetlib.connection.v1', other);
+    shared.console.gates.token.resolve();
+    await settle();
+    assert.equal(shared.uiMessages.filter(message => message.type === 'save-names').length, 1, description);
+    assert.deepEqual(shared.storage.get('assetlib.connection.v1'), other, description);
+    assert.equal(textOf(shared.element('account-name')), 'Roam · Roam iOS', description);
+  }
+  // Names for another organization never apply.
+  const foreign = harness();
   await settle();
-  shared.storage.set('assetlib.connection.v1', other);
-  shared.console.gates.token.resolve();
+  foreign.postToMain({ type: 'save-names', connectionGeneration: 0, orgId: 'org-two', appId: 'app-a', workspaceName: 'Forged', appName: 'Forged' });
   await settle();
-  assert.equal(shared.uiMessages.filter(message => message.type === 'save-names').length, 1);
-  assert.deepEqual(shared.storage.get('assetlib.connection.v1'), other);
-  assert.equal(textOf(shared.element('account-name')), 'Roam · Roam iOS');
+  assert.deepEqual(foreign.storage.get('assetlib.connection.v1'), connection);
+
+  // A save from this window that starts while a save-names reads storage wins, even when the storage writes finish in order.
+  const saving = harness();
+  await settle();
+  const saved = saving.figma.clientStorage;
+  const pausing = deferred();
+  const look = saved.getAsync.bind(saved);
+  saved.getAsync = async key => { const value = await look(key); if (key === 'assetlib.connection.v1') await pausing.promise; return value; };
+  const writing = saving.delayConnectionWrite();
+  saving.postToMain({ type: 'save-names', connectionGeneration: 0, orgId: 'org-one', appId: 'app-a', workspaceName: 'Roam', appName: 'Roam iOS' });
+  await settle();
+  const next = { ...connection, appId: 'app-b', token: tok('draft_b') };
+  saving.postToMain({ type: 'save-connection', requestId: 42, connection: next });
+  await settle();
+  pausing.resolve();
+  await settle();
+  writing.resolve();
+  await settle();
+  assert.deepEqual(saving.storage.get('assetlib.connection.v1'), next);
+
+  // A token pasted while the names are out: the UI drops them, and the pasted token's connection is saved.
+  const pasting = harness({ console: { identity: named, gates: { token: deferred() } } });
+  await settle();
+  pasting.element('settings').open = true;
+  pasting.element('token').value = tok('pasted');
+  pasting.element('connection-form').dispatch('submit');
+  await settle();
+  pasting.console.gates.token.resolve();
+  await settle();
+  assert.equal(pasting.uiMessages.filter(message => message.type === 'save-names').length, 0);
+  assert.equal(pasting.storage.get('assetlib.connection.v1').token, tok('pasted'));
+
+  // Names dropped by a Disconnect are asked again when Undo brings the connection back.
+  const undoing = harness({ console: { identity: named, gates: { token: deferred() } } });
+  await settle();
+  undoing.element('settings').open = true;
+  undoing.element('disconnect').dispatch('click');
+  await settle();
+  undoing.console.gates.token.resolve();
+  await settle();
+  assert.equal(undoing.uiMessages.filter(message => message.type === 'save-names').length, 0);
+  delete undoing.console.gates.token;
+  undoing.notifications.at(-1).options.button.action();
+  await settle();
+  assert.equal(undoing.requests.filter(request => request.route === 'token').length, 2, 'asked again after Undo');
+  assert.equal(undoing.storage.get('assetlib.connection.v1').appName, 'Roam iOS');
 });
 
 test('the Connected toast keeps the app’s name when the workspace’s and the app’s together are too long', async () => {

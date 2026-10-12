@@ -314,11 +314,17 @@ function failureOf(result: HttpResult, text: string): ReadFailure {
  * console without names, or an answer about another app changes nothing and says nothing.
  */
 async function refreshNames(config: Connection, generation: number): Promise<void> {
+  const ticket = identifyTicket;
+  // A Disconnect, a save, or a pasted token waiting for its answer replaces this connection (a connection change also
+  // aborts the request): its names would only write it back. It may come back (Undo, a refused save), so its next
+  // passing test asks again.
+  const askAgain = () => { if (namesAsked === namesKey(config)) namesAsked = ''; };
   let result: HttpResult;
   try { result = await identify(config.origin, config.token); } catch { return; }
-  // A Disconnect or a save waiting for main replaces this connection: its names would only write it back.
-  if (result.status !== 200 || generation !== state.connectionGeneration || state.connection === null || namesKey(state.connection) !== namesKey(config)
-    || pendingDisconnect !== null || pendingConnection !== null) return;
+  if (result.kind === 'aborted') { askAgain(); return; }
+  if (result.status !== 200) return;
+  if (generation !== state.connectionGeneration || ticket !== identifyTicket || pendingDisconnect !== null || pendingConnection !== null
+    || state.connection === null || namesKey(state.connection) !== namesKey(config)) { askAgain(); return; }
   let identity: ReturnType<typeof parseTokenIdentity>;
   try { identity = parseTokenIdentity(result.payload); } catch { return; }
   const { workspaceName, appName } = identity;
