@@ -4620,7 +4620,7 @@ test('a held Enter inserts once, and a running Insert shows a spinner rather tha
   assert.equal(app.element('insert').dispatch('keydown', { key: 'Enter' }).defaultPrevented, false);
 });
 
-test('after a network failure on GET /api/token, a Connect with the ID fields empty asks again', async () => {
+test('Connect retries after an unreachable console and asks for no IDs', async () => {
   const app = harness({ saved: null, console: { failures: new Set(['token']),
     identity: { orgId: 'org-one', appId: 'app-a', workspaceName: 'Sample workspace', appName: 'Sample app', scopes: ['draft'] } } });
   await settle();
@@ -4634,6 +4634,29 @@ test('after a network failure on GET /api/token, a Connect with the ID fields em
   assert.equal(app.requests.filter(request => request.route === 'token').length, 3, 'the token is asked about again after the tokenless probe');
   assert.equal(app.element('app').getAttribute('data-view'), 'shell');
   assert.equal(app.element('id-fields').hidden, true, 'this console names a token’s app, so its ID fields go');
+  assert.deepEqual(app.storage.get('assetlib.connection.v1'), { ...connection, workspaceName: 'Sample workspace', appName: 'Sample app' });
+});
+
+test('Connect re-asks token identity with empty ID fields after only the tokenless probe answered', async () => {
+  let authorizedFails = true;
+  const respond = fakeConsole({ placements: [clone(placement)],
+    identity: { orgId: connection.orgId, appId: connection.appId, workspaceName: 'Sample workspace', appName: 'Sample app', scopes: ['draft'] } });
+  const app = harness({ saved: null, fetch: (url, options, request) => {
+    if (url.endsWith('/api/token') && options.headers?.Authorization && authorizedFails) throw new TypeError('network');
+    return respond(url, options, request);
+  } });
+  await settle();
+  app.element('use-token').dispatch('click');
+  app.element('token').value = connection.token;
+  app.element('connection-form').dispatch('submit'); await settle();
+  assert.equal(app.element('id-fields').hidden, false);
+  assert.equal(app.requests.filter(request => request.route === 'token' && !request.authorization).length, 1);
+  assert.deepEqual([app.element('org-id').value, app.element('app-id').value], ['', '']);
+  authorizedFails = false;
+  app.element('connection-form').dispatch('submit'); await settle();
+  assert.equal(app.requests.filter(request => request.url.endsWith('/api/token') && request.authorization).length, 2);
+  assert.equal(app.element('app').getAttribute('data-view'), 'shell');
+  assert.equal(app.element('id-fields').hidden, true);
   assert.deepEqual(app.storage.get('assetlib.connection.v1'), { ...connection, workspaceName: 'Sample workspace', appName: 'Sample app' });
 });
 
@@ -4751,7 +4774,7 @@ test('Connect to Assetlib starts a request, offering a workspace this page links
   assert.ok(!JSON.stringify([...app.storage.values()]).includes(writeKey), 'the write key is never stored');
   // Waiting: the code to compare, and the request's actions.
   assert.equal(app.element('pairing').hidden, false);
-  assert.deepEqual([app.element('first-run-title').hidden, app.element('browser-path').hidden, app.element('origin-field').hidden], [true, true, true]);
+  assert.deepEqual([app.element('first-run-title').hidden, app.element('browser-path').hidden, app.element('origin-field').hidden, app.element('origin-line').hidden], [true, true, true, true]);
   assert.equal(app.element('pairing-text').textContent, 'Assetlib opened console.assetlib.dev in your browser. Sign in, check that it shows this code, and approve.');
   assert.deepEqual([app.element('pairing-code').textContent, app.element('pairing-code').getAttribute('aria-label')], ['BCDF-GHJK', 'Connection code B C D F G H J K']);
   assert.equal(app.element('pairing-status-text').textContent, 'Waiting for approval · expires in 10 min');
@@ -4835,8 +4858,8 @@ test('a request approved in the browser saves a browser connection, without aski
   app.element('settings').dispatch('toggle');
   assert.equal(app.element('account-title').textContent, 'Roam iOS');
   assert.equal(app.element('token-prefix').textContent, 'Roam · Connected as dana@example.com');
-  assert.deepEqual(['switch-workspace', 'update-token', 'disconnect', 'connection-form', 'origin-field', 'browser-path'].map(id => app.element(id).hidden),
-    [false, true, false, true, true, true]);
+  assert.deepEqual(['switch-workspace', 'update-token', 'disconnect', 'connection-form', 'origin-field', 'origin-line', 'browser-path'].map(id => app.element(id).hidden),
+    [false, true, false, true, true, true, true]);
 
   // A long name drops the workspace from the toast, then the email.
   for (const [names, text] of [[{ workspaceName: 'W'.repeat(40), appName: 'A'.repeat(30) }, `Connected to ${'A'.repeat(30)} as dana@example.com`],
@@ -5695,8 +5718,10 @@ test('first-run copy, role, guide, and Change explain the paths without exposing
   assert.equal(dev.element('origin-field').hidden, false);
   const older = harness({ saved: null, console: { statuses: { start: 404 } } }); await settle(); await startConnect(older);
   assert.equal(older.element('connect-browser').hidden, true);
+  assert.equal(older.element('browser-help').hidden, true);
   older.element('origin-change').dispatch('click'); older.element('origin').value = 'http://localhost:3100'; older.element('origin').dispatch('change');
   assert.equal(older.element('connect-browser').hidden, false);
+  assert.equal(older.element('browser-help').hidden, false);
 });
 
 test('waiting has a spinner and a countdown renewed after 15 seconds, including during a claim; resumed copy names the earlier tab', async () => {
@@ -5909,4 +5934,65 @@ test('library fill notes omit placement links for one and several layers', async
     await settle(); tilesOf(app)[0].dispatch('click');
     assert.equal(app.element('insert-note').textContent, count === 1 ? 'Puts this image in Shape 91:0. Its size and position stay.' : 'Puts this image in 3 layers.');
   }
+});
+
+// Batch 1 review regressions.
+test('refused pasted token form errors keep both views quiet after a selection change', async () => {
+  for (const token of ['', 'malformed', tok('refused')]) {
+    const app = harness({ prefs: { tab: 'insert' }, console: { statuses: { placements: 401, token: 401 } } });
+    await settle();
+    app.element('settings').open = true; app.element('settings').dispatch('toggle');
+    app.element('token').value = token;
+    app.element('connection-form').dispatch('submit'); await settle();
+    assert.equal(app.element('connection-error').hidden, false);
+    app.select([]); await settle();
+    assert.equal(app.element('insert-empty').hidden, true, token || 'blank');
+    app.element('tab-send').dispatch('click'); await settle();
+    assert.equal(app.element('send-problem').hidden, true, token || 'blank');
+  }
+});
+
+test('Connect again from either view focuses Check now for pasted and browser connections', async () => {
+  for (const saved of [connection, browserConnection]) for (const tab of ['insert', 'send']) {
+    const app = harness({ saved, prefs: { tab }, console: { statuses: { placements: 401 } } });
+    await settle();
+    // Browser views also offer recovery with the account panel already open.
+    if (saved.method === 'browser') { app.element('settings').open = true; app.element('settings').dispatch('toggle'); }
+    const gate = deferred(); app.console.gates.start = gate;
+    app.element(`${tab}-token`).focus(); app.element(`${tab}-token`).dispatch('click'); await settle();
+    if (saved.method !== 'browser') assert.ok(app.element('settings').contains(app.activeElement()), 'starting focus stays in settings');
+    gate.resolve(); await settle();
+    assert.equal(app.activeElement(), app.element('pairing-check'), `${saved.method ?? 'pasted'} ${tab}`);
+  }
+});
+
+test('a refused pasted token on an older console leaves Save token as the primary', async () => {
+  const app = harness({ prefs: { tab: 'insert' }, console: { statuses: { placements: 401, start: 404 } } });
+  await settle();
+  app.element('insert-token').focus(); app.element('insert-token').dispatch('click'); await settle();
+  assert.equal(app.element('connect-browser').hidden, true);
+  assert.equal(app.element('browser-help').hidden, true);
+  assert.equal(app.element('connect').className, 'primary wide');
+  assert.equal(app.element('insert-empty').hidden, true);
+});
+
+test('Send Try again keeps its notice and focus while the same connection retest waits', async () => {
+  const app = harness({ console: { statuses: { placements: 500 } } }); await settle();
+  assert.equal(app.element('send-problem').hidden, false);
+  delete app.console.statuses.placements;
+  const gate = deferred(); app.console.gates.placements = gate;
+  app.element('send-retry').focus(); app.element('send-retry').dispatch('click'); await settle();
+  assert.equal(app.element('send-problem').hidden, false);
+  assert.ok(['send-problem', 'send-retry'].some(id => app.activeElement() === app.element(id)));
+  assert.equal(off(app, 'send-retry'), true);
+  gate.resolve(); await settle();
+  assert.equal(app.element('send-problem').hidden, true);
+});
+
+test('Cancel returns a healthy pasted connection to Connect with browser', async () => {
+  const app = harness(); await settle();
+  app.element('settings').open = true; app.element('settings').dispatch('toggle');
+  app.element('switch-workspace').focus(); app.element('switch-workspace').dispatch('click'); await settle();
+  app.element('pairing-cancel').focus(); app.element('pairing-cancel').dispatch('click'); await settle();
+  assert.equal(app.activeElement(), app.element('switch-workspace'));
 });

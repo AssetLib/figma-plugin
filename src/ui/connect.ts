@@ -69,6 +69,7 @@ const pairing = {
   saving: null as Connection | null,
   // Connect again from a view opened the settings to show the request; Cancel closes them again.
   openedSettings: false,
+  startedFromView: false,
 };
 // Workspaces this page's linked layers name (main's connection message), while there is no connection.
 let hints: PairingHint[] = [];
@@ -145,6 +146,7 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
   Object.assign(pairing, { phase: 'starting', origin, hint: chosen, ended: null, note: '', readKey: '', writeKey: null, userCode: '', resumed: false, failures: 0 });
   // Connect again from a view: the request shows in the connection settings.
   pairing.openedSettings = Boolean(state.connection) && !settings.open;
+  pairing.startedFromView = pairing.openedSettings || !followed();
   settings.open = true;
   setStatus('Connecting…');
   scheduleRender();
@@ -177,7 +179,7 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
 function wait(): void {
   pairing.phase = 'waiting';
   state.pairingActive = true;
-  const focus = followed();
+  const focus = followed() || pairing.startedFromView;
   setStatus(`Approve in your browser. The code is ${[...pairing.userCode].join(' ')}.`);
   countdown();
   scheduleRender();
@@ -329,7 +331,7 @@ function connected(): void {
 function reset(): void {
   stopTimers();
   if (pairing.userCode) post({ type: 'clear-pairing', userCode: pairing.userCode });
-  Object.assign(pairing, { phase: 'idle', writeKey: null, inFlight: false, saving: null, saveRequest: null, adoptRequest: null, openRequest: null });
+  Object.assign(pairing, { phase: 'idle', startedFromView: false, writeKey: null, inFlight: false, saving: null, saveRequest: null, adoptRequest: null, openRequest: null });
   held = null;
   state.pairingActive = false;
 }
@@ -366,7 +368,8 @@ function cancel(): void {
   if (pairing.openedSettings && state.connection) { closeSettings(); return; }
   scheduleRender();
   flushRender();
-  (state.connection ? state.connection.method === 'browser' ? switchButton : element('settings-summary') : connectButton).focus({ preventScroll: true });
+  (state.connection ? !switchButton.hidden ? switchButton
+    : !element('browser-path').hidden && !connectButton.hidden ? connectButton : element('settings-summary') : connectButton).focus({ preventScroll: true });
 }
 
 function openPage(): void {
@@ -442,6 +445,7 @@ export function saveRefused(requestId: number): boolean {
 
 /** Where focus goes when the focused control hides: in the request's block, or on the first run its path; else null. */
 export function connectFocus(): HTMLElement | null {
+  if (pairing.phase === 'starting') return !element('browser-path').hidden && !connectButton.hidden ? connectButton : block;
   if (state.pairingActive) return pairing.phase === 'waiting' ? checkButton : block;
   if (state.connection) return null;
   return tokenFormShown() ? tokenInput : connectButton;
@@ -490,9 +494,10 @@ export function renderConnect(): void {
   // After an older console the token form is the way in, so its Connect (connection.ts) is the one primary instead.
   const older = phase === 'ended' && pairing.ended === 'older' && pairing.origin === chosenOrigin();
   connectButton.hidden = older;
+  element('browser-help').hidden = older;
   const tokenPrimary = !connected && tokenFormShown() && !unreachable;
   connectButton.className = (connected && !refusedPasted) || tokenPrimary ? 'secondary wide' : 'primary wide';
-  if (!connected) element('connect').className = tokenPrimary ? 'primary wide' : 'secondary wide';
+  if (!connected || (refusedPasted && older)) element('connect').className = tokenPrimary || older ? 'primary wide' : 'secondary wide';
   setBusy(connectButton, phase === 'starting' ? 'Connecting…' : unreachable ? 'Try again' : 'Connect to Assetlib', phase === 'starting' && !connected);
   setUnavailable(connectButton, phase === 'starting' || state.ops.connecting);
   useTokenButton.hidden = tokenFormShown() || connected;

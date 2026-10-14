@@ -152,7 +152,7 @@ function fitWorkspace(workspace: HTMLElement, separator: HTMLElement, key: strin
  * True while the open connection settings say why a read failed, under the token field. The views (the Insert list, the
  * Send form) then say nothing of their own about it, so the failure is said once.
  */
-export function problemInSettings(): boolean { return settings.open && connectionErrorKind === 'read'; }
+export function problemInSettings(): boolean { return settings.open && (connectionErrorKind === 'read' || (state.tokenRefused && state.connection?.method !== 'browser')); }
 
 /** True while the token form shows (as of the last render). */
 export function tokenFormShown(): boolean { return formShown; }
@@ -481,6 +481,7 @@ async function reloadPlacements(): Promise<void> {
 
 /** Main's `connection` message: the saved connection, or none, and a new generation. */
 export function applyConnection(message: Extract<MainMessage, { type: 'connection' }>): void {
+  state.connectionChanging = false;
   // The browser connections this window's save replaced end, their tokens no longer anyone's (best effort): the one this
   // window held, and the one the device held, which another window may have saved since.
   const saved = pendingConnection && message.connection?.token === pendingConnection.next.token ? pendingConnection : null;
@@ -532,6 +533,7 @@ export function applyConnection(message: Extract<MainMessage, { type: 'connectio
 export function failConnection(requestId: number, message: string): boolean {
   if (requestId === pendingDisconnect?.id) {
     pendingDisconnect = null;
+    state.connectionChanging = false;
     // A browser connection has no token field to say it under.
     if (state.connection?.method === 'browser') showError(message);
     else showConnectionError(message, null, 'form');
@@ -541,6 +543,7 @@ export function failConnection(requestId: number, message: string): boolean {
   const refused = pendingConnection;
   if (refused?.id !== requestId) return false;
   pendingConnection = null;
+  state.connectionChanging = false;
   announceConnected = false;
   state.connectionGeneration = refused.generation;
   state.placements = refused.placements;
@@ -558,12 +561,14 @@ export function failConnection(requestId: number, message: string): boolean {
  * main refuses it, connect.ts says why.
  */
 export function saveConnection(next: Connection, typed = ''): number {
+  state.connectionChanging = true;
   const quiet = next.method === 'browser';
   if (quiet) { namesAsked = namesKey(next); namesPosted = null; }
   token.value = '';
   clearRememberedSelection();
   pendingConnection = { id: nextRequestId(), generation: state.connectionGeneration, placements: state.placements, token: typed, quiet, next, replaced: state.connection };
   state.connectionGeneration = null;
+  state.connectionChanging = false;
   state.placements = [];
   state.ops.connecting = true;
   announceConnected = true;
@@ -579,26 +584,29 @@ export function saveConnection(next: Connection, typed = ''): number {
  */
 async function identifyToken(chosen: string, value: string): Promise<Connection | null> {
   const ticket = ++identifyTicket;
+  let identified = false;
+  state.connectionChanging = true;
   state.ops.connecting = true;
   setStatus('Connecting…');
   scheduleRender();
-  const result = await identify(chosen, value);
-  // Whoever replaced this request owns the busy state.
-  if (ticket !== identifyTicket || result.kind === 'aborted') return null;
-  state.ops.connecting = false;
-  scheduleRender();
   try {
+    const result = await identify(chosen, value);
+    // Whoever replaced this request owns the busy state.
+    if (ticket !== identifyTicket || result.kind === 'aborted') return null;
+    state.ops.connecting = false;
+    scheduleRender();
     if (result.status === 200) {
       const identity = parseTokenIdentity(result.payload);
       // This console names a token's app, so it needs no IDs after all.
       if (idsOrigin === chosen) { idsOrigin = null; idsUnsure = false; }
       if (!identity.scopes.includes('draft')) throw fieldError(TOKEN_SCOPE, 'token');
-      const identified: Connection = { origin: chosen, orgId: identity.orgId, appId: identity.appId, token: value,
+      const next: Connection = { origin: chosen, orgId: identity.orgId, appId: identity.appId, token: value,
         ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}), ...(identity.appName ? { appName: identity.appName } : {}) };
       // Its names are today's; the passing test need not ask again.
-      namesAsked = namesKey(identified);
+      namesAsked = namesKey(next);
       namesPosted = null;
-      return identified;
+      identified = true;
+      return next;
     }
     // A missing token route needs IDs. No readable answer first needs a tokenless probe: the console may be offline.
     if (result.kind === 'network') {
@@ -619,6 +627,13 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
     setStatus('');
     showConnectionError(errorText(error), connectionErrorField(error), 'form');
     return null;
+  } finally {
+    // A newer identification or applyConnection owns the state after a stale answer.
+    if (ticket === identifyTicket && !identified) {
+      state.connectionChanging = false;
+      state.ops.connecting = false;
+      scheduleRender();
+    }
   }
 }
 

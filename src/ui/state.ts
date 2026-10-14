@@ -40,6 +40,8 @@ export const state = {
   connection: null as Connection | null,
   // Null while a connection save awaits main's acknowledgement, so no selection reply is trusted meanwhile.
   connectionGeneration: null as number | null,
+  // Identifying or beginning to save a replacement connection, distinct from retesting the current one.
+  connectionChanging: false,
   selectionGeneration: null as number | null,
   selection: { node: null, reason: 'Select a frame or layer to send.', fileKey: null, remembered: null, insertTarget: NEW_FRAME } as SelectionState,
   // The Send tab's placements, from the connection test.

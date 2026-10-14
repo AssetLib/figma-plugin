@@ -276,10 +276,10 @@ export function sendElsewhere(): void {
 
 /**
  * Why Send has no placements (the connection test failed), with Try again or Update token, unless the open connection
- * settings say it under the token field (`inSettings`).
+ * settings say it under the token field (`inSettings`). A retest keeps the notice until it has an answer.
  */
 function sendProblemShown(inSettings: boolean): ReadProblem | null {
-  return state.connection && state.testFailure && state.connectionGeneration !== null && !state.ops.connecting && !inSettings ? readProblem(state.testFailure, state.connection.method) : null;
+  return state.connection && state.testFailure && state.connectionGeneration !== null && !state.connectionChanging && !inSettings ? readProblem(state.testFailure, state.connection.method) : null;
 }
 let problemShown = false;
 

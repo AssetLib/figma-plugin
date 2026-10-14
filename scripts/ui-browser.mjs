@@ -941,8 +941,8 @@ test('one-click Connect shows the code to compare, cancels, connects without a t
     assert.equal(await page.evaluate(`document.getElementById('pairing-code').getAttribute('aria-label')`), 'Connection code B C D F G H J K');
     assert.equal(await page.focused(), 'pairing-check');
     assert.deepEqual(await page.evaluate('__harness.opened'), [`https://console.assetlib.dev/connect/figma#alw_${'w'.repeat(43)}`]);
-    assert.deepEqual(await page.evaluate(`['first-run-title', 'origin-field', 'browser-path', 'connection-form'].map(id => document.getElementById(id).checkVisibility())`),
-      [false, false, false, false], 'the request takes the first run’s place');
+    assert.deepEqual(await page.evaluate(`['first-run-title', 'origin-field', 'origin-line', 'browser-path', 'connection-form'].map(id => document.getElementById(id).checkVisibility())`),
+      [false, false, false, false, false], 'the request takes the first run’s place');
     for (const id of ['pairing-code', 'pairing-open', 'pairing-check', 'pairing-cancel']) assert.equal(await page.evaluate(inViewport(id)), true, id);
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('pairing-code')).fontSize`), '20px');
     // Cancel tells the console and goes back, with focus on Connect to Assetlib.
@@ -962,8 +962,8 @@ test('one-click Connect shows the code to compare, cancels, connects without a t
     // The account panel names who approved it, with Switch workspace and no token form.
     await page.click('#settings-summary');
     assert.equal(await page.evaluate(textOf('token-prefix')), 'Sample workspace · Connected as dana@example.com');
-    assert.deepEqual(await page.evaluate(`['switch-workspace', 'update-token', 'connection-form', 'origin-field'].map(id => document.getElementById(id).checkVisibility())`),
-      [true, false, false, false]);
+    assert.deepEqual(await page.evaluate(`['switch-workspace', 'update-token', 'connection-form', 'origin-field', 'origin-line'].map(id => document.getElementById(id).checkVisibility())`),
+      [true, false, false, false, false]);
     // Disconnect ends the token, then the first run.
     await page.click('#disconnect');
     await page.waitFor(`document.getElementById('app').dataset.view === 'first-run'`, { message: 'the first run again' });
@@ -993,6 +993,7 @@ test('one-click Connect shows the code to compare, cancels, connects without a t
     assert.equal(await refused.evaluate(`document.getElementById('settings').open`), false);
     await refused.click('#insert-token');
     await refused.waitFor(shown('pairing'), { message: 'Connect again' });
+    assert.equal(await refused.focused(), 'pairing-check');
     assert.equal(await refused.evaluate(`document.getElementById('connection-form').checkVisibility()`), false);
     assert.equal(await refused.evaluate(inViewport('pairing-check')), true);
   } finally { await refused.close(); }
@@ -2199,6 +2200,7 @@ test('connection paths keep at most one primary in every recovery and token-form
     ['healthy pasted', {}, menu, []],
     ['healthy Update token', {}, async page => { await menu(page); await page.click('#update-token'); }, []],
     ['refused pasted', { statuses: { placements: 401 } }, async page => { await page.waitFor(shown('insert-empty')); await page.click('#settings-summary'); }, ['connect-browser']],
+    ['refused pasted on older console', { statuses: { placements: 401, start: 404 } }, async page => { await page.waitFor(shown('insert-empty')); await page.click('#insert-token'); await page.waitFor(shown('pairing-note')); }, ['connect']],
     ['network failure', { failures: ['placements'] }, async page => { await page.waitFor(shown('insert-empty'), { timeout: 12000 }); await page.click('#settings-summary'); }, ['connect']],
     ['server failure', { statuses: { placements: 500 } }, async page => { await page.waitFor(shown('insert-empty')); await page.click('#settings-summary'); }, ['connect']],
     ['browser', { connection: browserConnection }, menu, []],
@@ -2206,16 +2208,45 @@ test('connection paths keep at most one primary in every recovery and token-form
     const page = await openUi(config);
     try {
       await prepare(page); await page.frames();
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
       const primary = await page.evaluate(inkPrimaries);
       assert.ok(primary.length <= 1, `${name}: at most one primary`);
       assert.deepEqual(primary, expected, name);
-      if (name === 'older console') {
+      if (name === 'refused pasted') {
+        await page.click('#connect');
+        await page.waitFor(`${textOf('connection-error')} === 'Paste a new token, or choose Connect to Assetlib above.'`);
+        await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+        assert.deepEqual(await page.evaluate(inkPrimaries), ['connect-browser'], 'blank Save token keeps one primary');
+        assert.equal(await page.evaluate(shown('insert-empty')), false);
+        await page.click('#tab-send'); await page.frames();
+        assert.equal(await page.evaluate(shown('send-problem')), false);
+      }
+      if (name === 'older console' || name === 'refused pasted on older console') {
         assert.equal(await page.evaluate(shown('connect-browser')), false);
+        assert.equal(await page.evaluate(shown('browser-help')), false);
         await page.click('#origin-change');
         await page.evaluate(choose('origin', 'http://localhost:3100'));
         await page.frames();
         assert.equal(await page.evaluate(shown('connect-browser')), true);
+        assert.equal(await page.evaluate(shown('browser-help')), true);
       }
+    } finally { await page.close(); }
+  }
+});
+
+test('Connect again from Insert and Send focuses the waiting request for pasted and browser connections', async () => {
+  for (const browser of [false, true]) for (const tab of ['insert', 'send']) {
+    const page = await openUi({ ...(browser ? { connection: browserConnection } : {}), statuses: { placements: 401 }, delays: { start: 300 } });
+    try {
+      await page.waitFor(shown('insert-empty'));
+      if (tab === 'send') { await page.click('#tab-send'); await page.waitFor(shown('send-problem')); }
+      // Browser recovery stays in the view even with the account panel open.
+      if (browser) await page.click('#settings-summary');
+      await page.evaluate(`document.getElementById('${tab}-token').focus()`);
+      await page.press('Enter');
+      await page.waitFor(`document.activeElement?.id === 'pairing-check'`, { message: `${browser ? 'browser' : 'pasted'} ${tab} recovery focus` });
+      assert.equal(await page.evaluate(inViewport('pairing-check')), true);
+      assert.equal(await page.evaluate(`__harness.log.filter(entry => entry.route === 'start').length`), 1);
     } finally { await page.close(); }
   }
 });
@@ -2245,6 +2276,8 @@ test('Change reveals and focuses the console select, and first run and pasted ac
       ['Open console', 'Connect with browser', 'Update token', 'Disconnect']);
     for (const id of ['open-console', 'switch-workspace', 'update-token', 'disconnect']) assert.equal(await page.evaluate(inViewport(id)), true, id);
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.getElementById('account-actions').scrollWidth <= document.getElementById('account-actions').clientWidth`), true);
+    assert.equal(await page.evaluate(shown('origin-field')), false);
+    assert.equal(await page.evaluate(shown('origin-line')), false, 'healthy pasted account menu hides the console meta line');
     await page.click('#update-token');
     assert.equal(await page.evaluate(shown('origin-line')), true);
     assert.equal(await page.evaluate(shown('origin-field')), false);
