@@ -220,7 +220,7 @@ function installFakes(config) {
     // config.statuses[route] answers that route with an error status instead (config.codes[route] adds a refused Figma
     // connection's code).
     if (config.statuses?.[route]) {
-      return json(config.statuses[route], { error: `HTTP ${config.statuses[route]} from the fake console.`, ...(config.codes?.[route] ? { code: config.codes[route] } : {}) });
+      return json(config.statuses[route], { error: config.errors?.[route] ?? `HTTP ${config.statuses[route]} from the fake console.`, ...(config.codes?.[route] ? { code: config.codes[route] } : {}) });
     }
     // One-click Connect: a request, claimed as config.pairingStatus says (__harness.approve() approves it).
     if (route === 'start') {
@@ -274,7 +274,7 @@ function installFakes(config) {
     const abort = () => { entry.aborted = true; reject(new DOMException('The operation was aborted.', 'AbortError')); };
     if (signal?.aborted) { abort(); return; }
     // config.failures lists routes that fail as a network error (an older console's missing CORS headers, say).
-    if (config.failures?.includes(route)) { setTimeout(() => { entry.done = true; reject(new TypeError('Failed to fetch')); }, delays[route] ?? 10); return; }
+    if ((route === 'token' && config.tokenAuthFails && init.headers?.Authorization) || config.failures?.includes(route)) { setTimeout(() => { entry.done = true; reject(new TypeError('Failed to fetch')); }, delays[route] ?? 10); return; }
     const onAbort = () => { clearTimeout(timer); abort(); };
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
@@ -454,7 +454,7 @@ async function openUi(options = {}, { width = 420, height = 720, theme: mode = n
   async function waitFor(expression, { timeout = 10000, message = expression } = {}) {
     const started = Date.now();
     for (;;) {
-      if (await evaluate(`Boolean(${expression})`)) return;
+      if (await evaluate(`(async () => Boolean(await (${expression})))()`)) return;
       if (Date.now() - started > timeout) throw new Error(`Timed out waiting for ${message}`);
       await new Promise(resolve => setTimeout(resolve, 25));
     }
@@ -555,9 +555,13 @@ const timesShown = text => `(() => { let count = 0; const walker = document.crea
     count += node.textContent.split(${JSON.stringify(text)}).length - 1;
   }
   return count; })()`;
-/** The ink primaries a person can see and use: visible, available, and filled with the text colour. */
-const inkPrimaries = `[...document.querySelectorAll('.primary')].filter(button => button.checkVisibility() && button.getAttribute('aria-disabled') !== 'true'
-  && getComputedStyle(button).backgroundColor === getComputedStyle(document.body).color).map(button => button.id)`;
+/**
+ * The ink primaries a person can see and use: visible, available, and filled with the text colour. Buttons fade their
+ * background over 120 ms, so the colours are read once running transitions end.
+ */
+const inkPrimaries = `Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {}))).then(() =>
+  [...document.querySelectorAll('.primary')].filter(button => button.checkVisibility() && button.getAttribute('aria-disabled') !== 'true'
+  && getComputedStyle(button).backgroundColor === getComputedStyle(document.body).color).map(button => button.id))`;
 
 test('tabs and search stay usable during a 5 s artwork load', async () => {
   const page = await openUi({ delays: { artwork: 5000 } });
@@ -710,10 +714,10 @@ test('the Sync bar shows a linked layer above the footer on both tabs, and Cmd+E
     assert.equal(await page.evaluate(`document.getElementById('selection-bar').clientHeight`), 48, 'one 48 px row at 420 px, under its 1 px rule');
     assert.equal(await page.evaluate(shown('hint-bar')), false, 'the hint steps aside while the Sync bar shows');
     // Its ink fades in over 120 ms once the placements make it available.
-    await page.waitFor(`JSON.stringify(${inkPrimaries}) === '["sync"]'`, { message: 'nothing chosen: Sync is the primary' });
+    await page.waitFor(`${inkPrimaries}.then(ids => JSON.stringify(ids) === '["sync"]')`, { message: 'nothing chosen: Sync is the primary' });
     // A row chosen: the footer's Insert is the one primary, and the bar sits above the footer.
     await page.click('#insert-list .placement[data-key="home.banner"]');
-    await page.waitFor(`JSON.stringify(${inkPrimaries}) === '["insert"]'`, { message: 'Insert, the one primary' });
+    await page.waitFor(`${inkPrimaries}.then(ids => JSON.stringify(ids) === '["insert"]')`, { message: 'Insert, the one primary' });
     assert.ok((await page.evaluate(box('selection-bar'))).bottom <= (await page.evaluate(box('insert-bar'))).top, 'above the footer');
     // Tab goes from the list to the bar, then to the footer.
     await page.press('Tab');
@@ -733,7 +737,7 @@ test('the Sync bar shows a linked layer above the footer on both tabs, and Cmd+E
     // On Send the bar stays, and its Sync is the primary over Send.
     await page.click('#tab-send');
     assert.equal(await page.evaluate(shown('selection-bar')), true);
-    await page.waitFor(`JSON.stringify(${inkPrimaries}) === '["sync"]'`, { message: 'Sync, the primary on Send' });
+    await page.waitFor(`${inkPrimaries}.then(ids => JSON.stringify(ids) === '["sync"]')`, { message: 'Sync, the primary on Send' });
     assert.equal(await page.evaluate(`document.getElementById('send').className`), 'secondary');
   } finally { await page.close(); }
 
@@ -872,7 +876,7 @@ test('the first run connects with only a token, and an older console asks for th
     await page.click('#token');
     await page.type('not-a-token');
     await page.press('Enter');
-    assert.equal(await page.evaluate(textOf('connection-error')), 'That doesn’t look like an Assetlib token. Tokens start with alk_.');
+    assert.equal(await page.evaluate(textOf('connection-error')), 'That doesn’t look like an Assetlib token. Draft tokens start with alk_.');
     assert.equal(await page.focused(), 'token');
     await page.evaluate(`document.getElementById('token').value = ''`);
     await page.type(fakeToken('first'));
@@ -896,7 +900,7 @@ test('the first run connects with only a token, and an older console asks for th
     assert.equal(await page.evaluate(textOf('status')), 'Disconnected. The token still works elsewhere until an owner revokes it.');
   } finally { await page.close(); }
 
-  for (const [description, options] of [['answers 404', { statuses: { token: 404 } }], ['sends no CORS headers', { failures: ['token'] }]]) {
+  for (const [description, options] of [['answers 404', { statuses: { token: 404 } }], ['sends no CORS headers but tokenless answers', { tokenAuthFails: true }]]) {
     const older = await openUi({ connection: null, ...options });
     try {
       await older.click('#use-token');
@@ -917,7 +921,7 @@ test('the first run connects with only a token, and an older console asks for th
       await older.press('Enter');
       await older.waitFor(`/^Connected to Assetlib\\./.test(document.getElementById('status').textContent)`, { message: `${description}: the connection` });
       assert.deepEqual(await older.evaluate('__harness.notices'), ['Connected to Assetlib'], `${description}: no raw IDs in the toast`);
-      assert.equal(await older.evaluate(`__harness.log.filter(entry => entry.route === 'token').length`), 1, `${description}: the IDs are used without asking again`);
+      assert.equal(await older.evaluate(`__harness.log.filter(entry => entry.route === 'token').length`), options.tokenAuthFails ? 2 : 1, `${description}: the IDs are used without asking again`);
     } finally { await older.close(); }
   }
 });
@@ -1192,19 +1196,20 @@ test('errors render inside the viewport', async () => {
       assert.equal(await list.evaluate(inViewport('insert-empty-text')), true, `${label}: the list error`);
       assert.equal(await list.evaluate(inViewport('insert-retry')), true, `${label}: Try again`);
     } finally { await list.close(); }
-    // A refused token on the opening test: the list says so in its place, with Update token, which opens the settings
-    // at the token field with the reason under it.
+    // A refused token on the opening test: the list says so in its place, with Connect again. The account chip opens
+    // the settings with the reason under the token field and Connect to Assetlib in view, and the list steps aside.
     const refused = await openUi({ statuses: { placements: 401 } }, size);
     try {
       await refused.waitFor(shown('insert-empty'), { message: `${label}: the refused token` });
       assert.equal(await refused.evaluate(`document.getElementById('settings').open`), false, `${label}: nothing opens by itself`);
       assert.equal(await refused.evaluate(inViewport('insert-empty-text')), true, `${label}: the list's reason`);
-      assert.equal(await refused.evaluate(inViewport('insert-token')), true, `${label}: Update token`);
+      assert.equal(await refused.evaluate(inViewport('insert-token')), true, `${label}: Connect again`);
+      assert.equal(await refused.evaluate(textOf('insert-token')), 'Connect again');
       assert.equal(await refused.focused(), 'insert-empty');
-      await refused.click('#insert-token');
+      await refused.click('#settings-summary');
+      await refused.waitFor(shown('connection-error'), { message: `${label}: the settings say why` });
       assert.equal(await refused.evaluate(inViewport('connection-error')), true, `${label}: the connection error`);
-      assert.equal(await refused.evaluate(inViewport('token')), true, `${label}: the token field`);
-      assert.equal(await refused.focused(), 'token');
+      assert.equal(await refused.evaluate(inViewport('connect-browser')), true, `${label}: Connect to Assetlib`);
       assert.equal(await refused.evaluate(shown('insert-empty')), false, `${label}: said once`);
     } finally { await refused.close(); }
     // On Send, the form says it, in view.
@@ -1224,7 +1229,7 @@ test('controls inside a callout stand apart from it, and hover shows in Figma’
     const back = getComputedStyle(callout).backgroundColor;
     return [...callout.querySelectorAll('input, select, button')].filter(control => control.checkVisibility()).map(control => {
       const style = getComputedStyle(control);
-      // A focused field's ring stands for its border (an invalid one's red border would double the ring).
+      // Fields keep a focus ring; an invalid field also keeps its danger border.
       const ring = control.matches(':focus-visible') && style.outlineStyle === 'solid' && parseFloat(style.outlineWidth) >= 2;
       return { id: control.id || control.textContent, apart: style.backgroundColor !== back && (ring || (style.borderTopStyle === 'solid'
         && parseFloat(style.borderTopWidth) >= 1 && style.borderTopColor !== back && style.borderTopColor !== 'rgba(0, 0, 0, 0)')) };
@@ -1303,11 +1308,11 @@ test('a failed opening connection test is said once, with at most one primary on
       assert.ok((await page.evaluate(inkPrimaries)).length <= 1, `${name}: one primary at most`);
       assert.equal(await page.evaluate(shown(action)), true, `${name}: its one action`);
       if (action.endsWith('token')) {
-        // Update token: the settings open at the token field, which says it, and the view steps aside.
-        await page.click(`#${action}`);
-        assert.equal(await page.focused(), 'token');
+        // The account chip opens the recovery choices; Connect again starts the browser request.
+        await page.click('#settings-summary');
+        await page.frames();
         assert.equal(await page.evaluate(timesShown(words)), 1, `${name}: still said once`);
-        assert.deepEqual(await page.evaluate(inkPrimaries), ['connect'], `${name}: Connect is the one primary`);
+        assert.deepEqual(await page.evaluate(inkPrimaries), ['connect-browser'], `${name}: browser recovery is the one primary`);
         await page.press('Escape');
         assert.equal(await page.evaluate(shown(place)), true, `${name}: closing the settings gives it back to the view`);
         assert.equal(await page.evaluate(timesShown(words)), 1);
@@ -1323,14 +1328,14 @@ test('a failed opening connection test is said once, with at most one primary on
     assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
     assert.equal(await page.evaluate(`document.getElementById('connect').className`), 'secondary wide');
   } finally { await page.close(); }
-  // The first run's Connect to Assetlib is its primary, and stays so with the token form chosen.
+  // Choosing the token form makes its submit the first run’s primary.
   const first = await openUi({ connection: null });
   try {
     await first.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
     await first.frames();
     assert.deepEqual(await first.evaluate(inkPrimaries), ['connect-browser']);
     await first.click('#use-token');
-    assert.deepEqual(await first.evaluate(inkPrimaries), ['connect-browser']);
+    assert.deepEqual(await first.evaluate(inkPrimaries), ['connect']);
   } finally { await first.close(); }
 });
 
@@ -2012,7 +2017,7 @@ test('a running action keeps its ink and a spinner, and the shell gives names an
     assert.equal(await grid.evaluate(`document.querySelectorAll('#image-grid .tile .name wbr').length > 0`), true);
   } finally { await grid.close(); }
 
-  // The first run sits in the middle of a tall window; an invalid field that has focus shows the ring, not a red border too.
+  // The first run sits in the middle of a tall window; an invalid field keeps its danger border inside the focus ring.
   const first = await openUi({ connection: null }, { width: 420, height: 900 });
   try {
     await first.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
@@ -2024,7 +2029,7 @@ test('a running action keeps its ink and a spinner, and the shell gives names an
     await first.press('Enter');
     assert.equal(await first.focused(), 'token');
     assert.deepEqual(await first.evaluate(`(() => { const s = getComputedStyle(document.getElementById('token')); return [s.borderTopColor, s.outlineStyle]; })()`),
-      ['rgba(0, 0, 0, 0)', 'solid']);
+      ['rgb(179, 38, 30)', 'solid']);
   } finally { await first.close(); }
 });
 
@@ -2091,7 +2096,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['list-unsupported', { statuses: { artwork: 404 } }, page => page.waitFor(shown('insert-empty'))],
     ['list-token-refused', { statuses: { artwork: 401 } }, page => page.waitFor(shown('insert-empty'))],
     ['opening-test-refused', { statuses: { placements: 401 } }, page => page.waitFor(shown('insert-empty'))],
-    ['opening-test-update-token', { statuses: { placements: 401 } }, async page => { await page.waitFor(shown('insert-empty')); await page.click('#insert-token'); }],
+    ['opening-test-update-token', { statuses: { placements: 401 } }, async page => { await page.waitFor(shown('insert-empty')); await page.click('#settings-summary'); }],
     ['opening-test-network', { failures: ['placements'] }, page => page.waitFor(shown('insert-empty'), { timeout: 12000 })],
     ['send-test-refused', { statuses: { placements: 401 }, preferences: { tab: 'send' } }, page => page.waitFor(shown('send-problem'))],
     ['send-test-network', { failures: ['placements'], preferences: { tab: 'send' } }, page => page.waitFor(shown('send-problem'), { timeout: 12000 })],
@@ -2142,7 +2147,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
         bound: null, bindError: 'This placement changed since the plugin loaded it.', rebound: [] } } },
       async page => { await pickBanner(page); await page.click('#send'); await page.waitFor(shown('result')); }],
   ];
-  const narrow = [['narrow-first-run', { connection: null }], ['narrow-hint', {}, ready], ['narrow-list', { declared: true, placements: 30 },
+  const narrow = [['narrow-first-run', { connection: null }], ['narrow-account-pasted', {}, async page => { await ready(page); await page.click('#settings-summary'); }], ['narrow-hint', {}, ready], ['narrow-list', { declared: true, placements: 30 },
     async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
   ['narrow-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, askForLink],
   ['narrow-sync-bar', { selection: linkedSelection(node) }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
@@ -2171,4 +2176,152 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
       } finally { await page.close(); }
     }
   }
+});
+
+// Batch 1: each row of the final connection table, using the built, CSS-minified UI.
+test('connection paths keep at most one primary in every recovery and token-form state', async () => {
+  const first = page => page.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
+  const menu = async page => { await page.waitFor(`${rows} > 0`); await page.click('#settings-summary'); };
+  const ended = async page => { await first(page); await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); };
+  for (const [name, config, prepare, expected] of [
+    ['first run', { connection: null }, first, ['connect-browser']],
+    ['token chosen', { connection: null }, async page => { await first(page); await page.click('#use-token'); }, ['connect']],
+    ['older console', { connection: null, statuses: { start: 404 } }, ended, ['connect']],
+    ['unreachable', { connection: null, failures: ['start', 'token'] }, ended, ['connect-browser']],
+    ['unreachable token chosen', { connection: null, failures: ['start', 'token'] }, async page => { await ended(page); await page.click('#use-token'); }, ['connect-browser']],
+    ['healthy pasted', {}, menu, []],
+    ['healthy Update token', {}, async page => { await menu(page); await page.click('#update-token'); }, []],
+    ['refused pasted', { statuses: { placements: 401 } }, async page => { await page.waitFor(shown('insert-empty')); await page.click('#settings-summary'); }, ['connect-browser']],
+    ['network failure', { failures: ['placements'] }, async page => { await page.waitFor(shown('insert-empty'), { timeout: 12000 }); await page.click('#settings-summary'); }, ['connect']],
+    ['server failure', { statuses: { placements: 500 } }, async page => { await page.waitFor(shown('insert-empty')); await page.click('#settings-summary'); }, ['connect']],
+    ['browser', { connection: browserConnection }, menu, []],
+  ]) {
+    const page = await openUi(config);
+    try {
+      await prepare(page); await page.frames();
+      const primary = await page.evaluate(inkPrimaries);
+      assert.ok(primary.length <= 1, `${name}: at most one primary`);
+      assert.deepEqual(primary, expected, name);
+      if (name === 'older console') {
+        assert.equal(await page.evaluate(shown('connect-browser')), false);
+        await page.click('#origin-change');
+        await page.evaluate(choose('origin', 'http://localhost:3100'));
+        await page.frames();
+        assert.equal(await page.evaluate(shown('connect-browser')), true);
+      }
+    } finally { await page.close(); }
+  }
+});
+
+test('Change reveals and focuses the console select, and first run and pasted account menu fit narrow windows', async () => {
+  for (const width of [320, 420]) {
+    const page = await openUi({ connection: null }, { width, height: 720 });
+    try {
+      await page.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
+      assert.equal(await page.evaluate(shown('origin-line')), true);
+      assert.equal(await page.evaluate(shown('origin-field')), false);
+      assert.equal(await page.evaluate(textOf('origin-host')), 'console.assetlib.dev');
+      assert.equal(await page.evaluate(`document.getElementById('guide-link').href`), 'https://www.assetlib.dev/guide');
+      assert.equal(await page.evaluate(textOf('guide-link')), 'How the Figma plugin works');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
+      assert.ok(await page.evaluate(`(() => { const r = document.querySelector('#settings .panel').getBoundingClientRect(); return Math.abs((r.left + r.right) / 2 - innerWidth / 2) < 2; })()`));
+      await page.click('#origin-change'); await page.frames();
+      assert.equal(await page.evaluate(shown('origin-field')), true);
+      assert.equal(await page.evaluate(shown('origin-line')), false);
+      assert.equal(await page.focused(), 'origin');
+    } finally { await page.close(); }
+  }
+  const page = await openUi({}, { width: 320, height: 480 });
+  try {
+    await page.waitFor(`${rows} > 0`); await page.click('#settings-summary');
+    assert.deepEqual(await page.evaluate(`['open-console', 'switch-workspace', 'update-token', 'disconnect'].map(id => document.getElementById(id).innerText)`),
+      ['Open console', 'Connect with browser', 'Update token', 'Disconnect']);
+    for (const id of ['open-console', 'switch-workspace', 'update-token', 'disconnect']) assert.equal(await page.evaluate(inViewport(id)), true, id);
+    assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.getElementById('account-actions').scrollWidth <= document.getElementById('account-actions').clientWidth`), true);
+    await page.click('#update-token');
+    assert.equal(await page.evaluate(shown('origin-line')), true);
+    assert.equal(await page.evaluate(shown('origin-field')), false);
+    await page.click('#origin-change'); await page.frames();
+    assert.equal(await page.focused(), 'origin');
+  } finally { await page.close(); }
+});
+
+test('invalid focused token keeps its danger border inside the ring in both themes', async () => {
+  for (const mode of ['light', 'dark']) {
+    const page = await openUi({ connection: null }, { theme: mode, height: 900 });
+    try {
+      await page.click('#use-token'); await page.type('not-a-token'); await page.press('Enter'); await page.frames();
+      assert.equal(await page.focused(), 'token');
+      const data = await page.evaluate(`(() => {
+        const input = document.getElementById('token'), s = getComputedStyle(input), r = input.getBoundingClientRect();
+        const rgb = value => value.match(/\\d+/g).slice(0, 3).map(Number);
+        return { border: rgb(s.borderTopColor), ring: rgb(s.outlineColor), width: s.borderTopWidth, offset: s.outlineOffset,
+          outline: s.outlineWidth, x: Math.round(r.left + r.width / 2), y: Math.floor(r.top),
+          danger: getComputedStyle(document.documentElement).getPropertyValue('--figma-color-border-danger-strong').trim() };
+      })()`);
+      assert.equal(data.width, '1px'); assert.equal(data.offset, '2px'); assert.equal(data.outline, '2px');
+      const expectedDanger = data.danger.match(/^#([0-9a-f]{6})$/i)?.[1];
+      assert.ok(expectedDanger, 'theme defines the danger border');
+      assert.deepEqual(data.border, [0, 2, 4].map(i => parseInt(expectedDanger.slice(i, i + 2), 16)));
+      const near = (actual, expected) => actual.every((value, i) => Math.abs(value - expected[i]) <= 2);
+      assert.ok(near(await page.pixel(data.x, data.y), data.border), `${mode}: visible danger border`);
+      assert.ok(near(await page.pixel(data.x, data.y - 3), data.ring), `${mode}: ring outside the border`);
+    } finally { await page.close(); }
+  }
+});
+
+test('waiting and resumed requests explain approval, with no spinner in reduced motion', async () => {
+  const page = await openUi({ connection: null, delays: { claim: 4000 } });
+  try {
+    await page.click('#connect-browser'); await page.waitFor(shown('pairing'));
+    assert.equal(await page.evaluate(shown('pairing-spinner')), true);
+    await page.waitFor(`__harness.log.some(entry => entry.route === 'claim')`, { timeout: 5000 });
+    assert.match(await page.evaluate(textOf('pairing-status-text')), /^Waiting for approval · expires in /);
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    await page.frames();
+    assert.equal(await page.evaluate(`document.getElementById('pairing-spinner').checkVisibility()`), false);
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('pairing-spinner')).animationName`), 'none');
+  } finally { await page.close(); }
+  const resumed = await openUi({ connection: null, pairing: { v: 1, origin: 'https://console.assetlib.dev', readKey: `alr_${'r'.repeat(43)}`,
+    userCode: 'BCDFGHJK', deadline: Date.now() + 300000, interval: 2 } });
+  try {
+    await resumed.waitFor(shown('pairing'));
+    assert.equal(await resumed.evaluate(textOf('pairing-text')), 'Approve in the console.assetlib.dev tab you opened earlier, or cancel and start again.');
+    assert.equal(await resumed.evaluate(`document.getElementById('pairing-resumed')`), null);
+  } finally { await resumed.close(); }
+  const declined = await openUi({ connection: null, pairingStatus: 'denied' });
+  try {
+    await declined.click('#connect-browser'); await declined.waitFor(shown('pairing-note'), { timeout: 5000 });
+    assert.equal(await declined.evaluate(textOf('pairing-note')), 'The request was declined in the browser. Connect again to approve it, or choose another workspace.');
+  } finally { await declined.close(); }
+});
+
+test('list failures have headlines and one primary action unless the Sync bar shows', async () => {
+  for (const [config, title, action] of [
+    [{ failures: ['artwork'] }, 'Couldn’t load the list', 'insert-retry'],
+    [{ statuses: { artwork: 500 } }, 'Couldn’t load the list', 'insert-retry'],
+    [{ statuses: { artwork: 429 } }, 'Couldn’t load the list', 'insert-retry'],
+    [{ statuses: { artwork: 401 } }, 'Connect to Assetlib again', 'insert-token'],
+    [{ statuses: { artwork: 403 }, errors: { artwork: 'This API token lacks the required scope.' } }, 'This token can’t be used here', 'insert-token'],
+    [{ statuses: { artwork: 404 } }, 'Insert isn’t available here', 'insert-go-send'],
+  ]) {
+    const page = await openUi(config);
+    try {
+      await page.waitFor(shown('insert-empty'), { timeout: 12000 });
+      assert.equal(await page.evaluate(textOf('insert-empty-title')), title);
+      assert.equal(await page.evaluate(shown('insert-empty-title')), true);
+      assert.deepEqual(await page.evaluate(inkPrimaries), [action]);
+    } finally { await page.close(); }
+  }
+});
+
+test('a failed list leaves the primary to the linked layer’s Sync bar', async () => {
+  const node = { id: '40:1', name: 'Home banner', type: 'FRAME', width: 390, height: 160 };
+  const page = await openUi({ statuses: { artwork: 500 }, selection: linkedSelection(node) });
+  try {
+    await page.waitFor(shown('insert-empty'));
+    assert.equal(await page.evaluate(textOf('insert-empty-title')), 'Couldn’t load the list');
+    assert.equal(await page.evaluate(`document.getElementById('insert-retry').className`), 'secondary');
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
+  } finally { await page.close(); }
 });

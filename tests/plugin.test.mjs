@@ -754,9 +754,9 @@ test('Insert errors: each failed list says why in its place, with the one action
   for (const [status, expected, action, error] of [
     [403, 'This token can’t read this app’s images. Create a token with Draft permission.', 'insert-token'],
     // A revoked token also answers 403, but its trouble is the token, not its scope: said as a 401 is.
-    [403, 'Assetlib no longer accepts this token. Paste a new one.', 'insert-token', 'This API token has been revoked.'],
+    [403, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.', 'insert-token', 'This API token has been revoked.'],
     [404, 'This console doesn’t support Insert yet. Send still works.', 'insert-go-send'],
-    [401, 'Assetlib no longer accepts this token. Paste a new one.', 'insert-token'],
+    [401, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.', 'insert-token'],
     [429, 'Assetlib is busy. Try again in a minute.', 'insert-retry'],
     [500, 'Assetlib had a problem (500). Try again in a minute.', 'insert-retry'],
   ]) {
@@ -764,6 +764,10 @@ test('Insert errors: each failed list says why in its place, with the one action
     await openInsert(app);
     assert.equal(app.element('insert-empty').hidden, false, `HTTP ${status}`);
     assert.equal(app.element('insert-empty-text').textContent, expected, `HTTP ${status}`);
+    assert.equal(app.element('insert-empty-title').hidden, false);
+    assert.equal(app.element('insert-empty-title').textContent, action === 'insert-retry' ? 'Couldn’t load the list'
+      : action === 'insert-go-send' ? 'Insert isn’t available here' : status === 401 || error ? 'Connect to Assetlib again' : 'This token can’t be used here');
+    assert.equal(app.element(action).className, 'primary');
     assert.equal(app.element('alert').textContent, expected, `HTTP ${status}: announced`);
     assert.deepEqual(['insert-retry', 'insert-token', 'insert-go-send'].filter(id => !app.element(id).hidden), [action], `HTTP ${status}`);
     assert.equal(app.element('error').hidden, true, 'the error line is for actions, not lists');
@@ -776,8 +780,9 @@ test('Insert errors: each failed list says why in its place, with the one action
     if (action === 'insert-token' && status === 401) {
       app.element('settings').open = false;
       app.element('insert-token').dispatch('click');
-      assert.equal(app.element('settings').open, true, 'Update token opens the settings');
-      assert.equal(app.activeElement(), app.element('token'));
+      await settle();
+      assert.equal(app.element('settings').open, true, 'Connect again opens the waiting request');
+      assert.equal(app.element('pairing').hidden, false);
     }
   }
 
@@ -789,6 +794,8 @@ test('Insert errors: each failed list says why in its place, with the one action
   // network is the likely cause now that consoles serve Insert, and Try again is the action.
   assert.equal(app.element('insert-empty-text').textContent, 'Can’t reach Assetlib. Check your internet connection.');
   assert.equal(app.element('insert-retry').hidden, false);
+  assert.equal(app.element('insert-empty-title').textContent, 'Couldn’t load the list');
+  assert.equal(app.element('insert-retry').className, 'secondary', 'the linked layer keeps the Sync bar');
   app.console.failures.clear();
   app.element('insert-retry').dispatch('click');
   await settle();
@@ -1158,7 +1165,7 @@ test('401 then 200 clears needs-attention, and nothing opens by itself', async (
   assert.equal(app.element('connection-label').textContent, 'Needs attention');
   assert.equal(app.element('chip-warning').hidden, false, 'the account chip shows it');
   assert.equal(app.element('settings').open, false, 'a failed read never opens the settings; the list says why');
-  assert.equal(app.element('insert-empty-text').textContent, 'Assetlib no longer accepts this token. Paste a new one.');
+  assert.equal(app.element('insert-empty-text').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   delete app.console.statuses.artwork;
   app.element('insert-refresh').dispatch('click');
   await settle();
@@ -1173,7 +1180,7 @@ test('401 then 200 clears needs-attention, and nothing opens by itself', async (
   const tested = harness({ console: { statuses: { placements: 401, artwork: 401 } } });
   await openInsert(tested, { keep: true });
   assert.equal(tested.element('settings').open, false);
-  assert.equal(tested.element('connection-error').textContent, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.',
+  assert.equal(tested.element('connection-error').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.',
     'kept under the token field for when the settings open');
   assert.equal(tested.element('chip-warning').hidden, false, 'the account chip shows it');
   assert.equal(tested.element('token').getAttribute('aria-invalid'), 'true');
@@ -1207,17 +1214,17 @@ test('a failed connection test is said once: by the view in front, or under the 
   await settle();
   assert.equal(insert.element('settings').open, false);
   assert.equal(insert.element('chip-warning').hidden, false);
-  assert.equal(insert.element('insert-empty-text').textContent, 'Assetlib no longer accepts this token. Paste a new one.');
+  assert.equal(insert.element('insert-empty-text').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   assert.deepEqual(['insert-retry', 'insert-token'].filter(id => visible(insert, id)), ['insert-token']);
-  assert.equal(insert.element('alert').textContent, 'Assetlib no longer accepts this token. Paste a new one.', 'announced once');
+  assert.equal(insert.element('alert').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.', 'announced once');
   assert.equal(insert.activeElement(), insert.element('insert-empty'), 'focus moves to it');
-  assert.equal(insert.element('connect').className, 'primary wide', 'fixing the connection is the panel’s primary');
+  assert.equal(insert.element('connect-browser').className, 'primary wide', 'fixing the connection is the panel’s primary');
   // Update token: the settings open at the token field with the reason under it, and the list steps aside.
-  insert.element('insert-token').dispatch('click');
+  insert.element('settings').open = true;
+  insert.element('settings').dispatch('toggle');
   await settle();
   assert.equal(insert.element('settings').open, true);
-  assert.equal(insert.activeElement(), insert.element('token'));
-  assert.equal(insert.element('connection-error').textContent, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
+  assert.equal(insert.element('connection-error').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   assert.equal(insert.element('insert-empty').hidden, true, 'not said twice');
   // Closing the settings gives it back to the list.
   insert.element('settings').open = false;
@@ -1228,10 +1235,10 @@ test('a failed connection test is said once: by the view in front, or under the 
   // A revoked token answers the test with a 403: said as a refused token, never as a missing scope.
   const revoked = harness({ prefs: { tab: 'insert' }, console: { statuses: { placements: 403 }, errors: { placements: 'This API token has been revoked.' } } });
   await settle();
-  assert.equal(revoked.element('insert-empty-text').textContent, 'Assetlib no longer accepts this token. Paste a new one.');
+  assert.equal(revoked.element('insert-empty-text').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   revoked.element('insert-token').dispatch('click');
   await settle();
-  assert.equal(revoked.element('connection-error').textContent, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
+  assert.equal(revoked.element('connection-error').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   assert.equal(revoked.element('token').getAttribute('aria-invalid'), 'true');
 
   // Unreachable on Insert: Try again in the list, nothing opens, and no field is marked.
@@ -1268,12 +1275,12 @@ test('a failed connection test is said once: by the view in front, or under the 
   // Refused on Send: Update token. With the settings open, the token field says it and the form does not.
   const refused = harness({ console: { statuses: { placements: 401 } } });
   await settle();
-  assert.equal(refused.element('send-problem-text').textContent, 'Assetlib no longer accepts this token. Paste a new one.');
+  assert.equal(refused.element('send-problem-text').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   assert.deepEqual(['send-retry', 'send-token'].filter(id => visible(refused, id)), ['send-token']);
   refused.element('send-token').dispatch('click');
   await settle();
   assert.equal(refused.element('settings').open, true);
-  assert.equal(refused.activeElement(), refused.element('token'));
+  assert.equal(refused.element('pairing').hidden, false);
   assert.equal(refused.element('send-problem').hidden, true, 'not said twice');
 
   // A test that fails while the person has the settings open (they saved a token there) is said under the token field only.
@@ -1284,8 +1291,8 @@ test('a failed connection test is said once: by the view in front, or under the 
   saving.console.statuses.placements = 401;
   saving.saveConnection({ ...connection, token: tok('draft_revoked') });
   await settle();
-  assert.equal(saving.element('connection-error').textContent, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
-  assert.equal(saving.element('alert').textContent, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.');
+  assert.equal(saving.element('connection-error').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
+  assert.equal(saving.element('alert').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   assert.equal(saving.element('insert-empty').hidden, true, 'the list says nothing of its own');
   assert.equal(saving.activeElement(), saving.element('token'));
 });
@@ -2142,7 +2149,8 @@ test('closing the connection settings moves focus to their summary, and a token 
   const recovered = harness({ console: { statuses: { artwork: 401 } } });
   await openInsert(recovered);
   assert.equal(recovered.element('settings').open, false);
-  recovered.element('insert-token').dispatch('click');
+  recovered.element('settings').open = true;
+  recovered.element('settings').dispatch('toggle');
   assert.equal(recovered.element('settings').open, true);
   recovered.element('connect').focus();
   delete recovered.console.statuses.artwork;
@@ -2168,7 +2176,7 @@ test('a failed connection test never takes focus from a field the person is in',
   assert.equal(searching.element('token').getAttribute('aria-invalid'), 'true');
   assert.equal(searching.element('settings').open, false, 'nothing opens and pushes the field away');
   assert.equal(searching.element('insert-empty').hidden, false, 'the list says why');
-  assert.equal(searching.element('alert').textContent, 'Assetlib no longer accepts this token. Paste a new one.');
+  assert.equal(searching.element('alert').textContent, 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.');
   assert.equal(searching.activeElement(), searching.element('insert-search'));
   assert.equal(searching.element('insert-search').value, 'ho');
   assert.equal(searching.element('token').value, '', 'nothing typed reaches the token field');
@@ -2251,7 +2259,8 @@ test('a passing connection test leaves the settings open while the person works 
   // A read that recovers from a failure leaves the settings open while focus is in one of their fields.
   const recovered = harness({ console: { statuses: { artwork: 401 } } });
   await openInsert(recovered);
-  recovered.element('insert-token').dispatch('click');
+  recovered.element('settings').open = true;
+  recovered.element('settings').dispatch('toggle');
   assert.equal(recovered.element('settings').open, true);
   recovered.element('org-id').focus();
   delete recovered.console.statuses.artwork;
@@ -2351,11 +2360,11 @@ test('a pasted token is all the form needs: GET /api/token names its app, and th
   assert.equal(app.element('app').getAttribute('data-view'), 'first-run');
   // Connect to Assetlib comes first; the token form is the secondary path, shown when chosen.
   assert.deepEqual([app.element('connect-browser').textContent, app.element('connect-browser').className], ['Connect to Assetlib', 'primary wide']);
-  assert.deepEqual([app.element('connection-form').hidden, app.element('use-token').hidden, app.element('origin-field').hidden], [true, false, false]);
+  assert.deepEqual([app.element('connection-form').hidden, app.element('use-token').hidden, app.element('origin-field').hidden], [true, false, true]);
   app.element('use-token').dispatch('click');
   assert.deepEqual([app.element('connection-form').hidden, app.element('use-token').hidden], [false, true]);
   assert.equal(app.activeElement(), app.element('token'));
-  assert.deepEqual([app.element('connect').textContent, app.element('connect').className], ['Connect with token', 'secondary wide'], 'secondary on the first run');
+  assert.deepEqual([app.element('connect').textContent, app.element('connect').className], ['Connect with token', 'primary wide'], 'primary after choosing the token form');
   assert.equal(app.element('id-fields').hidden, true);
   app.element('token').value = connection.token;
   app.element('connection-form').dispatch('submit');
@@ -2636,7 +2645,7 @@ test('GET /api/token: a refused, revoked, or declare-only token is the token fie
     ['a revoked token (403)', { statuses: { token: 403 } }, 'Assetlib didn’t accept this token. It may have been revoked. Create a new one in Settings › Tokens.', 'token'],
     ['a declare token', { identity: { orgId: 'org-one', appId: 'app-a', workspaceName: null, appName: null, scopes: ['declare'] } }, 'This token can’t send drafts. Create a token with Draft permission.', 'token'],
     ['404', { statuses: { token: 404 } }, 'This console also needs the organization and app IDs. Find them in Settings › General.', 'org-id'],
-    ['no CORS headers', { failures: new Set(['token']) }, 'This console also needs the organization and app IDs. Find them in Settings › General.', 'org-id'],
+    ['no answer', { failures: new Set(['token']) }, 'Can’t reach Assetlib. Check your internet connection.', null],
     ['a server error', { statuses: { token: 500 } }, 'Assetlib had a problem (500). Try again in a minute.', null],
   ]) {
     const app = harness({ saved: null, console: consoleState });
@@ -4617,11 +4626,11 @@ test('after a network failure on GET /api/token, a Connect with the ID fields em
   app.element('token').value = connection.token;
   app.element('connection-form').dispatch('submit');
   await settle();
-  assert.equal(app.element('id-fields').hidden, false, 'an older console without CORS looks the same as a dropped connection');
+  assert.equal(app.element('id-fields').hidden, true, 'an unreachable console asks for no IDs');
   app.console.failures.clear();
   app.element('connection-form').dispatch('submit');
   await settle();
-  assert.equal(app.requests.filter(request => request.route === 'token').length, 2, 'the token is asked about again');
+  assert.equal(app.requests.filter(request => request.route === 'token').length, 3, 'the token is asked about again after the tokenless probe');
   assert.equal(app.element('app').getAttribute('data-view'), 'shell');
   assert.equal(app.element('id-fields').hidden, true, 'this console names a token’s app, so its ID fields go');
   assert.deepEqual(app.storage.get('assetlib.connection.v1'), { ...connection, workspaceName: 'Sample workspace', appName: 'Sample app' });
@@ -4647,7 +4656,7 @@ test('with a working connection the account panel is a menu; Update token shows 
   const refused = harness({ console: { statuses: { placements: 401 } } });
   await settle();
   assert.deepEqual([refused.element('connection-form').hidden, refused.element('update-token').hidden], [false, true]);
-  assert.deepEqual([refused.element('connect').textContent, refused.element('connect').className], ['Connect', 'primary wide']);
+  assert.deepEqual([refused.element('connect').textContent, refused.element('connect').className], ['Save token', 'secondary wide']);
 });
 
 test('the hint bar steps aside while the Sync bar shows, and the Send card is a dashed slot without a layer', async () => {
@@ -4674,8 +4683,13 @@ const issued = () => new Map([[figmaToken, { orgId: orgUuid, appId: appUuid, wor
 const claims = app => app.requests.filter(request => request.route === 'claim');
 const routeCount = (app, route) => app.requests.filter(request => request.route === route).length;
 const posted = (app, type) => app.uiMessages.filter(message => message.type === type);
-// The polls waiting, by delay (the countdown's 30 s renewal aside).
-const pollDelays = app => [...app.timers.values()].map(timer => timer.delay).filter(delay => delay !== 30000).sort((a, b) => a - b);
+// The polls waiting, by delay, with one 15 s countdown renewal removed (a poll may also wait 15 s).
+const pollDelays = app => {
+  const delays = [...app.timers.values()].map(timer => timer.delay);
+  const countdown = delays.indexOf(15000);
+  if (countdown !== -1) delays.splice(countdown, 1);
+  return delays.sort((a, b) => a - b);
+};
 function approve(app, extra = {}) { Object.assign(app.console.pairings.at(-1), { status: 'approved', connection: { ...claimed, ...extra } }); }
 async function startConnect(app) { app.element('connect-browser').dispatch('click'); await settle(); }
 function linkedNode(id, origin, orgId, appId) {
@@ -4739,8 +4753,8 @@ test('Connect to Assetlib starts a request, offering a workspace this page links
   assert.deepEqual([app.element('first-run-title').hidden, app.element('browser-path').hidden, app.element('origin-field').hidden], [true, true, true]);
   assert.equal(app.element('pairing-text').textContent, 'Assetlib opened console.assetlib.dev in your browser. Sign in, check that it shows this code, and approve.');
   assert.deepEqual([app.element('pairing-code').textContent, app.element('pairing-code').getAttribute('aria-label')], ['BCDF-GHJK', 'Connection code B C D F G H J K']);
-  assert.equal(app.element('pairing-status').textContent, 'Waiting for approval · expires in 10 min');
-  assert.deepEqual(['pairing-open', 'pairing-check', 'pairing-cancel', 'pairing-resumed'].map(id => app.element(id).hidden), [false, false, false, true]);
+  assert.equal(app.element('pairing-status-text').textContent, 'Waiting for approval · expires in 10 min');
+  assert.deepEqual(['pairing-open', 'pairing-check', 'pairing-cancel', 'pairing-spinner'].map(id => app.element(id).hidden), [false, false, false, false]);
   assert.equal(app.activeElement(), app.element('pairing-check'));
   assert.equal(app.element('status').textContent, 'Approve in your browser. The code is B C D F G H J K.');
   assert.deepEqual(pollDelays(app), [2000], 'the first poll after one interval');
@@ -4837,7 +4851,7 @@ test('a request approved in the browser saves a browser connection, without aski
 });
 
 test('a request ends when declined, expired, cancelled there, or cancelled here, and Connect starts another', async () => {
-  for (const [status, text] of [['denied', 'The request was declined in the browser.'], ['cancelled', 'The request was cancelled. Connect again when you’re ready.'],
+  for (const [status, text] of [['denied', 'The request was declined in the browser. Connect again to approve it, or choose another workspace.'], ['cancelled', 'The request was cancelled. Connect again when you’re ready.'],
     ['expired', 'The request expired before it was approved. Connect again for a new code.']]) {
     const app = harness({ saved: null });
     await settle();
@@ -4897,8 +4911,8 @@ test('a request waiting when the plugin closed resumes when it opens again; one 
   const app = harness({ saved: null, now: () => now, storage: [['assetlib.pairing.v1', record]], console: { pairings: [pending] } });
   await settle();
   assert.equal(app.element('pairing').hidden, false);
-  assert.deepEqual(['pairing-open', 'pairing-resumed'].map(id => app.element(id).hidden), [true, false], 'no write key to open the page with');
-  assert.equal(app.element('pairing-status').textContent, 'Waiting for approval · expires in 5 min');
+  assert.deepEqual(['pairing-open', 'pairing-spinner'].map(id => app.element(id).hidden), [true, false], 'no write key to open the page with');
+  assert.equal(app.element('pairing-status-text').textContent, 'Waiting for approval · expires in 5 min');
   assert.equal(claims(app).length, 1, 'polled at once');
   assert.equal(app.externalUrls.length, 0);
   approve(app);
@@ -5135,7 +5149,7 @@ test('an approval during a Send or an Insert waits for it, then the connection c
   app.fireTimers(2000);
   await settle();
   assert.equal(app.console.issued.size, 2, 'approved and claimed');
-  assert.deepEqual([posted(app, 'save-connection').length, app.element('pairing-status').textContent, draft.signal.aborted], [0, 'Saving connection…', false]);
+  assert.deepEqual([posted(app, 'save-connection').length, app.element('pairing-status-text').textContent, draft.signal.aborted], [0, 'Saving connection…', false]);
   // It keeps the request's turn meanwhile, so another window never finds it claimed and ends its token.
   const turn = app.storage.get('assetlib.pairing.v1').polledAt;
   app.fireTimers(2000);
@@ -5338,7 +5352,7 @@ test('Switch workspace keeps Insert working while it waits, and ends the token i
   app.fireTimers(2000);
   await settle();
   assert.deepEqual([app.element('pairing-note').textContent, app.element('pairing-note').hidden, app.element('account-actions').hidden],
-    ['The request was declined in the browser.', false, false]);
+    ['The request was declined in the browser. Connect again to approve it, or choose another workspace.', false, false]);
   assert.equal(app.activeElement(), app.element('pairing-note'));
   app.element('settings').open = false;
   app.element('settings').dispatch('toggle');
@@ -5423,9 +5437,9 @@ test('an older console opens the token form; one that can’t be reached, or is 
   await settle();
   await startConnect(offline);
   assert.deepEqual([offline.element('pairing-note').textContent, offline.element('pairing-note').className],
-    ['Assetlib couldn’t be reached. Check your connection and try again, or use a token instead.', 'error']);
+    ['Assetlib couldn’t be reached. Check your internet connection, then try again.', 'error']);
   assert.deepEqual([offline.element('connect-browser').textContent, offline.element('use-token').hidden, offline.element('connection-form').hidden], ['Try again', false, true]);
-  assert.equal(offline.element('alert').textContent, 'Assetlib couldn’t be reached. Check your connection and try again, or use a token instead.');
+  assert.equal(offline.element('alert').textContent, 'Assetlib couldn’t be reached. Check your internet connection, then try again.');
   offline.console.failures.delete('start');
   offline.element('connect-browser').dispatch('click');
   await settle();
@@ -5522,5 +5536,199 @@ test('a browser connection the console refuses says why, with Connect again, nev
   // A pasted token is unchanged: Update token, and the form.
   const pasted = harness({ prefs: { tab: 'insert' }, console: { statuses: { placements: 403 }, errors: { placements: 'Refused.' }, codes: { placements: 'revoked' } } });
   await settle();
-  assert.deepEqual([pasted.element('insert-empty-text').textContent, pasted.element('insert-token').textContent], ['Assetlib no longer accepts this token. Paste a new one.', 'Update token']);
+  assert.deepEqual([pasted.element('insert-empty-text').textContent, pasted.element('insert-token').textContent], ['Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.', 'Connect again']);
+});
+
+// Batch 1: connection recovery and the first-run paths.
+const refusedPastedText = 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.';
+test('the connection paths follow the primary table', async () => {
+  for (const [name, options, prepare, expected] of [
+    ['first run', { saved: null }, null, [false, 'primary wide', true, 'secondary wide', false]],
+    ['token chosen', { saved: null }, app => app.element('use-token').dispatch('click'), [false, 'secondary wide', false, 'primary wide', true]],
+    ['older', { saved: null, console: { statuses: { start: 404 } } }, startConnect, [true, 'secondary wide', false, 'primary wide', true]],
+    ['unreachable', { saved: null, console: { failures: new Set(['start', 'token']) } }, startConnect, [false, 'primary wide', true, 'secondary wide', false]],
+    ['unreachable token chosen', { saved: null, console: { failures: new Set(['start', 'token']) } }, async app => { await startConnect(app); app.element('use-token').dispatch('click'); }, [false, 'primary wide', false, 'secondary wide', true]],
+    ['healthy pasted', {}, null, [true, 'secondary wide', true, 'secondary wide', true]],
+    ['healthy Update token', {}, app => app.element('update-token').dispatch('click'), [true, 'secondary wide', false, 'secondary wide', true]],
+    ['refused pasted', { console: { statuses: { placements: 401 } } }, null, [false, 'primary wide', false, 'secondary wide', true]],
+    ['server failure', { console: { statuses: { placements: 500 } } }, null, [true, 'secondary wide', false, 'primary wide', true]],
+    ['browser', { saved: browserConnection, console: { issued: issued() } }, null, [true, 'secondary wide', true, 'secondary wide', true]],
+  ]) {
+    const app = harness({ remembered: null, ...options });
+    await settle();
+    app.element('settings').open = true;
+    app.element('settings').dispatch('toggle');
+    if (prepare) await prepare(app);
+    await settle();
+    assert.deepEqual([app.element('browser-path').hidden || app.element('connect-browser').hidden, app.element('connect-browser').className,
+      app.element('connection-form').hidden, app.element('connect').className, app.element('use-token').hidden], expected, name);
+    if (name === 'refused pasted') {
+      assert.equal(app.element('switch-workspace').hidden, true);
+      assert.equal(app.element('connect').textContent, 'Save token');
+      assert.equal(app.element('connection-error').textContent, refusedPastedText);
+      const requests = app.requests.length;
+      app.element('connection-form').dispatch('submit');
+      await settle();
+      assert.equal(app.requests.length, requests, 'blank Save token sends nothing');
+      assert.equal(app.element('connection-error').textContent, 'Paste a new token, or choose Connect to Assetlib above.');
+      assert.equal(app.element('token').getAttribute('aria-invalid'), 'true');
+    }
+    if (name.startsWith('healthy')) assert.equal(app.element('switch-workspace').textContent, 'Connect with browser');
+    if (name === 'browser') assert.equal(app.element('switch-workspace').textContent, 'Switch workspace');
+  }
+});
+
+test('pasted tokens reconnect with the current workspace hint, without revoking the pasted token', async () => {
+  for (const refusal of [false, true]) {
+    let now = 3_000_000;
+    const saved = { ...connection, orgId: orgUuid, appId: appUuid };
+    const app = harness({ saved, prefs: { tab: 'insert' }, remembered: null, now: () => now,
+      console: refusal ? { statuses: { placements: 401 } } : {} });
+    await settle();
+    if (refusal) {
+      assert.equal(app.element('insert-empty-text').textContent, refusedPastedText);
+      assert.equal(app.element('insert-token').textContent, 'Connect again');
+      app.element('insert-token').dispatch('click');
+      await settle();
+    } else await switchWorkspace(app);
+    assert.deepEqual(app.console.pairings.at(-1).hint, { orgId: orgUuid, appId: appUuid });
+    assert.equal(app.element('settings').open, true);
+    assert.equal(app.element('pairing').hidden, false);
+    delete app.console.statuses.placements;
+    approve(app);
+    now += 2000; app.fireDue(); await settle();
+    assert.equal(lastConnection(app).method, 'browser');
+    assert.equal(app.console.revoked.has(saved.token), false);
+    assert.equal(routeCount(app, 'current'), 0);
+  }
+});
+
+test('a refused pasted draft warns the chip and offers Connect again; refused Disconnect has no Undo', async () => {
+  for (const action of ['send', 'sync']) {
+    const app = harness({ remembered: action === 'sync' ? rememberedA : null, console: { statuses: { drafts: 401 } } });
+    await settle();
+    if (action === 'send') { app.element('placement').value = placement.key; app.element('placement').dispatch('change'); }
+    app.element(action).dispatch('click'); await settle();
+    assert.equal(app.element('connection-label').textContent, 'Needs attention');
+    assert.equal(app.element('chip-warning').hidden, false);
+    assert.equal(app.element('error').textContent, refusedPastedText);
+    assert.equal(app.element('error-action').textContent, 'Connect again');
+    app.element('error-action').dispatch('click'); await settle();
+    assert.equal(app.console.pairings.length, 1);
+  }
+  const app = harness({ console: { statuses: { placements: 401 } } }); await settle();
+  app.element('disconnect').dispatch('click'); await settle();
+  const toast = app.notifications.at(-1);
+  assert.equal(toast.message, 'Disconnected. Assetlib had stopped accepting that token.');
+  assert.equal(toast.options?.button, undefined);
+  assert.equal(app.element('status').textContent, toast.message);
+});
+
+test('Send hides a stale failure during token identification, storage, and the new placements read; a refused save restores it', async () => {
+  for (const fail of [false, true]) {
+    const app = harness({ console: { failures: new Set(['placements']) } });
+    await exhaustRetries(app);
+    assert.equal(app.element('send-problem').hidden, false);
+    const tokenGate = deferred(); app.console.gates.token = tokenGate;
+    const write = app.delayConnectionWrite();
+    app.saveConnection({ ...connection, token: tok('replacement') });
+    await settle();
+    assert.equal(app.element('send-problem').hidden, true, 'GET /api/token is still waiting');
+    tokenGate.resolve(); await settle();
+    assert.equal(app.element('send-problem').hidden, true, 'main has not answered');
+    if (fail) {
+      write.reject(new Error('Storage unavailable')); await settle();
+      assert.equal(app.element('send-problem').hidden, false, 'main refused the save');
+    } else {
+      app.console.failures.clear(); app.console.gates.placements = deferred();
+      write.resolve(); await settle();
+      assert.equal(app.element('send-problem').hidden, true);
+      assert.deepEqual(app.element('placement').children.map(option => option.textContent), ['Loading placements…']);
+      app.console.gates.placements.resolve(); await settle();
+      assert.equal(app.element('send-problem').hidden, true);
+    }
+  }
+});
+
+test('unreachable production and development consoles ask for no IDs; a tokenless answer still enables older-console IDs', async () => {
+  for (const origin of [connection.origin, 'http://localhost:3100']) {
+    const text = origin === connection.origin ? 'Can’t reach Assetlib. Check your internet connection.' : 'Can’t reach the console at localhost:3100. Check that it’s running.';
+    const app = harness({ saved: null, console: { failures: new Set(['start', 'token']) } }); await settle();
+    app.element('origin').value = origin; await startConnect(app);
+    assert.equal(app.element('pairing-note').textContent, origin === connection.origin ? 'Assetlib couldn’t be reached. Check your internet connection, then try again.' : text);
+    app.element('use-token').dispatch('click'); app.element('token').value = connection.token;
+    app.element('connection-form').dispatch('submit'); await settle();
+    assert.equal(app.element('connection-error').textContent, text);
+    assert.equal(app.element('connection-error').className, 'error');
+    assert.equal(app.element('id-fields').hidden, true);
+    for (const id of ['token', 'org-id', 'app-id']) assert.equal(app.element(id).getAttribute('aria-invalid'), null);
+  }
+  const consoleState = { failures: new Set() };
+  const respond = fakeConsole(consoleState);
+  const app = harness({ saved: null, fetch: (url, options, request) => {
+    if (url.endsWith('/api/token') && options.headers?.Authorization) throw new TypeError('no CORS headers');
+    return respond(url, options, request);
+  } });
+  await settle(); app.element('use-token').dispatch('click'); app.element('token').value = connection.token;
+  app.element('connection-form').dispatch('submit'); await settle();
+  assert.equal(app.element('id-fields').hidden, false);
+  assert.equal(app.element('connection-error').className, 'info');
+  assert.equal(app.requests.at(-1).authorization, undefined);
+});
+
+test('first-run copy, role, guide, and Change explain the paths without exposing the console picker', async () => {
+  const html = await readFile(`${root}/src/ui.html`, 'utf8');
+  assert.ok(html.includes('<p id="browser-help" class="help">Your browser opens so you can sign in and approve. You need edit access (editor, publisher, or owner) in your team’s Assetlib workspace; a workspace owner can invite you or change your role.</p>'));
+  assert.match(html, /id="guide-link"[^>]*href="https:\/\/www\.assetlib\.dev\/guide"[^>]*>How the Figma plugin works<\/a>/);
+  assert.ok(!html.includes('id="pairing-resumed"'));
+  const app = harness({ saved: null }); await settle();
+  assert.equal(app.element('origin-line').hidden, false);
+  assert.equal(app.element('origin-host').textContent, 'console.assetlib.dev');
+  assert.equal(app.element('origin-field').hidden, true);
+  app.element('origin-change').dispatch('click');
+  assert.equal(app.element('origin-field').hidden, false);
+  assert.equal(app.element('origin-line').hidden, true);
+  assert.equal(app.activeElement(), app.element('origin'));
+  const dev = harness({ saved: { ...connection, origin: 'http://localhost:3100' } }); await settle();
+  dev.element('update-token').dispatch('click');
+  assert.equal(dev.element('origin-field').hidden, false);
+  const older = harness({ saved: null, console: { statuses: { start: 404 } } }); await settle(); await startConnect(older);
+  assert.equal(older.element('connect-browser').hidden, true);
+  older.element('origin-change').dispatch('click'); older.element('origin').value = 'http://localhost:3100'; older.element('origin').dispatch('change');
+  assert.equal(older.element('connect-browser').hidden, false);
+});
+
+test('waiting has a spinner and a countdown renewed after 15 seconds, including during a claim; resumed copy names the earlier tab', async () => {
+  let now = 3_000_000;
+  const app = harness({ saved: null, now: () => now }); await settle(); await startConnect(app);
+  app.console.gates.claim = deferred();
+  now += 15000; app.fireDue(); await settle();
+  assert.equal(app.element('pairing-spinner').hidden, false);
+  assert.equal(app.element('pairing-status-text').textContent, 'Waiting for approval · expires in 9 min');
+  assert.ok([...app.timers.values()].some(timer => timer.delay === 15000), 'countdown renews every 15 seconds');
+  app.console.gates.claim.resolve(); await settle();
+  assert.equal(app.element('pairing-status-text').textContent, 'Waiting for approval · expires in 9 min');
+  const resumed = harness({ saved: null, now: () => now, storage: [['assetlib.pairing.v1', { v: 1, origin: connection.origin,
+    readKey: `alr_${'r'.repeat(43)}`, userCode: 'BCDFGHJK', deadline: now + 300000, interval: 2 }]], console: { gates: { claim: deferred() } } });
+  await settle();
+  assert.equal(resumed.element('pairing-text').textContent, 'Approve in the console.assetlib.dev tab you opened earlier, or cancel and start again.');
+});
+
+test('browser recovery is the only primary beside a linked selection or a chosen insert', async () => {
+  const app = harness({ console: { statuses: { drafts: 401 } } }); await settle();
+  app.element('sync').dispatch('click'); await settle();
+  app.element('settings').open = true; app.element('settings').dispatch('toggle');
+  assert.equal(app.element('connect-browser').className, 'primary wide');
+  assert.equal(app.element('sync').className, 'secondary');
+  assert.equal(app.element('send').className, 'secondary');
+
+  const inserting = harness(); await openInsert(inserting);
+  rowFor(inserting, placement.key).dispatch('click');
+  inserting.console.statuses.rendition = 401;
+  inserting.element('insert').dispatch('click'); await settle();
+  assert.equal(inserting.element('error').textContent, refusedPastedText);
+  assert.equal(inserting.element('error-action').textContent, 'Connect again');
+  inserting.element('settings').open = true; inserting.element('settings').dispatch('toggle');
+  assert.equal(inserting.element('connect-browser').className, 'primary wide');
+  assert.equal(inserting.element('insert').className, 'secondary');
 });

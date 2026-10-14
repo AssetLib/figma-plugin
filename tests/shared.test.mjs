@@ -695,7 +695,7 @@ test('a typed token must look like an Assetlib token; saved connections keep loa
   const token = `alk_${'a'.repeat(43)}`;
   assert.equal(checkTokenFormat(` ${token} `), token);
   for (const bad of ['', 'draft_secret', `alk_${'a'.repeat(42)}`, `alk_${'a'.repeat(44)}`, `alk_${'a'.repeat(42)}!`, `figd_${'a'.repeat(43)}`]) {
-    assert.throws(() => checkTokenFormat(bad), error => error.message === 'That doesn’t look like an Assetlib token. Tokens start with alk_.' && connectionErrorField(error) === 'token', bad);
+    assert.throws(() => checkTokenFormat(bad), error => error.message === (bad.startsWith('figd_') ? 'That’s a Figma token. Paste an Assetlib Draft token instead; it starts with alk_.' : bad.startsWith('alk_') ? 'That doesn’t look like a whole Assetlib token. Draft tokens are alk_ and 43 more characters.' : 'That doesn’t look like an Assetlib token. Draft tokens start with alk_.') && (!bad || !error.message.includes(bad)) && connectionErrorField(error) === 'token', bad);
   }
   // Saved connections are not checked against the format, so one saved by an earlier build still loads.
   assert.equal(loadSavedConnection({ origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token: 'draft_secret' }).token, 'draft_secret');

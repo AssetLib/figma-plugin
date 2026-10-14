@@ -77,8 +77,8 @@
     input::placeholder { color: var(--al-text-meta); opacity: 1; }
     input:hover:not(:focus-visible), select:hover:not(:focus-visible) { border-color: var(--border); }
     input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--figma-color-border-danger-strong, #b3261e); }
-    /* Focused, the ring stands for the field; its callout and aria-invalid carry the error, so no red border doubles it. */
-    input[aria-invalid="true"]:focus-visible, select[aria-invalid="true"]:focus-visible { border-color: transparent; }
+    /* Invalid fields keep their danger border inside the focus ring. */
+    input[aria-invalid="true"]:focus-visible, select[aria-invalid="true"]:focus-visible { outline-offset: 2px; }
     /* Instrument Sans draws the mask's bullets as a dotted hairline at 12 px. */
     input[type="password"]:not(:placeholder-shown) { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; letter-spacing: 1px; }
     .field { display: grid; gap: 4px; min-width: 0; color: var(--al-text-meta); }
@@ -105,7 +105,6 @@
     .notice input, .notice select, .notice .secondary, .error .secondary, .info input, .info .secondary { background: var(--bg); border: 1px solid var(--border); }
     .notice input:hover:not(:focus-visible), .notice select:hover:not(:focus-visible), .info input:hover:not(:focus-visible) { border-color: var(--al-border-hover); }
     .notice input[aria-invalid="true"], .info input[aria-invalid="true"] { border-color: var(--figma-color-border-danger-strong, #b3261e); }
-    .notice input[aria-invalid="true"]:focus-visible, .info input[aria-invalid="true"]:focus-visible { border-color: transparent; }
     .notice .secondary:hover, .error .secondary:hover, .info .secondary:hover { background: var(--bg-tertiary); }
     .notice .secondary[aria-disabled="true"]:hover, .error .secondary[aria-disabled="true"]:hover, .info .secondary[aria-disabled="true"]:hover { background: var(--bg); }
 
@@ -133,7 +132,7 @@
     :root { --warning-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5 15 14H1Z M7.2 6v4.2h1.6V6Z M8 11.2a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8z' fill-rule='evenodd'/%3E%3C/svg%3E"); }
     .panel { display: grid; gap: 12px; max-height: 70vh; overflow: auto; padding: 4px 12px 12px; border-bottom: 1px solid var(--border); }
     .account { display: grid; gap: 2px; }
-    .account-actions { display: flex; gap: 12px; margin-top: 4px; }
+    .account-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
     /* Disconnect forgets the token, so it stands apart from the actions beside it. */
     #disconnect { margin-left: auto; }
     .connection-form { display: grid; gap: 8px; }
@@ -303,11 +302,13 @@
     /* The primary action sits on the right, whichever of Send and Sync it is. */
     .footer-actions > .primary { order: 2; }
 
+    #pairing-status { display: flex; align-items: center; gap: 6px; }
     .spinner { display: inline-block; width: 12px; height: 12px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     #insert-refresh[data-busy="true"] svg { animation: spin .8s linear infinite; }
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; }
+      #pairing-spinner { display: none; }
       .spinner, #insert-refresh[data-busy="true"] svg { animation: none; }
       /* The running label ends in "…" already. */
       .primary[aria-busy="true"]::before { display: none !important; }
@@ -364,7 +365,7 @@
             <text x="38" y="25" font-family="'Instrument Sans', system-ui, sans-serif" font-size="27" font-weight="600" letter-spacing="-1.2" fill="currentColor">assetlib</text>
           </svg>
           <h1 id="first-run-title" class="headline">Your app’s images, in Figma</h1>
-          <p id="first-run-text">Connect to your Assetlib workspace. Your browser opens so you can sign in and approve.</p>
+          <p id="first-run-text">Insert your app’s placement art onto the canvas, and send frames back as drafts. The plugin can’t publish; nothing goes live until someone publishes in Assetlib.</p>
         </div>
         <div id="account" class="account">
           <p id="account-title" class="title"></p>
@@ -380,10 +381,9 @@
         <div id="pairing" class="pairing" tabindex="-1" hidden>
           <h1 class="headline">Approve in your browser</h1>
           <p id="pairing-text"></p>
-          <p id="pairing-resumed" hidden>Approve in the browser tab you opened, or cancel and start again.</p>
           <p id="pairing-code" class="pair-code"></p>
           <p class="help">Assetlib never asks you to type this code.</p>
-          <p id="pairing-status" class="meta"></p>
+          <p id="pairing-status" class="meta"><span id="pairing-spinner" class="spinner" aria-hidden="true" hidden></span><span id="pairing-status-text"></span></p>
           <div class="pairing-actions">
             <button id="pairing-open" class="secondary small" type="button">Open browser again</button>
             <button id="pairing-check" class="secondary small" type="button">Check now</button>
@@ -395,12 +395,13 @@
         <label id="origin-field" class="field">Console<select id="origin"><option value="https://console.assetlib.dev">console.assetlib.dev</option><option value="http://localhost:3100">localhost:3100 (development)</option></select></label>
         <div id="browser-path" class="browser-path">
           <button id="connect-browser" class="primary wide" type="button">Connect to Assetlib</button>
+          <p id="browser-help" class="help">Your browser opens so you can sign in and approve. You need edit access (editor, publisher, or owner) in your team’s Assetlib workspace; a workspace owner can invite you or change your role.</p>
           <button id="use-token" class="text-action" type="button">Use a token instead</button>
         </div>
+        <p id="origin-line" class="meta">Assetlib at <span id="origin-host"></span> · <button id="origin-change" class="text-action" type="button">Change</button></p>
         <form id="connection-form" class="connection-form" novalidate>
-          <p class="help">Paste a Draft token an owner created in Settings › Tokens.</p>
           <label class="field">Draft token<input id="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="alk_…" aria-describedby="token-help connection-error"></label>
-          <p id="token-help" class="help">From Settings › Tokens in the Assetlib console. It’s an Assetlib token, not a Figma token.</p>
+          <p id="token-help" class="help">Only a workspace owner can create one: Assetlib console › Settings › Tokens › Draft token. Not a Figma token.</p>
           <!-- Under the token field, and above the ID fields an older console's notice introduces. -->
           <p id="connection-error" class="error" tabindex="-1" hidden></p>
           <div id="id-fields" class="pair" hidden>
@@ -409,7 +410,7 @@
           </div>
           <button id="connect" class="secondary wide" type="submit">Connect with token</button>
         </form>
-        <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide" target="_blank" rel="noopener noreferrer">Read the guide</a>
+        <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a>
       </div>
     </details>
 

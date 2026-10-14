@@ -2,19 +2,20 @@
 // the token form (one-click Connect's secondary path, connect.ts) and its GET /api/token step, the connection test,
 // Disconnect, and the chip's label.
 import {
-  OLDER_CONSOLE, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink, fieldError, normalizeConsoleOrigin,
+  DEVELOPMENT_ORIGIN, OLDER_CONSOLE, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink,
+  fieldError, mapNetworkError, normalizeConsoleOrigin,
   parsePlacements, parseTokenIdentity, PRODUCTION_ORIGIN, reconnectText, refusalCode, tokenPrefix, validateConnection,
 } from '../shared/index.js';
 import type { Connection, Placement } from '../shared/index.js';
-import { DISCONNECTED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, toastText } from '../shared/protocol.js';
+import { DISCONNECTED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, DISCONNECTED_REFUSED, toastText } from '../shared/protocol.js';
 import type { MainMessage } from '../shared/protocol.js';
 import {
   announceError, clearError, element, errorText, flushRender, inField, post, reloadConnection, scheduleRender, setBusy, setStatus, setUnavailable, showError,
 } from './dom.js';
-import { identify, readFailure, revokeConnection, send } from './http.js';
+import { consoleAnswers, identify, readFailure, revokeConnection, send } from './http.js';
 import type { HttpResult } from './http.js';
 import { clearPlacements, clearRememberedSelection, showPlacements } from './send.js';
-import { actionsBlocked, nextRequestId, state } from './state.js';
+import { actionsBlocked, nextRequestId, refusedToken, state } from './state.js';
 import type { ReadFailure } from './state.js';
 
 const settings = element<HTMLDetailsElement>('settings');
@@ -43,6 +44,11 @@ let pendingDisconnect: { id: number; text: string } | null = null;
 // every connection message reset it.
 let tokenChosen = false;
 let formShown = false;
+let originShown = false;
+export function revealOrigin(): void { originShown = true; scheduleRender(); }
+function originNeeded(): boolean {
+  return originShown || chosenOrigin() === DEVELOPMENT_ORIGIN || state.connection?.origin === DEVELOPMENT_ORIGIN || idsShown();
+}
 // Each GET /api/token the form starts; a newer one, or a connection change, makes an older answer stale.
 let identifyTicket = 0;
 // The console (its origin) that answered GET /api/token with 404 or without CORS in this session: it needs the
@@ -208,14 +214,17 @@ export function renderConnection(): void {
   formShown = !state.pairingActive && (tokenChosen || idsShown()
     || (Boolean(connection) && !browser && (attention || formOpened || connectionErrorKind !== null || Boolean(token.value))));
   connectionForm.hidden = !formShown;
-  // The console is chosen above both paths on the first run, and with the form.
-  element('origin-field').hidden = state.pairingActive || (Boolean(connection) && !formShown);
+  // Change reveals the console choice on the first run and with the token form.
+  const hideOrigin = state.pairingActive || (Boolean(connection) && !formShown);
+  element('origin-field').hidden = hideOrigin || !originNeeded();
+  element('origin-line').hidden = hideOrigin || originNeeded();
+  element('origin-host').textContent = chosenOrigin() === DEVELOPMENT_ORIGIN ? 'localhost:3100' : 'console.assetlib.dev';
   updateButton.hidden = !connection || browser || formShown;
   // One primary per view: Connect to Assetlib is the first run's (connect.ts), and Connect the account panel's while a
-  // pasted token needs attention; otherwise the footer's Insert or Send is, and the form's button is secondary.
+  // pasted token needs attention without a refusal; otherwise the footer's Insert or Send is, and the form's button is secondary.
   const pasted = Boolean(connection) && !browser;
-  connectButton.className = pasted && attention ? 'primary wide' : 'secondary wide';
-  setBusy(connectButton, state.ops.connecting ? 'Connecting…' : !pasted ? 'Connect with token' : attention ? 'Connect' : 'Save token', state.ops.connecting);
+  connectButton.className = pasted && attention && !state.tokenRefused ? 'primary wide' : 'secondary wide';
+  setBusy(connectButton, state.ops.connecting ? 'Connecting…' : !pasted ? 'Connect with token' : attention && !state.tokenRefused ? 'Connect' : 'Save token', state.ops.connecting);
   setUnavailable(connectButton, actionsBlocked());
   setUnavailable(disconnectButton, actionsBlocked() || pendingDisconnect !== null);
 }
@@ -328,8 +337,9 @@ function showConnectionError(message: string, field: keyof typeof fields | null,
  * (the Insert list, the Send form, or the error line). `problem` is why, for the token field: it shows there when the
  * settings are open (now, or once the person opens them), and the view's own copy then steps aside.
  */
-export function needsAttention(problem?: { text: string; field: 'token' | null }): void {
+export function needsAttention(problem?: { text: string; field: 'token' | null } | null, refused = false): void {
   state.attentionCount += 1;
+  if (refused && state.connection?.method !== 'browser') state.tokenRefused = true;
   attention = true;
   element('connection-label').textContent = 'Needs attention';
   // A browser connection has no token field: the view in front says why, with Connect again (readProblem).
@@ -342,6 +352,7 @@ export function markConnected(): void {
   // Send has no placements yet: load them first, and that read's success comes back here.
   if (!state.placementsLoaded) { void reloadPlacements(); return; }
   attention = false;
+  state.tokenRefused = false;
   state.testFailure = null;
   element('connection-label').textContent = 'Connected';
   if (connectionErrorKind === 'read') clearConnectionError();
@@ -434,7 +445,10 @@ export async function loadPlacements(): Promise<ReadFailure | null> {
     // field when the settings are open, else by the view in front (main.ts).
     const status = failure.status;
     if (config.method === 'browser' && (status === 401 || status === 403)) needsAttention({ text: reconnectText(failure.code), field: null });
-    else needsAttention({ text: errorText(error), field: status === 401 || status === 403 ? 'token' : null });
+    else {
+      const refusedNow = refusedToken(failure);
+      needsAttention({ text: refusedNow ? TOKEN_NO_LONGER_ACCEPTED : errorText(error), field: status === 401 || status === 403 ? 'token' : null }, refusedNow);
+    }
     return failure;
   } finally {
     if (generation === state.connectionGeneration) { state.ops.connecting = false; scheduleRender(); }
@@ -487,11 +501,12 @@ export function applyConnection(message: Extract<MainMessage, { type: 'connectio
     if (namesAsked === namesPosted.key && ((back.workspaceName ?? null) !== namesPosted.workspaceName || back.appName !== namesPosted.appName)) namesAsked = '';
     namesPosted = null;
   }
-  state.placements = [];
+  clearPlacements('Loading placements…');
   state.placementsLoaded = false;
   state.testFailure = null;
   placementsRetryAt = 0;
   attention = false;
+  state.tokenRefused = false;
   element('connection-label').textContent = '';
   token.value = '';
   const { connection } = state;
@@ -585,8 +600,18 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
       namesPosted = null;
       return identified;
     }
-    // A console from before GET /api/token answers 404, or nothing a cross-origin page can read: it needs the IDs.
-    if (result.kind === 'network' || (result.kind === 'http' && result.status === 404)) { askForIds(result.kind === 'network'); return null; }
+    // A missing token route needs IDs. No readable answer first needs a tokenless probe: the console may be offline.
+    if (result.kind === 'network') {
+      state.ops.connecting = true;
+      scheduleRender();
+      const answers = await consoleAnswers(chosen);
+      if (ticket !== identifyTicket) return null;
+      state.ops.connecting = false;
+      scheduleRender();
+      if (!answers) { setStatus(''); showConnectionError(mapNetworkError(chosen), null, 'form'); return null; }
+      askForIds(true); return null;
+    }
+    if (result.kind === 'http' && result.status === 404) { askForIds(false); return null; }
     // A revoked token answers 403 here, as an unknown one answers 401.
     if (result.status === 401 || result.status === 403) throw fieldError(TOKEN_REFUSED, 'token');
     throw new Error(readFailure(result, { origin: chosen, orgId: '', appId: '', token: '' }));
@@ -610,6 +635,9 @@ async function submit(): Promise<void> {
   try {
     const chosen = normalizeConsoleOrigin(origin.value);
     if (typed) checkTokenFormat(typed);
+    if (!typed && current?.method !== 'browser' && current?.origin === chosen && state.tokenRefused) {
+      throw fieldError('Paste a new token, or choose Connect to Assetlib above.', 'token');
+    }
     // After a network failure the IDs may not be needed after all: with their fields empty, the token is asked about again.
     const askAgain = idsUnsure && Boolean(typed) && !orgId.value.trim() && !appId.value.trim();
     if (idsShown() && !askAgain) {
@@ -639,8 +667,9 @@ async function disconnect(): Promise<void> {
   clearConnectionError();
   const id = nextRequestId();
   if (current.method !== 'browser') {
-    pendingDisconnect = { id, text: DISCONNECTED };
-    post({ type: 'clear-connection', requestId: id });
+    const refused = state.tokenRefused;
+    pendingDisconnect = { id, text: refused ? DISCONNECTED_REFUSED : DISCONNECTED };
+    post({ type: 'clear-connection', requestId: id, ...(refused ? { revoked: true } : {}) });
     scheduleRender();
     return;
   }
@@ -660,6 +689,7 @@ async function disconnect(): Promise<void> {
 }
 
 export function initConnection(): void {
+  element('origin-change').addEventListener('click', () => { revealOrigin(); flushRender(); origin.focus(); });
   // The chip's workspace name is fitted with the font's measures (fitWorkspace), so fit it again once a font loads.
   document.fonts?.addEventListener('loadingdone', () => scheduleRender());
   element<HTMLFormElement>('connection-form').addEventListener('submit', event => {

@@ -136,7 +136,10 @@ const TOKEN_FORMAT = /^alk_[A-Za-z0-9_-]{43}$/;
 /** A token typed into the form. Saved connections are not checked again, so an older save keeps loading. */
 export function checkTokenFormat(token: string): string {
   const value = token.trim();
-  if (!TOKEN_FORMAT.test(value)) throw fieldError('That doesn’t look like an Assetlib token. Tokens start with alk_.', 'token');
+  if (!TOKEN_FORMAT.test(value)) throw fieldError(value.startsWith('figd_')
+    ? 'That’s a Figma token. Paste an Assetlib Draft token instead; it starts with alk_.'
+    : value.startsWith('alk_') ? 'That doesn’t look like a whole Assetlib token. Draft tokens are alk_ and 43 more characters.'
+      : 'That doesn’t look like an Assetlib token. Draft tokens start with alk_.', 'token');
   return value;
 }
 

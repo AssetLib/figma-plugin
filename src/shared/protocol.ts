@@ -68,7 +68,7 @@ export type UiMessage =
   // Keeps the node's width and sets its height to the placement's ratio (width and height are the placement's).
   | { type: 'match-ratio'; requestId: number; nodeId: string; width: number; height: number }
   // Forgets the saved connection on this device (Disconnect). A pasted token keeps working until an owner revokes it; a
-  // browser connection's token was ended first (`revoked`), unless the console couldn't be reached.
+  // browser connection's token was ended first (`revoked`), unless the console couldn't be reached; also true for a refused pasted token.
   | { type: 'clear-connection'; requestId: number; revoked?: boolean }
   // One-click Connect: main opens the console's connect page for this write key, built from a fixed map (connectPageUrl).
   | { type: 'open-connect-page'; requestId: number; origin: string; writeKey: string }
@@ -134,16 +134,17 @@ export type DropMetadata = { assetlib: 1; dropId: number; connectionGeneration: 
 // Main's toasts after Disconnect; the UI announces the same words. A browser connection's token ends with it, so it has
 // no Undo; one the console couldn't be told about is ended in the console.
 export const DISCONNECTED = 'Disconnected. The token still works elsewhere until an owner revokes it.';
+export const DISCONNECTED_REFUSED = 'Disconnected. Assetlib had stopped accepting that token.';
 export const DISCONNECTED_BROWSER = 'Disconnected. This connection was ended.';
 export const DISCONNECTED_LOCAL = 'Disconnected on this device. End the connection in the console under Settings › Profile.';
 
 // One-click Connect (ui/connect.ts): how a request that didn't connect ended, and what to do next.
-export const PAIRING_DENIED = 'The request was declined in the browser.';
+export const PAIRING_DENIED = 'The request was declined in the browser. Connect again to approve it, or choose another workspace.';
 export const PAIRING_EXPIRED = 'The request expired before it was approved. Connect again for a new code.';
 export const PAIRING_CANCELLED = 'The request was cancelled. Connect again when you’re ready.';
 export const PAIRING_REUSED = 'This request was already used, so Assetlib stopped it. Connect again.';
 export const OLDER_CONSOLE_CONNECT = 'This console can’t connect from Figma yet. Use a token instead.';
-export const PAIRING_UNREACHABLE = 'Assetlib couldn’t be reached. Check your connection and try again, or use a token instead.';
+export const PAIRING_UNREACHABLE = 'Assetlib couldn’t be reached. Check your internet connection, then try again.';
 export const PAIRING_BUSY = 'Too many connection requests. Wait a minute and try again.';
 export const PAIRING_FAILED = 'Assetlib couldn’t finish connecting. Connect again.';
 // A draft refused because another plugin window replaced this window's connection on the device: this window uses that one now.

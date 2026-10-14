@@ -2,17 +2,18 @@
 //   node scripts/build.mjs            minified, for Figma and the tests
 //   node scripts/build.mjs --dev      unminified, with inline source maps
 //   node scripts/build.mjs --watch    --dev, rebuilt on every change to src/ (npm run watch)
-import { build, context } from 'esbuild';
+import { build, context, transform } from 'esbuild';
 import { watch } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const args = new Set(process.argv.slice(2));
 const watching = args.has('--watch');
 const dev = watching || args.has('--dev');
-// The release budget for dist/ui.html, embedded font included: 176 KB, in decimal units (raised from 160 KB for one-click
-// Connect on October 11, 2026).
-const MAX_UI_BYTES = 176_000;
+// Release budget, embedded font included; raised from 176 KB on October 13, 2026 for the usability release:
+// Connect recovery, explanations, Update from Assetlib, the Send picker.
+const MAX_UI_BYTES = 192_000;
+const MAX_MAIN_BYTES = 48_000;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const templateUrl = new URL('../src/ui.html', import.meta.url);
 const marker = '<!-- ASSETLIB_SCRIPT -->';
@@ -54,7 +55,14 @@ async function writeUi(script) {
   if (template.split(marker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${marker} marker.`);
   if (template.split(fontMarker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${fontMarker} marker.`);
   const face = `@font-face { font-family: 'Instrument Sans'; src: url(data:font/woff2;base64,${font.toString('base64')}) format('woff2'); font-weight: 400 700; font-style: normal; font-display: block; }`;
-  const html = template.replace(fontMarker, () => face).replace(marker, () => `<script>${script.replace(/<\/script/gi, '<\\/script')}</script>`);
+  let html = template.replace(fontMarker, () => face);
+  if (!dev) {
+    const style = html.match(/<style>([\s\S]*?)<\/style>/);
+    if (!style || html.split('<style>').length !== 2) throw new Error('src/ui.html must contain exactly one style element.');
+    const css = (await transform(style[1], { loader: 'css', minify: true })).code;
+    html = html.replace(style[0], () => `<style>${css}</style>`);
+  }
+  html = html.replace(marker, () => `<script>${script.replace(/<\/script/gi, '<\\/script')}</script>`);
   const size = Buffer.byteLength(html);
   if (!dev && size > MAX_UI_BYTES) {
     await rm(uiUrl, { force: true });
@@ -83,6 +91,12 @@ if (watching) {
   console.log('Watching src/ for changes. Stop with Ctrl+C.');
 } else {
   const [, built] = await Promise.all([build(main), build(ui)]);
+  const mainUrl = new URL('../dist/code.js', import.meta.url);
+  const mainSize = (await stat(mainUrl)).size;
+  if (!dev && mainSize > MAX_MAIN_BYTES) {
+    await rm(mainUrl, { force: true });
+    throw new Error(`dist/code.js would be ${kb(mainSize)}, over the ${kb(MAX_MAIN_BYTES)} budget; it was not written.`);
+  }
   const size = await writeUi(built.outputFiles[0].text);
-  console.log(`Built dist/code.js and dist/ui.html (${kb(size)}${dev ? ', development' : ''}).`);
+  console.log(`Built dist/code.js (${kb(mainSize)}) and dist/ui.html (${kb(size)}${dev ? ', development' : ''}).`);
 }

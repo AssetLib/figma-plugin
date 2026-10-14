@@ -1,9 +1,9 @@
 // The UI iframe: routes main's messages to the Send, Insert, Sync bar, connection, and Connect modules, renders them
 // once per frame, and resizes the window from its grip.
-import { clampWindow } from '../shared/index.js';
+import { TOKEN_NO_LONGER_ACCEPTED, clampWindow } from '../shared/index.js';
 import type { MainMessage } from '../shared/protocol.js';
 import { adopted, applyPairing, connectFocus, failOpenPage, hintOfCurrent, initConnect, releaseHeld, renderConnect, saveRefused, startConnect, turned } from './connect.js';
-import { applyConnection, failConnection, initConnection, loadPlacements, openSettings, problemInSettings, renderConnection } from './connection.js';
+import { applyConnection, failConnection, initConnection, loadPlacements, needsAttention, openSettings, problemInSettings, renderConnection } from './connection.js';
 import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
 import { abortAll } from './http.js';
 import {
@@ -219,7 +219,7 @@ element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
 initConnect();
 const showSend = () => setTab('send');
-initSend({ retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend });
+initSend({ refused: () => needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend });
 initSyncBar({ showSend });
 initInsert(() => { setTab('send'); tabSend.focus(); });
 post({ type: 'init' });

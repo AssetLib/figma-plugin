@@ -19,17 +19,17 @@ export type ReadFailure = { kind: 'http' | 'timeout' | 'network' | 'invalid'; st
  * What a view says about a failed read, in place of what it could not load, and the one action that helps. A browser
  * connection the console refused offers Connect again (`reconnect`), never the token form.
  */
-export type ReadProblem = { text: string; action: 'retry' | 'token' | 'send' | 'reconnect' };
+export type ReadProblem = { title: string; text: string; action: 'retry' | 'token' | 'send' | 'reconnect' };
 /** The console refused the token itself (a 401, or a revoked token's 403), not only what it may read. */
 export function refusedToken(failure: ReadFailure): boolean {
   return failure.kind === 'http' && (failure.status === 401 || failure.text === TOKEN_REFUSED);
 }
 export function readProblem(failure: ReadFailure | null, method?: Connection['method']): ReadProblem {
-  if (!failure) return { text: 'Assetlib couldn’t load this list. Try again.', action: 'retry' };
-  if (refusedToken(failure)) return method === 'browser' ? { text: reconnectText(failure.code), action: 'reconnect' } : { text: TOKEN_NO_LONGER_ACCEPTED, action: 'token' };
-  if (failure.kind === 'http' && failure.status === 403) return { text: failure.text, action: method === 'browser' ? 'reconnect' : 'token' };
-  if (failure.text === MISSING_INSERT) return { text: failure.text, action: 'send' };
-  return { text: failure.text, action: 'retry' };
+  if (!failure) return { title: 'Couldn’t load the list', text: 'Assetlib couldn’t load this list. Try again.', action: 'retry' };
+  if (refusedToken(failure)) return method === 'browser' ? { title: 'Connect to Assetlib again', text: reconnectText(failure.code), action: 'reconnect' } : { title: 'Connect to Assetlib again', text: TOKEN_NO_LONGER_ACCEPTED, action: 'reconnect' };
+  if (failure.kind === 'http' && failure.status === 403) return { title: method === 'browser' ? 'Connect to Assetlib again' : 'This token can’t be used here', text: failure.text, action: method === 'browser' ? 'reconnect' : 'token' };
+  if (failure.text === MISSING_INSERT) return { title: 'Insert isn’t available here', text: failure.text, action: 'send' };
+  return { title: 'Couldn’t load the list', text: failure.text, action: 'retry' };
 }
 
 /** Insert with nothing selected, or before main reports the selection: a new frame. */
@@ -50,6 +50,8 @@ export const state = {
   testFailure: null as ReadFailure | null,
   // Counts failed authenticated reads, so a preview or reload that started before one cannot mark the connection good.
   attentionCount: 0,
+  // A saved pasted token was refused; only a good read or a new connection clears it.
+  tokenRefused: false,
   // Preferences apply from the first connection message only.
   preferencesLoaded: false,
   prefs: defaultPreferences() as Preferences,

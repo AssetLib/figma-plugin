@@ -1,7 +1,7 @@
 // The Send tab: the selection, the placement and cell pickers, the ratio gate, Send, and the file link; and Sync, which
 // the Sync bar (syncbar.ts) shows on both tabs from what `syncBar()` says about the selection.
 import {
-  DRAFT_MAY_HAVE_ARRIVED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
+  DRAFT_MAY_HAVE_ARRIVED, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
   consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel,
   reconnectText, refusalCode, sizeLabel, tokenRefused, validUuid, validateBinding,
 } from '../shared/index.js';
@@ -40,8 +40,9 @@ let afterFile: { rebind: boolean; nodeId: string } | null = null;
 let mismatch: { url: string; slug: string; name: string } | null = null;
 // Leaves the Send tab in front (main.ts), for the file link a Sync from the Insert tab asks for.
 let showSend: () => void = () => {};
-// Connect again (connect.ts, through main.ts): a browser connection the console no longer accepts is made again.
+// Connect again (connect.ts, through main.ts): a refused saved connection is approved again in the browser.
 let reconnect: () => void = () => {};
+let refused: () => void = () => {};
 let selectionIdentity = '';
 // The connection generation the placement picker was filled for; a choice never carries over to another connection.
 let pickerGeneration: number | null = null;
@@ -251,7 +252,7 @@ export function sendElsewhere(): void {
  * settings say it under the token field (`inSettings`).
  */
 function sendProblemShown(inSettings: boolean): ReadProblem | null {
-  return state.connection && state.testFailure && !inSettings ? readProblem(state.testFailure, state.connection.method) : null;
+  return state.connection && state.testFailure && state.connectionGeneration !== null && !state.ops.connecting && !inSettings ? readProblem(state.testFailure, state.connection.method) : null;
 }
 let problemShown = false;
 
@@ -298,7 +299,7 @@ export function renderSend(inSettings: boolean): void {
   element('aspect-warning').hidden = !gate;
   setUnavailable(matchRatioButton, actionsBlocked());
   // A usable link or remembered target makes the Sync bar's Sync the expected action.
-  sendButton.className = rememberedBinding() ? 'secondary' : 'primary';
+  sendButton.className = rememberedBinding() || state.testFailure !== null || state.tokenRefused ? 'secondary' : 'primary';
   setBusy(sendButton, state.ops.sending ? 'Sending…' : 'Send to draft', state.ops.sending);
   // A result says where the draft went; the footnote about drafts would repeat it.
   element('send-footnote').hidden = !element('result').hidden;
@@ -446,6 +447,10 @@ export async function sendExport(message: Extract<MainMessage, { type: 'exported
       else showError(reconnectText(refusalCode(result.payload)), { label: 'Connect again', run: reconnect });
       return;
     }
+    if (result.kind === 'http' && tokenRefused(result.status, result.payload) && operation.connection.method !== 'browser') {
+      endSend(); setStatus(''); refused();
+      showError(TOKEN_NO_LONGER_ACCEPTED, { label: 'Connect again', run: reconnect }); return;
+    }
     if (result.status !== 201 && result.status !== 409) throw new Error(mapHttpError(result.status, result.payload));
     let draft: DraftResult;
     try { draft = parseDraftResponse(result.payload); }
@@ -528,9 +533,10 @@ export function failSend(requestId: number, message: string): boolean {
   return true;
 }
 
-export function initSend(actions: { retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void }): void {
+export function initSend(actions: { refused: () => void; retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void }): void {
   showSend = actions.showSend;
   reconnect = actions.reconnect;
+  refused = actions.refused;
   element('send-retry').addEventListener('click', () => { if (!actionsBlocked()) actions.retry(); });
   element('send-token').addEventListener('click', () => {
     if (sendProblemShown(false)?.action === 'reconnect') actions.reconnect(); else actions.updateToken();

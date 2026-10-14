@@ -28,7 +28,7 @@ export const TOKEN_SCOPE = 'This token can’t send drafts. Create a token with 
 // GET /api/token answered 404, or without CORS: a console from before it identified tokens.
 export const OLDER_CONSOLE = 'This console also needs the organization and app IDs. Find them in Settings › General.';
 // A read refused after the connection worked: in place of the Insert list.
-export const TOKEN_NO_LONGER_ACCEPTED = 'Assetlib no longer accepts this token. Paste a new one.';
+export const TOKEN_NO_LONGER_ACCEPTED = 'Assetlib no longer accepts this token. Connect again to approve the plugin in your browser, or paste a new token.';
 // The selected layer, its size, or the file changed between the export and the upload.
 export const SELECTION_CHANGED = 'The selection changed while sending. Check it and send again.';
 // Main could not write to figma.clientStorage.

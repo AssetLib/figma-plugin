@@ -1,6 +1,6 @@
 // The Insert tab: placements by screen and the image library, the cell pickers, Insert, and dragging rows and tiles onto the canvas.
 import {
-  ENVIRONMENTS, GONE_IMAGE, TOKEN_REFUSED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, consoleLink,
+  ENVIRONMENTS, GONE_IMAGE, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, consoleLink,
   environmentLabel, fillRendition, findCell, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
   placementMeta, pngSize, reconnectText, refusalCode, renditionPath, tokenRefused,
 } from '../shared/index.js';
@@ -404,6 +404,7 @@ function renderEmpty(current: ListState | null): void {
   title.textContent = empty?.title ?? '';
   element('insert-empty-text').textContent = empty?.text ?? '';
   element('insert-clear').hidden = empty?.action !== 'clear';
+  for (const id of ['insert-retry', 'insert-token', 'insert-go-send']) element(id).className = syncBar() === null ? 'primary' : 'secondary';
   element('insert-retry').hidden = empty?.action !== 'retry';
   // With the settings open, the token field is on screen already. A browser connection is made again, never with a token.
   const tokenAction = element('insert-token');
@@ -557,6 +558,7 @@ export function renderInsertBar(): void {
   // The selection decides the action: Insert, Insert into, Fill, or Replace image; a fill keeps the layer's size, and
   // what can't be inserted has no size to choose.
   element('scale-group').hidden = filling(canvas) || !target?.ready;
+  insertButton.className = state.tokenRefused && element<HTMLDetailsElement>('settings').open && !state.pairingActive ? 'secondary' : 'primary';
   setBusy(insertButton, state.ops.inserting ? 'Inserting…' : canvas.label, state.ops.inserting);
   // The whole label on hover, for a layer name the button shortens.
   insertButton.title = canvas.mode === 'new' ? '' : canvas.label;
@@ -666,7 +668,7 @@ async function loadArtwork(): Promise<void> {
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
       if (await replacedElsewhere(config, generation, result)) return;
-      if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
+      if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true);
       const failure = readFailureOf(result, readFailure(result, config, 'insert'));
       artwork = null;
       artworkGeneration = null;
@@ -714,7 +716,7 @@ async function loadImages(reset: boolean): Promise<void> {
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
       if (await replacedElsewhere(config, generation, result)) return;
-      if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
+      if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true);
       failure = readFailureOf(result, readFailure(result, config, 'insert'));
       throw new Error(failure.text);
     }
@@ -730,7 +732,7 @@ async function loadImages(reset: boolean): Promise<void> {
     if (!reset) {
       images = previous;
       // A browser connection the console refused offers Connect again there too.
-      showInsertError(failure && refusedToken(failure) && config.method === 'browser' ? reconnectText(failure.code) : errorText(error));
+      showInsertError(failure && refusedToken(failure) ? config.method === 'browser' ? reconnectText(failure.code) : TOKEN_NO_LONGER_ACCEPTED : errorText(error));
     }
     else showListError(failure ?? { kind: 'invalid', status: 200, text: errorText(error) });
   } finally { endList(ticket, generation); }
@@ -757,9 +759,9 @@ async function fetchPng(config: Connection, generation: number, asset: LibraryAs
   if (result.status !== 200) {
     if (await replacedElsewhere(config, generation, result)) return null;
     const refused = tokenRefused(result.status, result.payload);
-    if (refused) needsAttention();
+    if (refused) needsAttention(null, true);
     // A browser connection the console refused is made again (showInsertError offers Connect again).
-    if (refused && config.method === 'browser') throw new Error(reconnectText(refusalCode(result.payload)));
+    if (refused) throw new Error(config.method === 'browser' ? reconnectText(refusalCode(result.payload)) : TOKEN_NO_LONGER_ACCEPTED);
     // This console listed the image, so a 404 means the image went away, not that the console lacks Insert.
     throw new Error(result.kind === 'http' && result.status === 404 ? GONE_IMAGE : readFailure(result, config, 'insert'));
   }
@@ -842,7 +844,7 @@ async function beginInsert(asNew = false): Promise<void> {
  */
 function showInsertError(text: string): void {
   showError(text, text === GONE_IMAGE ? { label: 'Refresh', run: refreshList }
-    : isReconnectText(text) ? { label: 'Connect again', run: () => { void startConnect(hintOfCurrent()); } } : undefined);
+    : (isReconnectText(text) || text === TOKEN_NO_LONGER_ACCEPTED) ? { label: 'Connect again', run: () => { void startConnect(hintOfCurrent()); } } : undefined);
 }
 
 // ---- Drag to canvas ----

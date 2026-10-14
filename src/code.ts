@@ -6,7 +6,7 @@ import {
   validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
 import type { Connection, InsertLink, Preferences } from './shared/index.js';
-import { DISCONNECTED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
+import { DISCONNECTED, DISCONNECTED_REFUSED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { UiMessage } from './shared/protocol.js';
 import { currentFileKey, linkFile } from './main/identity.js';
 import { discardDrops, discardPlaceholder, drop, dropPending, insert, renameRelinked, retireUndo, retireUndoOnEdit, writeMarker } from './main/insert.js';
@@ -215,6 +215,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       // A browser connection's token is ended, so there is nothing to put back. Only an owner can create another pasted
       // token, so that toast can put this one back while nothing else was saved.
       if (previous?.method === 'browser') figma.notify(message.revoked ? DISCONNECTED_BROWSER : DISCONNECTED_LOCAL);
+      else if (message.revoked) figma.notify(DISCONNECTED_REFUSED);
       else figma.notify(DISCONNECTED, previous ? { timeout: 6000, button: { text: 'Undo', action: () => { void reconnect(previous); } } } : undefined);
       await reportSelection();
       break;

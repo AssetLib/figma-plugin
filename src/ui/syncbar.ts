@@ -50,8 +50,9 @@ export function renderSyncBar(): void {
   // One ink primary in view: on Insert, the footer's Insert while something is chosen; while the ratio blocks Sync, Match
   // ratio, the one action that helps.
   const footer = state.prefs.tab === 'insert' && !element('insert-bar').hidden;
-  syncButton.className = footer || ratio ? 'secondary' : 'primary';
-  matchButton.className = ratio && !footer ? 'primary small' : 'secondary small';
+  const recovering = state.tokenRefused && element<HTMLDetailsElement>('settings').open && !state.pairingActive;
+  syncButton.className = footer || ratio || recovering ? 'secondary' : 'primary';
+  matchButton.className = ratio && !footer && !recovering ? 'primary small' : 'secondary small';
   matchButton.hidden = !ratio;
   setUnavailable(matchButton, actionsBlocked());
   sendButton.hidden = shown?.kind !== 'copy' && shown?.kind !== 'removed';

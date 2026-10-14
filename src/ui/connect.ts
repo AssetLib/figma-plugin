@@ -3,13 +3,13 @@
 // saved as a browser connection. The token form (connection.ts) stays the secondary path. Every request goes through
 // http.ts (pairingRequest); the write key stays in memory, and main keeps only the read key (assetlib.pairing.v1), so a
 // reopened plugin resumes the request. Plugin windows share that record, and ask main for the turn before each poll.
-import { DEVICE_STORAGE, PRODUCTION_ORIGIN, formatUserCode, mapHttpError, normalizeConsoleOrigin, pairingUrl, parseClaim, parsePairingStart, validUuid } from '../shared/index.js';
+import { DEVELOPMENT_ORIGIN, DEVICE_STORAGE, PRODUCTION_ORIGIN, formatUserCode, mapHttpError, mapNetworkError, normalizeConsoleOrigin, pairingUrl, parseClaim, parsePairingStart, validUuid } from '../shared/index.js';
 import type { ClaimAnswer, ClaimedConnection, Connection, PairingHint, PairingRecord, PairingStart } from '../shared/index.js';
 import {
   OLDER_CONSOLE_CONNECT, OPEN_PAGE_FAILED, PAIRING_BUSY, PAIRING_CANCELLED, PAIRING_DENIED, PAIRING_EXPIRED, PAIRING_FAILED, PAIRING_REUSED, PAIRING_UNREACHABLE,
 } from '../shared/protocol.js';
 import type { MainMessage } from '../shared/protocol.js';
-import { chooseToken, closeSettings, saveConnection, tokenFormShown } from './connection.js';
+import { chooseToken, closeSettings, revealOrigin, saveConnection, tokenFormShown } from './connection.js';
 import { announceError, element, flushRender, post, scheduleRender, setBusy, setStatus, setUnavailable } from './dom.js';
 import { abortPairing, consoleAnswers, pairingRequest, revokeConnection } from './http.js';
 import { nextRequestId, state } from './state.js';
@@ -114,7 +114,7 @@ function schedule(ms: number): void {
   if (pairing.phase !== 'waiting' || pairing.inFlight) return;
   pairing.timer = window.setTimeout(() => { pairing.timer = null; void poll(); }, Math.min(ms, Math.max(0, pairing.deadline - Date.now())));
 }
-/** The countdown in the waiting line, renewed every 30 s. */
+/** The countdown in the waiting line, renewed every 15 s. */
 function countdown(): void {
   if (pairing.countdown !== null) window.clearTimeout(pairing.countdown);
   pairing.countdown = window.setTimeout(() => {
@@ -122,7 +122,7 @@ function countdown(): void {
     if (pairing.phase !== 'waiting') return;
     scheduleRender();
     countdown();
-  }, 30000);
+  }, 15000);
 }
 /** Tells the console the request is over (fire and forget): a pending one is cancelled, and a token claimed from it ends. */
 function cancelOnConsole(origin: string, readKey: string): void {
@@ -139,6 +139,7 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
   if (pairing.phase === 'starting' || pairing.phase === 'waiting' || pairing.phase === 'saving') { showRequest(); return; }
   if (state.ops.connecting) return;
   const origin = chosenOrigin();
+  if (origin === DEVELOPMENT_ORIGIN) revealOrigin();
   const chosen = hint?.origin === origin ? hint : hints.find(item => item.origin === origin) ?? null;
   const ticket = ++pairing.ticket;
   Object.assign(pairing, { phase: 'starting', origin, hint: chosen, ended: null, note: '', readKey: '', writeKey: null, userCode: '', resumed: false, failures: 0 });
@@ -165,9 +166,9 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
   // can read, as without a network: GET /api/token, which it answers with them, tells the two apart. (One answering 404 is older too.)
   if (result.kind === 'network') {
     const older = await consoleAnswers(origin);
-    if (ticket === pairing.ticket) end(older ? 'older' : 'unreachable');
+    if (ticket === pairing.ticket) end(older ? 'older' : 'unreachable', !older && origin === DEVELOPMENT_ORIGIN ? mapNetworkError(origin) : undefined);
   } else if (result.kind === 'http' && result.status === 404) end('older');
-  else if (result.kind === 'timeout') end('unreachable');
+  else if (result.kind === 'timeout') end('unreachable', origin === DEVELOPMENT_ORIGIN ? mapNetworkError(origin) : undefined);
   else if (result.status === 429) end('busy');
   else end('error', mapHttpError(result.status, result.payload));
 }
@@ -186,6 +187,7 @@ function wait(): void {
 
 /** Main's record of a request this device waits for (the plugin was closed while it waited): it carries on. */
 function resume(saved: PairingRecord): void {
+  if (saved.origin === DEVELOPMENT_ORIGIN) revealOrigin();
   ++pairing.ticket;
   Object.assign(pairing, { origin: saved.origin, readKey: saved.readKey, writeKey: null, userCode: saved.userCode, deadline: saved.deadline,
     interval: saved.interval, lastSentAt: 0, failures: 0, hint: null, ended: null, note: '', resumed: true });
@@ -378,6 +380,7 @@ function openPage(): void {
 /** Main's connection message: the request's connection was saved, or main holds a request to resume. */
 export function applyPairing(message: Extract<MainMessage, { type: 'connection' }>): void {
   hints = message.hints ?? [];
+  if (hints.some(hint => hint.origin === DEVELOPMENT_ORIGIN)) revealOrigin();
   const saving = pairing.saving;
   // Saved (connection.ts ends a browser token it replaced). The connection test then says Connected.
   if (pairing.phase === 'saving' && saving && message.connection?.token === saving.token) { connected(); return; }
@@ -464,41 +467,45 @@ export function renderConnect(): void {
   element('first-run-text').hidden = active;
   if (active) {
     const host = pairing.origin === PRODUCTION_ORIGIN ? 'console.assetlib.dev' : '127.0.0.1:3100';
-    element('pairing-text').textContent = `Assetlib opened ${host} in your browser. Sign in, check that it shows this code, and approve.`;
-    element('pairing-resumed').hidden = !pairing.resumed;
+    element('pairing-text').textContent = pairing.resumed ? `Approve in the ${host} tab you opened earlier, or cancel and start again.`
+      : `Assetlib opened ${host} in your browser. Sign in, check that it shows this code, and approve.`;
     const code = element('pairing-code');
     code.textContent = formatUserCode(pairing.userCode);
     code.setAttribute('aria-label', `Connection code ${[...pairing.userCode].join(' ')}`);
-    element('pairing-status').textContent = phase === 'saving' ? 'Saving connection…' : waitingLine();
+    element('pairing-status-text').textContent = phase === 'saving' ? 'Saving connection…' : waitingLine();
     openButton.hidden = phase !== 'waiting' || !pairing.writeKey;
     checkButton.hidden = phase !== 'waiting';
     cancelButton.hidden = phase !== 'waiting';
   }
+  element('pairing-spinner').hidden = phase !== 'waiting' && phase !== 'saving';
   note.hidden = !pairing.note;
   note.textContent = pairing.note;
   note.className = pairing.noteKind;
   // The browser path: Connect to Assetlib, the first run's primary (Try again after a console that couldn't be reached),
-  // and Use a token instead until the token form shows. With a connection, only after a Connect that couldn't reach
-  // the console; Switch workspace starts the others.
+  // and Use a token instead until the token form shows. A refused pasted token offers the browser path too;
+  // the account menu starts other requests.
   const unreachable = phase === 'ended' && pairing.ended === 'unreachable';
-  element('browser-path').hidden = active || (connected && !unreachable);
+  const refusedPasted = connected && state.connection?.method !== 'browser' && state.tokenRefused;
+  element('browser-path').hidden = active || (connected && !unreachable && !refusedPasted);
   // After an older console the token form is the way in, so its Connect (connection.ts) is the one primary instead.
-  const older = phase === 'ended' && pairing.ended === 'older' && tokenFormShown();
-  connectButton.className = connected || older ? 'secondary wide' : 'primary wide';
-  if (older && !connected) element('connect').className = 'primary wide';
+  const older = phase === 'ended' && pairing.ended === 'older' && pairing.origin === chosenOrigin();
+  connectButton.hidden = older;
+  const tokenPrimary = !connected && tokenFormShown() && !unreachable;
+  connectButton.className = (connected && !refusedPasted) || tokenPrimary ? 'secondary wide' : 'primary wide';
+  if (!connected) element('connect').className = tokenPrimary ? 'primary wide' : 'secondary wide';
   setBusy(connectButton, phase === 'starting' ? 'Connecting…' : unreachable ? 'Try again' : 'Connect to Assetlib', phase === 'starting' && !connected);
   setUnavailable(connectButton, phase === 'starting' || state.ops.connecting);
-  useTokenButton.hidden = tokenFormShown();
-  switchButton.hidden = state.connection?.method !== 'browser';
-  setBusy(switchButton, phase === 'starting' ? 'Connecting…' : 'Switch workspace', phase === 'starting');
+  useTokenButton.hidden = tokenFormShown() || connected;
+  switchButton.hidden = !connected || refusedPasted;
+  setBusy(switchButton, phase === 'starting' ? 'Connecting…' : state.connection?.method === 'browser' ? 'Switch workspace' : 'Connect with browser', phase === 'starting');
   setUnavailable(switchButton, phase === 'starting' || state.ops.connecting);
 }
 
 export function initConnect(): void {
   // Again after an end: the same workspace is offered first.
-  connectButton.addEventListener('click', () => { void startConnect(pairing.phase === 'ended' ? pairing.hint : undefined); });
+  connectButton.addEventListener('click', () => { void startConnect(pairing.phase === 'ended' ? pairing.hint : state.connection ? hintOfCurrent() : undefined); });
   useTokenButton.addEventListener('click', chooseToken);
-  switchButton.addEventListener('click', () => { void startConnect(); });
+  switchButton.addEventListener('click', () => { void startConnect(state.connection?.method === 'browser' ? undefined : hintOfCurrent()); });
   openButton.addEventListener('click', openPage);
   checkButton.addEventListener('click', checkNow);
   cancelButton.addEventListener('click', cancel);
