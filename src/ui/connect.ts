@@ -11,7 +11,7 @@ import {
 import type { MainMessage } from '../shared/protocol.js';
 import { chooseToken, closeSettings, saveConnection, tokenFormShown } from './connection.js';
 import { announceError, element, flushRender, post, scheduleRender, setBusy, setStatus, setUnavailable } from './dom.js';
-import { abortPairing, pairingRequest, revokeConnection } from './http.js';
+import { abortPairing, consoleAnswers, pairingRequest, revokeConnection } from './http.js';
 import { nextRequestId, state } from './state.js';
 
 type Phase = 'idle' | 'starting' | 'waiting' | 'saving' | 'ended';
@@ -151,10 +151,13 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
     wait();
     return;
   }
-  // A console from before one-click Connect answers 404. No answer at all may be one without the route's CORS headers,
-  // or no network: the person chooses.
-  if (result.kind === 'http' && result.status === 404) end('older');
-  else if (result.kind === 'network' || result.kind === 'timeout') end('unreachable');
+  // A console from before one-click Connect lacks the route and its CORS headers, so its start gets no answer the plugin
+  // can read, as without a network: GET /api/token, which it answers with them, tells the two apart. (One answering 404 is older too.)
+  if (result.kind === 'network') {
+    const older = await consoleAnswers(origin);
+    if (ticket === pairing.ticket) end(older ? 'older' : 'unreachable');
+  } else if (result.kind === 'http' && result.status === 404) end('older');
+  else if (result.kind === 'timeout') end('unreachable');
   else if (result.status === 429) end('busy');
   else end('error', mapHttpError(result.status, result.payload));
 }

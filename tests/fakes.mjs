@@ -176,7 +176,7 @@ const REVOKED = 'This Figma connection was ended. Connect again from the Assetli
  * the console's revoked token does), codes[route] adds a refused Figma connection's `code`, failures (a Set of routes)
  * throw a network error, and gates[route] (a deferred) holds the response until resolved. GET /api/token (route `token`)
  * answers with state.identity, else the identity the harness registered for the bearer token, else an issued token's,
- * else 404 as a console from before that route does.
+ * else 404 as a console from before that route does; without a token, 401.
  *
  * One-click Connect's routes are `start`, `claim`, `cancel`, and `current`. Each start adds a request to
  * state.pairings ({readKey, writeKey, userCode, status, interval, hint, connection, answers}; state.pairingStart merges
@@ -184,7 +184,8 @@ const REVOKED = 'This Figma connection was ended. Connect again from the Assetli
  * else by its status: pending; approved, which issues a token (state.issued) for its `connection` once and is then
  * claimed; or how it ended (410). Unknown read keys answer 410 expired. A cancel ends a pending or approved request and
  * ends the token of a claimed one (state.revoked). DELETE current ends an issued token (204), refuses a pasted one (400),
- * and an ended token gets 403 `revoked` from every other route.
+ * and an ended token gets 403 `revoked` from every other route. A console from before one-click Connect is
+ * failures: ['start'] (its routes send no CORS headers), with GET /api/token still answering.
  */
 export function fakeConsole(state) {
   state.statuses ??= {};
@@ -247,6 +248,7 @@ export function fakeConsole(state) {
         return /^alk_/.test(bearer) ? jsonResponse(400, { error: 'This token was created in Settings › Tokens. An owner revokes it there.' })
           : jsonResponse(401, { error: 'Missing or invalid API token.' });
       case 'token': {
+        if (!bearer) return jsonResponse(401, { error: 'Missing or invalid API token.' });
         const identity = state.identity ?? request.identity ?? state.issued.get(bearer);
         return identity ? jsonResponse(200, identity) : jsonResponse(404, { error: 'Not found.' });
       }

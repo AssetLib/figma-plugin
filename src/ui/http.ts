@@ -1,7 +1,8 @@
 // Every console request goes through this module: send() for the five app routes, identify() for GET /api/token,
-// which tells a pasted token its own organization and app, and pairingRequest() and revokeConnection() for one-click
-// Connect's routes. The bearer token goes only to the chosen origin, never with cookies, never following a redirect,
-// with a timeout, GET retries, and aborts on supersession or a connection change.
+// which tells a pasted token its own organization and app, consoleAnswers() for the same route without a token, and
+// pairingRequest() and revokeConnection() for one-click Connect's routes. The bearer token goes only to the chosen
+// origin, never with cookies, never following a redirect, with a timeout, GET retries, and aborts on supersession or a
+// connection change.
 import { appUrl, mapHttpError, mapNetworkError, mapTimeoutError, pairingUrl, parseRetryAfter, requestTimeoutMs, retryDelayMs, tokenUrl } from '../shared/index.js';
 import type { Connection } from '../shared/index.js';
 
@@ -84,6 +85,15 @@ export async function pairingRequest(url: string, options: { method: 'POST' | 'D
   if (abortable) pairingActive.add(controller);
   try { return await attemptOnce(url, init, controller, PAIRING_TIMEOUT_MS, undefined); }
   finally { pairingActive.delete(controller); }
+}
+
+/**
+ * GET /api/token without a token, after a connection request got no answer: true when the console answers it at all (an
+ * older console answers 401 with CORS headers, where its missing connection routes have none), false for no network.
+ */
+export async function consoleAnswers(origin: string): Promise<boolean> {
+  const result = await attemptOnce(tokenUrl(origin), { method: 'GET', credentials: 'omit', redirect: 'error' }, new AbortController(), PAIRING_TIMEOUT_MS, undefined);
+  return result.kind === 'ok' || result.kind === 'http';
 }
 
 /** Ends a browser connection's token in the console (DELETE /api/plugin-connections/current). Cancel never stops it. */

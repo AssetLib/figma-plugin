@@ -216,7 +216,7 @@ function installFakes(config) {
   const log = [];
   const delays = { placements: 10, artwork: 10, assets: 10, rendition: 10, drafts: 10, token: 10, start: 10, claim: 10, cancel: 10, current: 10, ...config.delays };
   const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-  function respond(route, path) {
+  function respond(route, path, init) {
     // config.statuses[route] answers that route with an error status instead (config.codes[route] adds a refused Figma
     // connection's code).
     if (config.statuses?.[route]) {
@@ -235,8 +235,9 @@ function installFakes(config) {
       return json(200, { status: 'connected', connection: { ...config.claimed, token: `alk_${'f'.repeat(43)}` } });
     }
     if (route === 'cancel' || route === 'current') return new Response(null, { status: 204 });
-    // GET /api/token: the token's own organization and app, as the console answers it.
-    if (route === 'token') return json(200, config.identity);
+    // GET /api/token: the token's own organization and app, as the console answers it; without a token, 401 (as an
+    // older console does, with CORS headers its missing connection routes lack: config.failures ['start']).
+    if (route === 'token') return init.headers?.Authorization ? json(200, config.identity) : json(401, { error: 'Missing or invalid API token.' });
     if (route === 'placements') return json(200, { placements: placements.map(({ cells, ...placement }) => placement) });
     if (route === 'artwork') return json(200, artwork);
     if (route === 'assets') {
@@ -278,7 +279,7 @@ function installFakes(config) {
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       entry.done = true;
-      resolve(respond(route, path));
+      resolve(respond(route, path, init));
     }, delays[route] ?? 10);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
@@ -959,11 +960,13 @@ test('one-click Connect shows the code to compare, cancels, connects without a t
     assert.equal(await page.evaluate(textOf('status')), 'Disconnected. This connection was ended.');
   } finally { await page.close(); }
 
-  // An older console: the token form opens at its field, and its Connect is the one primary.
-  const older = await openUi({ connection: null, statuses: { start: 404 } });
+  // An older console (no answer to the start, but one to GET /api/token): the token form opens at its field, and its
+  // Connect is the one primary.
+  const older = await openUi({ connection: null, failures: ['start'] });
   try {
     await older.click('#connect-browser');
     await older.waitFor(shown('pairing-note'), { message: 'the older console' });
+    assert.deepEqual(await older.evaluate(`__harness.log.map(entry => entry.route)`), ['start', 'token']);
     assert.deepEqual(await older.evaluate(`[document.getElementById('pairing-note').className, document.getElementById('pairing-note').textContent]`),
       ['info', 'This console can’t connect from Figma yet. Use a token instead.']);
     assert.equal(await older.focused(), 'token');
@@ -1044,7 +1047,7 @@ test('no overflow at 320×480, 420×720, 640×900', async () => {
     ['the first run', { connection: null }, null],
     ['the first run with the token form', { connection: null }, async page => { await page.click('#use-token'); }],
     ['Connect waiting for approval', { connection: null }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing')); }],
-    ['a Connect that couldn’t reach the console', { connection: null, failures: ['start'] }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
+    ['a Connect that couldn’t reach the console', { connection: null, failures: ['start', 'token'] }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
     ['Switch workspace waiting', { connection: browserConnection }, async page => {
       await page.waitFor(`${rows} === 7`); await page.click('#settings-summary'); await page.click('#switch-workspace'); await page.waitFor(shown('pairing'));
     }],
@@ -2045,8 +2048,8 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['connect-waiting', { connection: null }, waiting],
     ['connect-resumed', { connection: null, pairing: { v: 1, origin: 'https://console.assetlib.dev', readKey: `alr_${'r'.repeat(43)}`, userCode: 'BCDFGHJK',
       deadline: Date.now() + 420000, interval: 2 } }, page => page.waitFor(shown('pairing'))],
-    ['connect-older-console', { connection: null, statuses: { start: 404 } }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
-    ['connect-unreachable', { connection: null, failures: ['start'] }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
+    ['connect-older-console', { connection: null, failures: ['start'] }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
+    ['connect-unreachable', { connection: null, failures: ['start', 'token'] }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note')); }],
     ['connect-declined', { connection: null, pairingStatus: 'denied' }, async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing-note'), { timeout: 5000 }); }],
     ['account-panel-browser', { connection: browserConnection }, async page => { await page.waitFor(`${rows} > 0`); await page.click('#settings-summary'); }],
     ['switch-waiting', { connection: browserConnection }, async page => { await page.waitFor(`${rows} > 0`); await page.click('#settings-summary'); await page.click('#switch-workspace'); await page.waitFor(shown('pairing')); }],

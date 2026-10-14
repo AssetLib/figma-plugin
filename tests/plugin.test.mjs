@@ -5156,9 +5156,14 @@ test('the Sync bar offers Switch workspace for another app on this console', asy
 });
 
 test('an older console opens the token form; one that can’t be reached, or is busy, says so', async () => {
-  const older = harness({ saved: null, console: { statuses: { start: 404 } } });
+  // An older console sends no CORS headers for routes it lacks, so the start gets no answer, but GET /api/token, asked
+  // without a token, answers.
+  const older = harness({ saved: null, console: { failures: new Set(['start']) } });
   await settle();
   await startConnect(older);
+  assert.deepEqual(older.requests.map(request => request.route), ['start', 'token']);
+  assert.deepEqual(older.requests[1], { url: 'https://console.assetlib.dev/api/token', method: 'GET', authorization: undefined, credentials: 'omit', redirect: 'error',
+    body: null, route: 'token' });
   assert.deepEqual([older.element('pairing-note').textContent, older.element('pairing-note').className], ['This console can’t connect from Figma yet. Use a token instead.', 'info']);
   assert.deepEqual([older.element('connection-form').hidden, older.element('use-token').hidden], [false, true]);
   assert.deepEqual([older.element('connect').className, older.element('connect-browser').className], ['primary wide', 'secondary wide'], 'the token is the way in now');
@@ -5171,7 +5176,13 @@ test('an older console opens the token form; one that can’t be reached, or is 
   await settle();
   assert.equal(older.element('id-fields').hidden, false);
 
-  const offline = harness({ saved: null, console: { failures: new Set(['start']) } });
+  // One answering 404 where a plugin window can read it is older too.
+  const readable = harness({ saved: null, console: { statuses: { start: 404 } } });
+  await settle();
+  await startConnect(readable);
+  assert.equal(readable.element('pairing-note').textContent, 'This console can’t connect from Figma yet. Use a token instead.');
+
+  const offline = harness({ saved: null, console: { failures: new Set(['start', 'token']) } });
   await settle();
   await startConnect(offline);
   assert.deepEqual([offline.element('pairing-note').textContent, offline.element('pairing-note').className],
@@ -5182,7 +5193,7 @@ test('an older console opens the token form; one that can’t be reached, or is 
   offline.element('connect-browser').dispatch('click');
   await settle();
   assert.equal(offline.element('pairing').hidden, false, 'Try again starts a request');
-  const offlineToken = harness({ saved: null, console: { failures: new Set(['start']) } });
+  const offlineToken = harness({ saved: null, console: { failures: new Set(['start', 'token']) } });
   await settle();
   await startConnect(offlineToken);
   offlineToken.element('use-token').dispatch('click');
