@@ -172,6 +172,8 @@ export interface InsertCandidate {
   children: number;
   /** It carries an `assetlib.link.v1` for its own id in the connected app (read for a single layer only). */
   linked: boolean;
+  /** It shows an image: at least one IMAGE paint is not hidden. */
+  image: boolean;
   /** It is a component or sits inside a component, a component set, or an instance (read for a single layer only). */
   inComponent?: boolean;
 }
@@ -188,7 +190,7 @@ function fillable(node: InsertCandidate): boolean {
 }
 
 /**
- * What Insert does with the selection: a matching linked shape, frame, component, or instance is replaced; a frame or
+ * What Insert does with the selection: a matching linked shape, frame, component, or instance showing an image is replaced; a frame or
  * component with children (never an instance or anything inside one, which Figma gives no new children) receives a
  * child, noting a container that is or sits in a component, where placement art can't go; shapes and empty frames are
  * filled, other layers skipped; with nothing to replace, fill, or insert into, a new frame.
@@ -198,7 +200,7 @@ export function classifyInsertTarget(nodes: InsertCandidate[]): CanvasTarget {
   if (nodes.length === 1) {
     const node = nodes[0]!;
     // A linked layer whose image can be swapped. A sent text, group, or line carries a link too, but takes no image.
-    if (node.linked && (SHAPES.includes(node.type) || FRAMES.includes(node.type))) {
+    if (node.linked && node.image && (SHAPES.includes(node.type) || FRAMES.includes(node.type))) {
       return { mode: 'replace', label: 'Replace image', count: 1, nodeIds: [node.id], name: named(node), containerWidth: node.width, containerHeight: node.height };
     }
     if ((node.type === 'FRAME' || node.type === 'COMPONENT') && node.children > 0 && !insideInstance(node.id)) {
@@ -224,6 +226,13 @@ export function thumbnailRendition(asset: Pick<LibraryAsset, 'renditions'>): Ren
 
 export function findCell(placement: Pick<PlacementArtwork, 'cells'>, coordinate: CellCoordinate): ArtworkCell | null {
   return placement.cells.find(cell => cell.state === coordinate.state && cell.appearance === coordinate.appearance && cell.arm === coordinate.arm) ?? null;
+}
+
+/** The linked cell's current art in its environment, when it differs from the layer's, inherited art included. */
+export function changedArt(artwork: ArtworkResponse, link: InsertLink): CellArtwork | null {
+  const placement = artwork.placements.find(item => item.key === link.placementKey);
+  const art = placement ? findCell(placement, link)?.[link.environment] ?? null : null;
+  return art && art.assetId !== link.assetId ? art : null;
 }
 
 /** The base cell: Control, Any, and the default state. */

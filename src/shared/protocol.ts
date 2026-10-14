@@ -2,7 +2,7 @@ import type {
   CanvasTarget, CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, InsertMode, NodeSelection, PairingHint, PairingRecord, Placement,
   Preferences,
 } from './index.js';
-import { isRecord } from './validation.js';
+import { isRecord, validUuid } from './validation.js';
 
 /**
  * Where an insert goes: a new frame (centered in the view, or right of the selection), a child of the container
@@ -28,7 +28,8 @@ export type RememberedTarget = {
  * connected app; `copy`, written for this app on another layer (a Cmd+D copy keeps the data, not the node id); or `other`,
  * written for another console app, which also names that app (its origin, the legacy host as production, and IDs).
  */
-export type SelectedLink = InsertLink & { kind: 'linked' | 'copy' | 'other'; origin?: string; orgId?: string; appId?: string };
+export type SelectedLink = InsertLink & { kind: 'linked' | 'copy' | 'other'; image: boolean; children: number;
+  origin?: string; orgId?: string; appId?: string };
 
 /**
  * Where `fileKey` came from: Figma itself (`figma`), the identity saved in this document (`document`), or a link pasted
@@ -59,8 +60,9 @@ export type UiMessage =
   // `assetId`: the image the draft put in the cell, which the layer's link then names; null when the draft wasn't bound.
   | { type: 'remember'; requestId: number; assetId?: string | null }
   // `drop` names a drop main answered with `dropped`: the target is then that drop's placeholder or image frame.
+  // `update` keeps the linked cell and environment, only while the layer still shows the image `from` names.
   | { type: 'insert'; requestId: number; connectionGeneration: number; bytes: Uint8Array; name: string;
-    frame: { width: number; height: number }; scale: 1 | 2 | 3; link: InsertLink | null; target: InsertDestination; drop?: number }
+    frame: { width: number; height: number }; scale: 1 | 2 | 3; link: InsertLink | null; target: InsertDestination; drop?: number; update?: { from: string } }
   // A drop's image never came (its download failed, or the UI gave up waiting): main removes the placeholder it made
   // for it, and only that. Never refused.
   | { type: 'discard-placeholder'; nodeId: string }
@@ -190,7 +192,8 @@ export function parseUiMessage(value: unknown): UiMessage {
       case 'remember': return requestId(m.requestId) && (m.assetId === undefined || m.assetId === null || text(m.assetId));
       // The bytes, frame, and scale have their own messages in main.
       case 'insert': return requestId(m.requestId) && typeof m.connectionGeneration === 'number' && Number.isSafeInteger(m.connectionGeneration)
-        && text(m.name) && (m.link === null || isRecord(m.link)) && destination(m.target) && (m.drop === undefined || requestId(m.drop));
+        && text(m.name) && (m.link === null || isRecord(m.link)) && destination(m.target) && (m.drop === undefined || requestId(m.drop))
+        && (m.update === undefined || (isRecord(m.update) && validUuid(m.update.from)));
       case 'discard-placeholder': return text(m.nodeId);
       case 'save-preferences': return 'preferences' in m;
       case 'match-ratio': return requestId(m.requestId) && text(m.nodeId) && size(m.width) && size(m.height);

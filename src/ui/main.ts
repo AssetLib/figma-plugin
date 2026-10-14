@@ -7,8 +7,8 @@ import { applyConnection, failConnection, initConnection, loadPlacements, needsA
 import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
 import { abortAll } from './http.js';
 import {
-  applyPreferences, connectionKept, dropped, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
-  renderInsertControls, renderList, resetInsert, rowFor, savePreferences,
+  applyPreferences, connectionKept, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
+  refreshArtworkIfStale, renderInsertControls, renderList, resetInsert, rowFor, savePreferences,
 } from './insert.js';
 import { applyFileUrl, applySelection, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { actionsBlocked, state } from './state.js';
@@ -75,7 +75,7 @@ function testConnection(): void {
   const generation = state.connectionGeneration;
   void loadPlacements().then(failure => {
     if (generation !== state.connectionGeneration) return;
-    if (state.placementsLoaded) enterInsert(); else testFailed(failure);
+    if (state.placementsLoaded) { enterInsert(); ensureArtwork(); } else testFailed(failure);
   });
 }
 
@@ -110,7 +110,10 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
   if (!message) return;
   switch (message.type) {
     case 'connection': onConnection(message); break;
-    case 'selection': applySelection(message); break;
+    case 'selection':
+      applySelection(message);
+      if (message.connectionGeneration === state.connectionGeneration && state.selection.link?.kind === 'linked') refreshArtworkIfStale();
+      break;
     case 'file-saved': fileSaved(message); break;
     case 'file-mismatch': fileMismatch(message); break;
     case 'launch': launched(); break;
@@ -132,6 +135,7 @@ function setTab(next: typeof state.prefs.tab): void {
   savePreferences();
   scheduleRender();
   enterInsert();
+  if (next === 'send') ensureArtwork();
 }
 tabSend.addEventListener('click', () => setTab('send'));
 tabInsert.addEventListener('click', () => setTab('insert'));
@@ -213,13 +217,15 @@ grip.addEventListener('dblclick', event => {
 });
 // A new width can show or hide parts of the top bar (the chip's workspace name), which the render measures.
 window.addEventListener('resize', () => scheduleRender());
+window.addEventListener('focus', refreshArtworkIfStale);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshArtworkIfStale(); });
 
 // Figma's Copy link shortcut, as this platform spells it.
 element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
 initConnect();
 const showSend = () => setTab('send');
-initSend({ refused: () => needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend });
-initSyncBar({ showSend });
+initSend({ refused: () => needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true) });
+initSyncBar({ showSend, showInsert: () => setTab('insert') });
 initInsert(() => { setTab('send'); tabSend.focus(); });
 post({ type: 'init' });

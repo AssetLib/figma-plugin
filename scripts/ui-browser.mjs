@@ -207,8 +207,19 @@ function installFakes(config) {
       cells: [{ state: null, appearance: null, arm: null, draft, staging: null, production: i % 2 && !unset ? cellArt : null }] };
   });
   const artwork = { environments: { staging: null, production: { sequence: 4, createdAt: '2026-10-01T00:00:00.000Z' } }, placements, assets };
+  // A linked home.banner starts current in Production. `changed` gives it different Production art for Update.
+  const banner = placements.find(placement => placement.key === 'home.banner');
+  if (banner && !config.changed?.includes(banner.key)) for (const cell of banner.cells) cell.production = cell.draft;
+  if (config.slotIds) for (let i = 0; i < placements.length; i += 1) placements[i].slotId = uuid(30000 + i);
+  // The separate placements response may have an ID before artwork does: it must not supply the bar's link.
+  const placementIds = config.placementIds ? Object.fromEntries(placements.map((placement, i) => [placement.key, uuid(40000 + i)])) : null;
   const library = Array.from({ length: config.images ?? 30 }, (_, i) => asset(i + 1, config.imageNames?.[i] ?? `Image ${i + 1}`, 400, 200));
   if (config.artwork === 'empty') artwork.placements = [];
+
+  // Advance Date.now without making timers fire early: artwork's focus/selection throttle uses completion time.
+  let clockOffset = 0;
+  const realNow = Date.now;
+  Date.now = () => realNow() + clockOffset;
 
   // config.fastTimeouts: a request timeout (20 s or more) fires after 300 ms, so a timeout can be shown without the wait.
   if (config.fastTimeouts) {
@@ -240,7 +251,8 @@ function installFakes(config) {
     // GET /api/token: the token's own organization and app, as the console answers it; without a token, 401 (as an
     // older console does, with CORS headers its missing connection routes lack: config.failures ['start']).
     if (route === 'token') return init.headers?.Authorization ? json(200, config.identity) : json(401, { error: 'Missing or invalid API token.' });
-    if (route === 'placements') return json(200, { placements: placements.map(({ cells, ...placement }) => placement) });
+    if (route === 'placements') return json(200, { placements: placements.map(({ cells, ...placement }) =>
+      ({ ...placement, ...(placementIds ? { slotId: placementIds[placement.key] } : {}) })) });
     if (route === 'artwork') return json(200, artwork);
     if (route === 'assets') {
       const params = new URLSearchParams(path.split('?')[1] ?? '');
@@ -258,6 +270,11 @@ function installFakes(config) {
     // config.draft answers the draft with its own status and body (a rebind across cells, or a 409, say).
     if (route === 'drafts' && config.draft) return json(config.draft.status, config.draft.body);
     if (route === 'drafts') {
+      if (config.refreshAfterDraft) {
+        const fresh = asset(9999, 'Sent', 1170, 480);
+        artwork.assets[fresh.id] = fresh;
+        for (const cell of banner.cells) cell.draft = { assetId: fresh.id, via: { arm: null, appearance: null } };
+      }
       return json(201, { asset: { id: uuid(9999), name: 'Sent', width: 1170, height: 480, sha256: 'a'.repeat(64), renditions: 1 }, previous: null,
         bound: { slotKey: 'home.banner', state: null, appearance: null, arm: null }, bindError: null, rebound: [] });
     }
@@ -297,6 +314,7 @@ function installFakes(config) {
     selection: { insertTarget: { mode: 'new', label: 'Insert', count: 0, nodeIds: [] }, ...config.selection } });
   // Where each insert went (message.target), and the version it downloaded, for the tests to read.
   const targets = [];
+  const inserts = [];
   // What the grip asked for (a size, or 'reset'), and each preferences save; a test resizes the page itself, as Figma would.
   const resizes = [];
   const saved = [];
@@ -349,7 +367,14 @@ function installFakes(config) {
           settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: width } }, bytes: pngHeader(width, height) });
         break;
       }
-      case 'remember': reply({ type: 'remembered', requestId: message.requestId }); reply(selection()); break;
+      case 'remember':
+        if (config.refreshAfterDraft && message.assetId) {
+          config.selection.link = { ...config.selection.link, kind: 'linked', placementKey: 'home.banner', state: null, appearance: null, arm: null,
+            environment: 'draft', assetId: message.assetId, image: true, children: 0 };
+          config.selection.remembered = { fileKey: config.selection.fileKey, nodeId: config.selection.node.id, placementKey: 'home.banner',
+            state: null, appearance: null, arm: null, insertedFrom: { environment: 'draft', assetId: message.assetId } };
+        }
+        reply({ type: 'remembered', requestId: message.requestId }); reply(selection()); break;
       case 'notify': notices.push(message.text); break;
       case 'resize': resizes.push({ width: message.width, height: message.height }); break;
       case 'reset-size': resizes.push('reset'); break;
@@ -368,18 +393,26 @@ function installFakes(config) {
       case 'adopt-connection': case 'reload-connection': reply({ type: 'adopted', requestId: message.requestId, adopted: false }); break;
       case 'claim-turn': reply({ type: 'turn', requestId: message.requestId, turn: 'poll', after: 0 }); break;
       case 'insert': {
+        inserts.push(message);
         targets.push(message.target);
         insertDrops.push(message.drop ?? null);
         // A drop's placeholder is filled as a new layer.
         const kind = message.drop ? 'new' : message.target.kind;
         // As main/insert.ts words its toasts; a fill of one linked layer is a replace.
         const mode = kind === 'fill' && config.selection.insertTarget?.mode === 'replace' ? 'replace' : kind;
-        const notice = mode === 'replace' ? `Replaced image in ${config.selection.insertTarget.name}`
+        const environment = message.link?.environment;
+        const notice = message.update ? `Updated ${config.selection.node.name} with the latest ${environment[0].toUpperCase() + environment.slice(1)} art`
+          : mode === 'replace' ? `Replaced image in ${config.selection.insertTarget.name}`
           : mode === 'fill' ? `Filled ${message.target.nodeIds.length} layers with ${message.link?.placementKey ?? message.name}`
             : message.link ? `Inserted ${message.name} from Draft` : `Inserted ${message.name}`;
         if (kind !== 'fill') frames += 1;
         reply({ type: 'inserted', requestId: message.requestId, connectionGeneration: generation, linked: Boolean(message.link), mode, notice,
           node: { id: `200:${frames}`, name: message.name, type: 'FRAME', width: message.frame.width / message.scale, height: message.frame.height / message.scale } });
+        if (message.update) {
+          config.selection.link = { ...config.selection.link, ...message.link };
+          if (config.selection.remembered) config.selection.remembered.insertedFrom = { environment, assetId: message.link.assetId };
+          reply(selection());
+        }
         break;
       }
       default: break;
@@ -398,8 +431,17 @@ function installFakes(config) {
   } };
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   // Tests may change `delays` mid-test; each request reads its route's delay when it starts.
-  window.__harness = { log, received, notices, uuid, delays, targets, drops, insertDrops, resizes, saved, opened, inserted: () => frames,
-    approve: () => { config.pairingStatus = 'approved'; } };
+  window.__harness = { log, received, notices, uuid, delays, targets, inserts, drops, insertDrops, resizes, saved, opened, artwork, inserted: () => frames,
+    approve: () => { config.pairingStatus = 'approved'; },
+    advance: ms => { clockOffset += ms; },
+    select: value => { config.selection = value; reply(selection()); },
+    setStatus: (route, status) => { config.statuses = { ...config.statuses, [route]: status }; },
+    replaceArt: (key, environment, n) => {
+      const placement = artwork.placements.find(item => item.key === key);
+      const current = n === null ? null : asset(n, `${key} refreshed art`, placement.width, placement.height);
+      if (current) artwork.assets[current.id] = current;
+      for (const cell of placement.cells) cell[environment] = current ? { assetId: current.id, via: { arm: null, appearance: null } } : null;
+    } };
 }
 
 // Tokens as the console mints them: alk_ and 43 base64url characters. Fake, for these pages only.
@@ -711,7 +753,7 @@ test('the Sync bar shows a linked layer above the footer on both tabs, and Cmd+E
     await page.waitFor(`${rows} === 7`);
     await page.waitFor(shown('selection-bar'));
     assert.equal(await page.evaluate(textOf('sync-title')), 'Linked to home.banner');
-    assert.equal(await page.evaluate(textOf('sync-meta')), 'Production art');
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'in Production (release 4)');
     assert.equal(await page.evaluate(`document.getElementById('sync-console').href`), `https://console.assetlib.dev/w/org-one/app-a/images/${bannerArt}`);
     await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/')`, { message: 'the linked image’s preview' });
     assert.equal(await page.evaluate(inViewport('selection-bar')), true);
@@ -723,7 +765,10 @@ test('the Sync bar shows a linked layer above the footer on both tabs, and Cmd+E
     await page.click('#insert-list .placement[data-key="home.banner"]');
     await page.waitFor(`${inkPrimaries}.then(ids => JSON.stringify(ids) === '["insert"]')`, { message: 'Insert, the one primary' });
     assert.ok((await page.evaluate(box('selection-bar'))).bottom <= (await page.evaluate(box('insert-bar'))).top, 'above the footer');
-    // Tab goes from the list to the bar, then to the footer.
+    // Tab goes from the list to the bar's title, then its actions, then the footer.
+    await page.press('Tab');
+    assert.equal(await page.focused(), 'sync-title');
+    assert.equal(await page.evaluate(`document.getElementById('sync-title').title`), 'Show home.banner in the Insert list');
     await page.press('Tab');
     assert.equal(await page.focused(), 'sync-console');
     await page.press('Tab');
@@ -1044,8 +1089,9 @@ const canvasSelection = insertTarget => ({ selection: { ...(insertTarget.mode ==
 // A layer linked to home.banner as main reports it (A.7): its link, written on it for this app, names Production art.
 const bannerArt = '00000000-0000-4000-8000-000000010002';
 const linkedSelection = layer => ({ node: layer, reason: null, fileKey: 'abc123', file: { source: 'figma', name: '' },
+  insertTarget: { mode: 'replace', label: 'Replace image', count: 1, nodeIds: [layer.id], name: layer.name, containerWidth: layer.width },
   remembered: { fileKey: 'abc123', nodeId: layer.id, placementKey: 'home.banner', state: null, appearance: null, arm: null, insertedFrom: { environment: 'production', assetId: bannerArt } },
-  link: { kind: 'linked', placementKey: 'home.banner', state: null, appearance: null, arm: null, environment: 'production', assetId: bannerArt } });
+  link: { kind: 'linked', placementKey: 'home.banner', state: null, appearance: null, arm: null, environment: 'production', assetId: bannerArt, image: true, children: 0 } });
 
 test('no overflow at 320×480, 420×720, 640×900', async () => {
   // Nothing wider than the window, and the page itself never scrolls either way: only the list (or the Send form) does.
@@ -1083,6 +1129,8 @@ test('no overflow at 320×480, 420×720, 640×900', async () => {
     // The Sync bar wraps its actions under its text rather than overflow: with the footer, with the ratio off, and for a copy.
     ['the Sync bar above the footer', { selection: linkedSelection({ id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 }) },
       async page => { await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['the Sync bar with Update', { changed: ['home.banner'], selection: linkedSelection({ id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 }) },
+      async page => { await page.waitFor(shown('sync-update')); }],
     ['the Sync bar with the ratio off', { selection: linkedSelection(tall) }, async page => { await page.waitFor(`${rows} === 7`); await page.waitFor(shown('sync-match')); }],
     ['the Sync bar for a copy', { selection: { ...linkedSelection(tall), remembered: null, link: { ...linkedSelection(tall).link, kind: 'copy' } } },
       async page => { await page.waitFor(`${rows} === 7`); await page.waitFor(shown('sync-send')); }],
@@ -2130,7 +2178,8 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     // The Sync bar (A.7): on Insert and Send, with the ratio off, a copy, another app's link, and a placement that's gone.
     ['sync-bar-insert', { selection: linkedSelection(node) }, async page => { await ready(page); await page.waitFor(shown('selection-bar')); }],
     ['sync-bar-insert-chosen', { selection: linkedSelection(node) }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
-    ['sync-bar-send', { preferences: { tab: 'send' }, selection: linkedSelection(node) }, page => page.waitFor(shown('selection-bar'))],
+    ['sync-bar-send', { preferences: { tab: 'send' }, selection: linkedSelection(node) }, async page => { await page.waitFor(shown('selection-bar')); await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/')`); }],
+    ['sync-bar-update', { changed: ['home.banner'], selection: linkedSelection(node) }, async page => { await ready(page); await page.waitFor(shown('sync-update')); }],
     ['sync-bar-ratio', { selection: linkedSelection(tall) }, async page => { await ready(page); await page.waitFor(shown('sync-match')); }],
     ['sync-bar-copy', { selection: { ...linkedSelection(node), remembered: null, link: { ...linkedSelection(node).link, kind: 'copy' } } }, ready],
     ['sync-bar-other', { selection: { ...linkedSelection(node), remembered: null, link: { ...linkedSelection(node).link, kind: 'other' } } }, ready],
@@ -2159,6 +2208,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
   ['narrow-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, askForLink],
   ['narrow-sync-bar', { selection: linkedSelection(node) }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+  ['narrow-sync-bar-update', { changed: ['home.banner'], selection: linkedSelection(node) }, async page => { await ready(page); await page.waitFor(shown('sync-update')); }],
   ['narrow-sync-bar-ratio', { selection: linkedSelection(tall) }, async page => { await ready(page); await page.waitFor(shown('sync-match')); }],
   ['narrow-insert-into', canvasSelection(intoLong), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
   ['narrow-send-problem', { statuses: { placements: 401 }, preferences: { tab: 'send' } }, page => page.waitFor(shown('send-problem'))],
@@ -2457,7 +2507,7 @@ test('Send has one primary, a plain upload, and Cmd+Enter announces rather than 
   const node = { id: '40:1', name: 'Hero', type: 'FRAME', width: 1000, height: 1000 };
   const key = 'screen0.slot0';
   const selection = { ...linkedSelection(node), remembered: { fileKey: 'abc123', nodeId: node.id, placementKey: key, state: 'welcome', appearance: 'light', arm: null },
-    link: { ...linkedSelection(node).link, placementKey: key, state: 'welcome', appearance: 'light' } };
+    link: { ...linkedSelection(node).link, placementKey: key, state: 'welcome', appearance: 'light', assetId: '00000000-0000-4000-8000-000000010000' } };
   const page = await openUi({ declared: true, placements: 30, preferences: { tab: 'send' }, selection, delays: { drafts: 200 } });
   try {
     await page.waitFor(shown('send-plain'));
@@ -2531,5 +2581,228 @@ test('copy Send chooses another cell and ratio callouts describe the result', as
       assert.equal((await ratio.evaluate(textOf('aspect-text'))).replaceAll('\u00a0', ' '), `This frame is 390 × ${height}. home.banner needs 2.44 : 1 (1170 × 480). Match ratio makes it 390 × 160.${height === 844 ? ' Or choose a placement that fits.' : ''}`);
       assert.ok((await ratio.evaluate(inkPrimaries)).length <= 1);
     } finally { await ratio.close(); }
+  }
+});
+
+// ---- Batch 3: current artwork, Update, placement navigation, and publication status ----
+
+const artworkReads = `__harness.log.filter(entry => entry.route === 'artwork')`;
+const syncFits = `(() => { const bar = document.getElementById('selection-bar'); const width = document.documentElement.clientWidth;
+  return document.documentElement.scrollWidth === width && document.documentElement.scrollHeight === document.documentElement.clientHeight
+    && [...bar.querySelectorAll('*')].filter(el => el.checkVisibility()).every(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= width + 0.5; }); })()`;
+const refreshArtworkOnFocus = `__harness.advance(61000); window.dispatchEvent(new Event('focus'));`;
+
+test('Update is primary, blocks Cmd+Enter, and keeps a 48 px bar at 420 px while wrapping at 320 px in both themes', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  for (const mode of ['light', 'dark']) for (const width of [420, 320]) {
+    const page = await openUi({ selection: linkedSelection(node), changed: ['home.banner'] }, { width, height: 720, theme: mode });
+    try {
+      await page.waitFor(shown('sync-update'));
+      await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/')`);
+      assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'rendition' && entry.url.includes('/00000000-0000-4000-8000-000000020002/'))`), true,
+        'the bar previews the Production art Update will bring');
+      assert.equal(await page.evaluate(textOf('sync-meta')), 'Production has different art now');
+      assert.deepEqual(await page.evaluate(inkPrimaries), ['sync-update']);
+      assert.equal(await page.evaluate(`document.getElementById('sync').classList.contains('secondary')`), true);
+      assert.equal(await page.evaluate(`document.getElementById('sync').title`), 'Sync replaces Draft’s art for this cell with this layer.');
+      assert.equal(await page.evaluate(`document.getElementById('selection-bar').title`), 'Update puts this Production art in the layer. Sync updates Draft only; publishing stays in the console.');
+      assert.equal(await page.evaluate(shown('sync-console')), false);
+      assert.equal(await page.evaluate(syncFits), true, `${mode}, ${width} px`);
+      if (width === 420) assert.equal(await page.evaluate(`document.getElementById('selection-bar').clientHeight`), 48);
+      await page.click('#insert-search');
+      const command = await page.evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`) ? 4 : 2;
+      await page.press('Enter', command);
+      assert.equal(await page.evaluate(textOf('status')), 'Update first, or choose Sync to draft to replace Draft’s art with this layer.');
+      assert.equal(await page.evaluate(`__harness.received.some(type => type === 'export' || type === 'insert')`), false);
+      assert.equal(await page.focused(), 'insert-search');
+      await page.click('#tab-send');
+      assert.equal(await page.evaluate(syncFits), true);
+      if (width === 420) assert.equal(await page.evaluate(`document.getElementById('selection-bar').clientHeight`), 48, 'the same row on Send');
+    } finally { await page.close(); }
+  }
+});
+
+test('only Update shows Updating and its spinner while Insert, Sync, Send, Match ratio, and drags wait', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const page = await openUi({ selection: linkedSelection(node), changed: ['home.banner'] });
+  try {
+    await page.waitFor(shown('sync-update'));
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    await page.waitFor(`__harness.log.filter(entry => entry.route === 'rendition').every(entry => entry.done)`);
+    await page.evaluate(`__harness.delays.rendition = 3000`);
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['sync-update']);
+    await page.click('#sync-update');
+    await page.waitFor(`document.getElementById('sync-update').getAttribute('aria-busy') === 'true'`);
+    assert.equal(await page.evaluate(textOf('sync-update')), 'Updating…');
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('sync-update'), '::before').content !== 'none'`), true, 'the running action has its spinner');
+    assert.equal(await page.evaluate(textOf('insert')), 'Replace image');
+    assert.deepEqual(await page.evaluate(`['insert', 'sync', 'send', 'sync-match'].map(id => {
+      const el = document.getElementById(id); return [el.getAttribute('aria-disabled'), el.hasAttribute('aria-busy'), el.disabled]; })`),
+    [['true', false, false], ['true', false, false], ['true', false, false], ['true', false, false]]);
+    assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement[data-key="home.banner"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }))`), false, 'a drag is refused while Update waits');
+    await page.click('#insert');
+    await page.click('#sync');
+    assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+    await page.waitFor(`__harness.inserts.length === 1 && !document.getElementById('sync-update').hasAttribute('aria-busy')`);
+    const insert = await page.evaluate(`__harness.inserts[0]`);
+    assert.deepEqual(insert.update, { from: bannerArt });
+    assert.deepEqual(insert.target, { kind: 'fill', nodeIds: [node.id] });
+    assert.equal(insert.link.assetId, '00000000-0000-4000-8000-000000020002');
+    assert.equal(insert.link.environment, 'production');
+    assert.equal(await page.evaluate(textOf('status')), 'Updated Banner art with the latest Production art.');
+  } finally { await page.close(); }
+});
+
+test('the ratio gate keeps Match ratio primary when Update is also offered', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 390, height: 844 };
+  const page = await openUi({ selection: linkedSelection(node), changed: ['home.banner'] });
+  try {
+    await page.waitFor(shown('sync-update'));
+    assert.equal(await page.evaluate(shown('sync-match')), true);
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['sync-match']);
+    assert.match(await page.evaluate(textOf('sync-meta')), /^This frame is/);
+    assert.equal(await page.evaluate(shown('sync-console')), false);
+  } finally { await page.close(); }
+});
+
+test('quiet artwork loads on Send and during Images searches, throttles focus from completion, and keeps art on failure', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const selection = linkedSelection(node);
+  const page = await openUi({ selection, preferences: { tab: 'send', browse: 'images' }, delays: { artwork: 500 } });
+  try {
+    await page.waitFor(`${artworkReads}.length === 1 && ${artworkReads}[0].done`);
+    await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/')`);
+    await page.evaluate(`window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange'));`);
+    await page.frames();
+    assert.equal(await page.evaluate(`${artworkReads}.length`), 1, 'focus and visibility reuse fresh artwork on Send');
+    await page.evaluate(`__harness.replaceArt('home.banner', 'production', 21002); ${refreshArtworkOnFocus}`);
+    await page.waitFor(`${artworkReads}.length === 2 && !${artworkReads}[1].done`);
+    assert.equal(await page.evaluate(listBusy), false, 'quiet artwork has no skeleton');
+    await page.click('#tab-insert');
+    await page.waitFor(`${tiles} === 24`);
+    await page.click('#insert-search'); await page.type('Image 2');
+    await page.waitFor(shown('sync-update'));
+    assert.equal(await page.evaluate(`${artworkReads}[1].aborted`), false, 'the Images search did not cancel artwork');
+    assert.equal(await page.evaluate(`${artworkReads}.length`), 2);
+    // The bar previews the art Update brings once its rendition loads.
+    await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/')`);
+    const preview = await page.evaluate(`document.getElementById('sync-thumb').src`);
+    await page.evaluate(`__harness.setStatus('artwork', 500); ${refreshArtworkOnFocus}`);
+    await page.waitFor(`${artworkReads}.length === 3 && ${artworkReads}[2].done`);
+    await page.frames();
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'Production has different art now');
+    assert.equal(await page.evaluate(`document.getElementById('sync-thumb').src`), preview);
+    assert.equal(await page.evaluate(shown('error-box')), false, 'a failed quiet read has no error line');
+    await page.evaluate(`window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange'));`);
+    await page.frames();
+    assert.equal(await page.evaluate(`${artworkReads}.length`), 3, 'a failed completion also starts the throttle');
+    await page.evaluate(`__harness.setStatus('artwork', 0); __harness.delays.artwork = 2000; __harness.select(${JSON.stringify(DEFAULTS.selection)}); __harness.advance(61000); __harness.select(${JSON.stringify(selection)});`);
+    await page.waitFor(`${artworkReads}.length === 4 && !${artworkReads}[3].done`);
+    await page.click('#settings-summary'); await page.click('#disconnect');
+    await page.waitFor(`${artworkReads}[3].aborted`);
+    assert.equal(await page.evaluate(shown('selection-bar')), false, 'Disconnect drops the old connection’s art');
+  } finally { await page.close(); }
+});
+
+test('a bound Send or Sync refreshes the bar preview and placement thumbnail without Refresh', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  for (const action of ['send', 'sync']) {
+    const selection = action === 'sync' ? linkedSelection(node) : { ...DEFAULTS.selection, node, reason: null };
+    const page = await openUi({ selection, refreshAfterDraft: true });
+    try {
+      await page.waitFor(`${rows} === 7`);
+      await page.waitFor(`document.querySelector('#insert-list .placement[data-key="home.banner"] img').src.startsWith('data:image/')`);
+      const oldThumb = await page.evaluate(`document.querySelector('#insert-list .placement[data-key="home.banner"] img').src`);
+      if (action === 'send') {
+        await page.click('#tab-send');
+        await page.evaluate(choose('placement', 'home.banner')); await page.frames();
+      }
+      await page.click(`#${action}`);
+      await page.waitFor(`${artworkReads}.length === 2 && ${artworkReads}[1].done`);
+      await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/') && document.getElementById('sync-thumb').src !== ${JSON.stringify(oldThumb)}`);
+      await page.click('#tab-insert');
+      await page.waitFor(`document.querySelector('#insert-list .placement[data-key="home.banner"] img').src !== ${JSON.stringify(oldThumb)}`);
+      assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement[data-key="home.banner"] .tag').textContent`), 'Changed in Draft');
+      assert.equal(await page.evaluate(`${artworkReads}.length`), 2, `${action} refreshed once`);
+      assert.equal(await page.evaluate(textOf('sync-meta')), 'in Draft, not published');
+      assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'rendition' && entry.url.includes('/00000000-0000-4000-8000-000000009999/'))`), true);
+    } finally { await page.close(); }
+  }
+});
+
+test('publication status compares Production first, and missing art or a sent frame never offers Update', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const selection = linkedSelection(node);
+  selection.link.environment = 'draft'; selection.remembered.insertedFrom.environment = 'draft';
+  const page = await openUi({ selection });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'in Production (release 4)');
+    await page.evaluate(`(() => { const cell = __harness.artwork.placements.find(p => p.key === 'home.banner').cells[0];
+      cell.staging = cell.draft; cell.production = null; __harness.artwork.environments.staging = { sequence: 5, createdAt: '2026-10-10T00:00:00.000Z' }; })(); ${refreshArtworkOnFocus}`);
+    await page.waitFor(`${textOf('sync-meta')} === 'in Staging, not in Production'`);
+    await page.evaluate(`__harness.replaceArt('home.banner', 'staging', null); ${refreshArtworkOnFocus}`);
+    await page.waitFor(`${textOf('sync-meta')} === 'in Draft, not published'`);
+    await page.evaluate(`__harness.replaceArt('home.banner', 'draft', null); ${refreshArtworkOnFocus}`);
+    await page.waitFor(`${textOf('sync-meta')} === 'Draft no longer has art for this cell.'`);
+    assert.equal(await page.evaluate(shown('sync-update')), false);
+    assert.equal(await page.evaluate(`document.getElementById('selection-bar').title.includes('may also update')`), false, 'only the console’s post-Sync result counts other cells');
+    for (const [image, children] of [[false, 0], [true, 1]]) {
+      await page.evaluate(`__harness.select(${JSON.stringify({ ...selection, link: { ...selection.link, image, children } })}); __harness.replaceArt('home.banner', 'draft', 22002); ${refreshArtworkOnFocus}`);
+      await page.waitFor(`${textOf('sync-meta')} === 'Draft has different art now. Sync replaces it with this layer.'`);
+      assert.equal(await page.evaluate(shown('sync-update')), false, `${image ? 'a layer with children' : 'a layer without an image'} has no Update`);
+    }
+  } finally { await page.close(); }
+});
+
+test('the bar title reveals the linked or copied cell from Images and the list stays within 15 tab stops', async () => {
+  const node = { id: '40:1', name: 'Hero', type: 'FRAME', width: 1000, height: 1000 };
+  const key = 'screen0.slot0';
+  const assetId = '00000000-0000-4000-8000-000000010000';
+  for (const kind of ['linked', 'copy']) {
+    const selection = { ...linkedSelection(node), remembered: kind === 'copy' ? null : { fileKey: 'abc123', nodeId: node.id, placementKey: key,
+      state: 'welcome', appearance: 'dark', arm: null, insertedFrom: { environment: 'production', assetId } },
+      link: { ...linkedSelection(node).link, kind, placementKey: key, state: 'welcome', appearance: 'dark', assetId } };
+    const page = await openUi({ selection, declared: true, placements: 500, preferences: { browse: 'images' } });
+    try {
+      await page.waitFor(`${tiles} === 24`);
+      await page.click('#insert-search'); await page.type('Image 2'); await page.frames();
+      await page.click('#sync-title');
+      await page.waitFor(`${rows} === 500`);
+      assert.equal(await page.evaluate(valueOf('insert-search')), '');
+      assert.equal(await page.evaluate(valueOf('insert-appearance')), 'dark');
+      assert.equal(await page.evaluate(`document.getElementById('env-production').getAttribute('aria-checked')`), 'true');
+      assert.deepEqual(await page.evaluate(chosenKeys), [key]);
+      assert.equal(await page.focused(), key);
+      if (kind === 'linked') assert.equal(await page.evaluate(textOf('insert')), 'Replace image');
+      await page.press('Tab'); assert.equal(await page.focused(), 'sync-title');
+      await page.evaluate(`document.getElementById('tab-insert').focus()`);
+      const stops = ['tab-insert'];
+      for (let i = 0; i < 30; i += 1) { await page.press('Tab'); const id = await page.focused(); if (id === 'body' || stops.includes(id)) break; stops.push(id); }
+      assert.ok(stops.length <= 15, `${kind}: ${stops.length} tab stops: ${stops.join(', ')}`);
+      assert.equal(stops.indexOf('sync-title'), stops.indexOf(key) + 1);
+      assert.ok(stops.indexOf('insert-appearance') > stops.indexOf(kind === 'linked' ? 'sync' : 'sync-send'));
+    } finally { await page.close(); }
+  }
+  const other = await openUi({ selection: { ...linkedSelection(node), remembered: null, link: { ...linkedSelection(node).link, kind: 'other' } } });
+  try {
+    await other.waitFor(shown('selection-bar'));
+    assert.equal(await other.evaluate(`document.getElementById('sync-title').disabled`), true);
+  } finally { await other.close(); }
+});
+
+test('Open in console uses the artwork placement ID only after artwork loads, otherwise the image page', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  for (const slotIds of [true, false]) {
+    const page = await openUi({ selection: linkedSelection(node), preferences: { tab: 'send' }, slotIds, placementIds: true, delays: { artwork: 900 } });
+    try {
+      await page.waitFor(shown('sync-console'));
+      assert.equal(await page.evaluate(`${artworkReads}.every(entry => !entry.done)`), true, 'the bar is usable before artwork');
+      assert.equal(await page.evaluate(`document.getElementById('sync-console').href`), `https://console.assetlib.dev/w/org-one/app-a/images/${bannerArt}`);
+      await page.waitFor(`${artworkReads}.length === 1 && ${artworkReads}[0].done`); await page.frames();
+      assert.equal(await page.evaluate(`document.getElementById('sync-console').href`), slotIds
+        ? 'https://console.assetlib.dev/w/org-one/app-a/placements/00000000-0000-4000-8000-000000030002'
+        : `https://console.assetlib.dev/w/org-one/app-a/images/${bannerArt}`);
+    } finally { await page.close(); }
   }
 });

@@ -5,7 +5,7 @@ import {
   consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel,
   reconnectText, refusalCode, sizeLabel, tokenRefused, validUuid, validateBinding,
 } from '../shared/index.js';
-import type { Appearance, CellBinding, Connection, DraftResult, InsertLink, PairingHint, Placement } from '../shared/index.js';
+import type { Appearance, CellBinding, Connection, DraftResult, EnvironmentName, InsertLink, PairingHint, Placement } from '../shared/index.js';
 import { CONNECTION_REPLACED } from '../shared/protocol.js';
 import type { MainMessage, RememberedTarget } from '../shared/protocol.js';
 import {
@@ -43,6 +43,7 @@ let showSend: () => void = () => {};
 // Connect again (connect.ts, through main.ts): a refused saved connection is approved again in the browser.
 let reconnect: () => void = () => {};
 let refused: () => void = () => {};
+let artworkChanged: () => void = () => {};
 let selectionIdentity = '';
 // The connection generation the placement picker was filled for; a choice never carries over to another connection.
 let pickerGeneration: number | null = null;
@@ -202,7 +203,7 @@ export function bindingLabel(bind: CellBinding): string {
  * Cmd+D copy of a linked layer), or `other` (linked to another console app).
  */
 export type SyncBar =
-  | { kind: 'linked'; key: string; meta: string; detail: string; placement: Placement | null; ratio: string | null; assetId: string | null;
+  | { kind: 'linked'; key: string; meta: string; axes: string; environment: EnvironmentName; detail: string; placement: Placement | null; ratio: string | null; assetId: string | null;
     cell: Pick<CellBinding, 'state' | 'appearance' | 'arm'> }
   | { kind: 'removed'; key: string; cell: boolean }
   | { kind: 'copy'; key: string; link: InsertLink }
@@ -229,13 +230,13 @@ export function syncBar(): SyncBar | null {
       return { kind: 'removed', key, cell: state.placements.some(item => item.key === key) };
     }
     const placement = target?.placement ?? null;
-    const environment = remembered.insertedFrom?.environment ?? 'draft';
+    const sameCell = link?.kind === 'linked' && link.placementKey === key && link.state === remembered.state && link.appearance === remembered.appearance
+      && link.arm === remembered.arm;
+    const environment = sameCell ? link.environment : remembered.insertedFrom?.environment ?? 'draft';
     const meta = [...cellLabel(placement, remembered), remembered.insertedFrom ? `${environmentLabel(environment)} art` : 'sent to Draft'].join(' · ');
     const detail = target ? `${bindingLabel(target.bind)}. Sync sends this layer to that cell in Draft and replaces draft references to its earlier sends.` : meta;
     // Open in console names the image the layer's own link names, when that link is to this cell.
-    const sameCell = link?.kind === 'linked' && link.placementKey === key && link.state === remembered.state && link.appearance === remembered.appearance
-      && link.arm === remembered.arm;
-    return { kind: 'linked', key, meta, detail, placement, ratio: ratioBlocks(placement) ? ratioText(placement, false) : null,
+    return { kind: 'linked', key, meta, axes: cellLabel(placement, remembered).join(' · '), environment, detail, placement, ratio: ratioBlocks(placement) ? ratioText(placement, false) : null,
       assetId: sameCell ? link.assetId : null, cell: { state: remembered.state, appearance: remembered.appearance, arm: remembered.arm } };
   }
   if (link?.kind === 'copy') return { kind: 'copy', key: link.placementKey, link };
@@ -511,6 +512,7 @@ export function remembered(message: Extract<MainMessage, { type: 'remembered' }>
   endSend();
   const draft = operation.result;
   if (!draft?.bound || draft.bindError) return;
+  artworkChanged();
   const key = draft.bound.slotKey;
   toast(operation.rebind ? `Synced ${key} to draft` : `Sent to ${key} draft`, { text: 'Review', url: consoleLink(operation.connection, 'releases') });
 }
@@ -569,10 +571,11 @@ export function failSend(requestId: number, message: string): boolean {
   return true;
 }
 
-export function initSend(actions: { refused: () => void; retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void }): void {
+export function initSend(actions: { refused: () => void; retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void; artworkChanged: () => void }): void {
   showSend = actions.showSend;
   reconnect = actions.reconnect;
   refused = actions.refused;
+  artworkChanged = actions.artworkChanged;
   element('send-retry').addEventListener('click', () => { if (!actionsBlocked()) actions.retry(); });
   element('send-token').addEventListener('click', () => {
     if (sendProblemShown(false)?.action === 'reconnect') actions.reconnect(); else actions.updateToken();

@@ -8,7 +8,7 @@ import {
 import type { CanvasTarget, Connection, InsertLink, InsertMode, StoredLink } from '../shared/index.js';
 import { dropRequestId, isAssetlibDrop, parseDropMetadata, toastText } from '../shared/protocol.js';
 import type { DropMetadata, InsertDestination, UiMessage } from '../shared/protocol.js';
-import { describeNode, dropStoredTargets, inComponent, insertTarget, nodeLink, reportSelection, writeLink } from './selection.js';
+import { describeNode, dropStoredTargets, hasImagePaint, inComponent, insertTarget, nodeLink, reportSelection, writeLink } from './selection.js';
 import { SELECTION_MOVED, main, post } from './state.js';
 
 // A transcoded 2048 px PNG fits.
@@ -17,6 +17,7 @@ const UNUSABLE = 'The console returned an image Figma cannot use. Refresh and tr
 // A new frame inserted with a selection sits this far right of it.
 const GAP = 40;
 const BUSY = 'An image is already being inserted or exported.';
+const UPDATE_CHANGED = 'This layer changed since the plugin checked it. Select it again.';
 // A drop's placeholder until its image arrives: the brand's light surface.
 const PLACEHOLDER_FILL: SolidPaint = { type: 'SOLID', color: { r: 238 / 255, g: 240 / 255, b: 243 / 255 } };
 // Layers a drop can go inside. An instance, or anything inside one, takes no new layers; a component set only variants.
@@ -107,12 +108,12 @@ function insertedNotice(name: string, link: InsertLink | null): string {
 /** A side in Figma when Insert at divides it, to two decimals. */
 function side(value: number, scale: number): number { return Math.round((value / scale) * 100) / 100; }
 
-/** The fills with the topmost image's hash replaced, keeping its scale mode, transform, filters, opacity, blend, and visibility; else one appended. */
-function withImage(fills: MinimalFillsMixin['fills'], hash: string): Paint[] {
+/** The topmost image's hash replaced, keeping its paint fields; Update skips hidden images so the visible art changes. */
+function withImage(fills: MinimalFillsMixin['fills'], hash: string, update = false): Paint[] {
   const paints: Paint[] = Array.isArray(fills) ? [...(fills as readonly Paint[])] : [];
   for (let index = paints.length - 1; index >= 0; index -= 1) {
     const paint = paints[index]!;
-    if (paint.type === 'IMAGE') { paints[index] = { ...paint, imageHash: hash }; return paints; }
+    if (paint.type === 'IMAGE' && (!update || paint.visible !== false)) { paints[index] = { ...paint, imageHash: hash }; return paints; }
   }
   return [...paints, { type: 'IMAGE', imageHash: hash, scaleMode: 'FILL' }];
 }
@@ -189,15 +190,15 @@ function place(config: Connection, target: InsertDestination, selection: readonl
  * writes or removes a link, so a linked layer stays linked to its cell.
  */
 function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fill' }>, selection: readonly SceneNode[], hash: string,
-  frame: Frame, link: InsertLink | null, name: string): Inserted {
+  frame: Frame, link: InsertLink | null, name: string, update = false): Inserted {
   const layers = target.nodeIds.map(id => selection.find(node => node.id === id)).filter((node): node is Paintable => Boolean(node && 'fills' in node));
-  const replacing = layers.length === 1 && nodeLink(layers[0]!, config) !== null;
+  const replacing = layers.length === 1 && nodeLink(layers[0]!, config) !== null && hasImagePaint(layers[0]!);
   const filled: Paintable[] = [];
   const relinked: string[] = [];
   const unlinked: SceneNode[] = [];
   for (const node of layers) {
     const previous = link ? nodeLink(node, config) : null;
-    try { node.fills = withImage(node.fills, hash); } catch { continue; }
+    try { node.fills = withImage(node.fills, hash, update); } catch { continue; }
     filled.push(node);
     if (!link) continue;
     if (writeLink(node, config, link)) {
@@ -217,7 +218,8 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
       unlinked.length === filled.length ? (filled.length === 1 ? 'it' : 'them') : `${unlinked.length === 1 ? 'one' : unlinked.length} of them`}.`
     : skipped ? `Filled ${filled.length} of ${layers.length} layers with ${art}. Figma couldn’t fill the other ${others}.`
       : unlinked.length ? (unlinked.some(node => insideInstance(node.id)) ? INSTANCE_LAYERS : notLinked(unlinked.length))
-        : replacing ? `Replaced image in ${first.name}`
+        : update && link ? `Updated ${first.name} with the latest ${environmentLabel(link.environment)} art`
+          : replacing ? `Replaced image in ${first.name}`
           : filled.length === 1 ? `Filled ${first.name} with ${art}` : `Filled ${filled.length} layers with ${art}`;
   return { node: first, mode: replacing ? 'replace' : 'fill', linked: relinked.length > 0, notice, undo: filled, relinked };
 }
@@ -282,16 +284,30 @@ async function apply(message: InsertMessage, config: Connection, edit: (hash: st
 }
 
 export async function insert(message: InsertMessage): Promise<void> {
+  // An Update always edits the single selected layer, never a drop's placeholder.
+  if (message.update && message.drop !== undefined) { await reportSelection(); throw new Error(UPDATE_CHANGED); }
   if (message.drop !== undefined) { await insertDropped(message, message.drop); return; }
+  if (dropPending()) throw new Error(BUSY);
   const { config, link, name } = checkInsert(message);
   const { frame, scale, target } = message;
   // Insert into, Fill, and Replace name the layers the UI saw selected; they must still be the selection.
   const selection = figma.currentPage.selection;
+  if (message.update) {
+    const node = selection.length === 1 ? selection[0] : null;
+    const previous = node ? nodeLink(node, config) : null;
+    if (!node || target.kind !== 'fill' || target.nodeIds.length !== 1 || target.nodeIds[0] !== node.id
+      || !link || !previous || previous.assetId !== message.update.from || previous.placementKey !== link.placementKey
+      || previous.state !== link.state || previous.appearance !== link.appearance || previous.arm !== link.arm
+      || previous.environment !== link.environment || !hasImagePaint(node) || ('children' in node && node.children.length !== 0)) {
+      await reportSelection();
+      throw new Error(UPDATE_CHANGED);
+    }
+  }
   if (!stillSelected(target, insertTarget(selection, config))) {
     await reportSelection();
-    throw new Error(SELECTION_MOVED);
+    throw new Error(message.update ? UPDATE_CHANGED : SELECTION_MOVED);
   }
-  await apply(message, config, hash => target.kind === 'fill' ? fill(config, target, selection, hash, frame, link, name)
+  await apply(message, config, hash => target.kind === 'fill' ? fill(config, target, selection, hash, frame, link, name, Boolean(message.update))
     : place(config, target, selection, hash, frame, scale, link, name));
 }
 
@@ -319,10 +335,10 @@ export function discardDrops(): void {
   for (const dropId of [...drops.keys()]) forgetDrop(dropId);
 }
 
-/** An image frame a drop replaces: a layer with an image paint and nothing inside, or one this app's art is linked to. */
+/** An image frame a drop replaces: a layer with a visible image paint and nothing inside, or one this app's art is linked to. */
 function replaceable(node: BaseNode, config: Connection): node is Paintable {
   if (node.type === 'PAGE' || node.type === 'DOCUMENT' || !('fills' in node) || !Array.isArray(node.fills)) return false;
-  if (!(node.fills as readonly Paint[]).some(paint => paint.type === 'IMAGE')) return false;
+  if (!hasImagePaint(node)) return false;
   return !('children' in node) || node.children.length === 0 || nodeLink(node as SceneNode, config) !== null;
 }
 /** Where a drop's new layer goes: the frame, group, section, or component it landed on, else the page. */

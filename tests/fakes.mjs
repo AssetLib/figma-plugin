@@ -404,12 +404,16 @@ export function createHarness({
   let timerId = 0;
   // The UI's window: its size follows figma.ui.resize, and its resize listener runs when it changes.
   const windowListeners = new Map();
+  const listen = (listeners, type, callback) => {
+    const previous = listeners.get(type);
+    listeners.set(type, event => { previous?.(event); callback(event); });
+  };
   const window = {
     innerWidth: 420, innerHeight: 720,
     // With a clock, each timer knows when it is due (fireDue).
     setTimeout(callback, delay) { timerId += 1; timers.set(timerId, { callback, delay, due: now ? now() + delay : null }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
-    addEventListener(type, callback) { windowListeners.set(type, callback); },
+    addEventListener(type, callback) { listen(windowListeners, type, callback); },
   };
   const parent = { postMessage({ pluginMessage, pluginDrop }) {
     if (pluginDrop) { pluginDrops.push(clone(pluginDrop)); return; }
@@ -577,7 +581,7 @@ export function createHarness({
   // Document listeners (the search shortcut's keydown); keydown() calls them as a key press that reached the document.
   const documentListeners = new Map();
   const document = { getElementById: element, querySelectorAll: () => controls.map(element), createElement, get activeElement() { return focusState.active; },
-    visibilityState: 'visible', addEventListener(type, callback) { documentListeners.set(type, callback); } };
+    visibilityState: 'visible', addEventListener(type, callback) { listen(documentListeners, type, callback); } };
   // Animation frames: queued callbacks run together, as one browser frame; a frame asked for during one runs after it.
   const animationFrames = [];
   let frameDepth = 0;

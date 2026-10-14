@@ -221,7 +221,7 @@ test('a connection saved on the legacy host loads on the current host with the s
   assert.deepEqual(app.storage.get('assetlib.connection.v1'), connection, 'the moved origin is saved for the next run');
   assert.equal(app.element('origin').value, connection.origin);
   // The passing test asks the current host for the connection's names too (this console has none: nothing changes).
-  assert.deepEqual(app.requests.map(request => [request.method, request.url, request.authorization]),
+  assert.deepEqual(app.requests.filter(request => ['placements', 'token'].includes(request.route)).map(request => [request.method, request.url, request.authorization]),
     [['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, `Bearer ${connection.token}`],
       ['GET', `${connection.origin}/api/token`, `Bearer ${connection.token}`]]);
   assert.equal(off(app, 'sync'), false, 'the sync target remembered under the legacy host is still found');
@@ -241,7 +241,7 @@ test('a connection saved on the legacy host loads on the current host with the s
   app.saveConnection({ ...connection, token: '' });
   await flush();
   assert.equal(app.element('error').hidden, true);
-  assert.equal(app.requests.at(-1).url, `${connection.origin}/api/apps/org-one/app-a/placements`);
+  assert.equal(app.requests.findLast(request => request.route === 'placements').url, `${connection.origin}/api/apps/org-one/app-a/placements`);
   assert.equal(app.requests.at(-1).authorization, `Bearer ${connection.token}`, 're-saving the same app keeps the saved token');
 });
 
@@ -270,7 +270,7 @@ test('a first connection uses the current host and cannot choose the legacy host
   assert.equal(app.element('origin').getAttribute('aria-invalid'), null);
   assert.deepEqual(app.storage.get('assetlib.connection.v1'), connection);
   // The pasted token names its own organization and app; then the connection test reads placements.
-  assert.deepEqual(app.requests.map(request => [request.method, request.url, request.authorization]),
+  assert.deepEqual(app.requests.filter(request => ['placements', 'token'].includes(request.route)).map(request => [request.method, request.url, request.authorization]),
     [['GET', `${connection.origin}/api/token`, `Bearer ${connection.token}`], ['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, `Bearer ${connection.token}`]]);
   assert.equal(app.element('app').getAttribute('data-view'), 'shell');
   pick(app, 'placement', placement.key);
@@ -357,7 +357,7 @@ test('a placement cell inserts as a linked image component, centered and selecte
   assert.deepEqual(app.mainMessages[selectionAt].selection.remembered.insertedFrom, { environment: 'draft', assetId: armArt });
   assert.equal(app.element('selection-bar').hidden, false, 'the Sync bar shows the link on the Insert tab');
   assert.equal(app.element('sync-title').textContent, 'Linked to hero.artwork');
-  assert.equal(app.element('sync-meta').textContent, 'old · Light · b · Draft art');
+  assert.equal(app.element('sync-meta').textContent, 'old · Light · b · in Draft, not published');
   // The hover names the cell as the meta does: the axes the placement declares, in the same order.
   assert.match(app.element('selection-bar').title, /^hero\.artwork · old · Light · b\. Sync sends this layer to that cell in Draft/);
   assert.equal(app.element('sync').hidden, false);
@@ -714,7 +714,7 @@ test('a link applies only to its own node in the same app; copies, other apps, a
   assert.deepEqual(await rememberedFor(0), { fileKey: 'abc123', nodeId: '30:1', placementKey: placement.key, state: 'new', appearance: 'dark', arm: 'c',
     insertedFrom: { environment: 'staging', assetId: baseArt } });
   assert.equal(off(app, 'sync'), false);
-  assert.equal(app.element('sync-meta').textContent, 'new · Dark · c · Staging art');
+  assert.equal(app.element('sync-meta').textContent, 'new · Dark · c · in Staging, not in Production');
   assert.equal(await rememberedFor(1), null, 'a Cmd+D copy keeps the data but not the node id');
   assert.equal(app.element('sync').hidden, true);
   assert.equal(app.element('sync-title').textContent, 'Copy of a linked frame');
@@ -1567,7 +1567,7 @@ test('GET retries twice on 503', async () => {
   assert.ok(!timerDelays(app).some(delay => delay === 1000 || delay === 4000), 'then it stops');
 
   // A 503 that clears on the next try is a normal success.
-  const recovering = harness({ console: { statuses: { artwork: 503 } } });
+  const recovering = harness({ prefs: { tab: 'insert' }, console: { statuses: { artwork: 503 } } });
   await openInsert(recovering);
   delete recovering.console.statuses.artwork;
   recovering.fireTimers(1000);
@@ -1576,7 +1576,7 @@ test('GET retries twice on 503', async () => {
   assert.equal(recovering.element('error').hidden, true);
 
   // A 429 waits as long as Retry-After asks, up to 30 s; a longer wait, or none named, is not retried.
-  const limited = harness({ console: { statuses: { artwork: 429 }, headers: { artwork: { 'retry-after': '7' } } } });
+  const limited = harness({ prefs: { tab: 'insert' }, console: { statuses: { artwork: 429 }, headers: { artwork: { 'retry-after': '7' } } } });
   await openInsert(limited);
   assert.ok(timerDelays(limited).includes(7000));
   limited.fireTimers(7000);
@@ -1586,7 +1586,7 @@ test('GET retries twice on 503', async () => {
   assert.equal(limited.requests.filter(request => request.route === 'artwork').length, 3);
   assert.equal(limited.element('insert-empty-text').textContent, 'Assetlib is busy. Try again in a minute.');
   for (const headers of [{ 'retry-after': '120' }, {}]) {
-    const long = harness({ console: { statuses: { artwork: 429 }, headers: { artwork: headers } } });
+    const long = harness({ prefs: { tab: 'insert' }, console: { statuses: { artwork: 429 }, headers: { artwork: headers } } });
     await openInsert(long);
     assert.equal(long.requests.filter(request => request.route === 'artwork').length, 1, JSON.stringify(headers));
     assert.equal(long.element('insert-empty').hidden, false);
@@ -1858,7 +1858,7 @@ async function assertConnectionKept(app, typed) {
 
 for (const [description, finishFirst] of [['ended while the save waited', true], ['was still running when main refused the save', false]]) {
   test(`a refused connection save keeps the old connection when a list load ${description}`, async () => {
-    const app = harness({ failingWrites: ['assetlib.connection.v1'], console: { gates: { artwork: deferred() } } });
+    const app = harness({ prefs: { tab: 'insert' }, failingWrites: ['assetlib.connection.v1'], console: { gates: { artwork: deferred() } } });
     await openInsert(app, { keep: true });
     assert.equal(app.element('insert-list').getAttribute('aria-busy'), 'true');
     assert.equal(off(app, 'connect'), false, 'Connect is live while a list loads');
@@ -1947,7 +1947,7 @@ test('only conflicting actions wait during an operation; tabs, lists, search, an
   app.element('insert').dispatch('click');
   await settle();
   assert.equal(app.element('status').textContent, 'Downloading hero.artwork…');
-  for (const id of ['insert', 'send', 'sync', 'connect', 'match-ratio']) assert.equal(off(app, id), true, `${id} waits`);
+  for (const id of ['insert', 'sync-update', 'send', 'sync', 'connect', 'match-ratio']) assert.equal(off(app, id), true, `${id} waits`);
   for (const id of ['tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'scale-2', 'env-draft', 'env-staging', 'insert-refresh', 'placement'])
     assert.equal(app.element(id).disabled, false, `${id} stays live`);
   app.element('tab-send').dispatch('click');
@@ -4099,7 +4099,7 @@ test('link written after remember', async () => {
   await settle();
   assert.deepEqual(lastSelection(teammate).remembered.insertedFrom, { environment: 'draft', assetId: sentArt });
   assert.equal(teammate.element('sync-title').textContent, 'Linked to hero.artwork');
-  assert.equal(teammate.element('sync-meta').textContent, 'new · Dark · c · Draft art');
+  assert.equal(teammate.element('sync-meta').textContent, 'Draft has different art now. Sync replaces it with this layer.');
   assert.equal(off(teammate, 'sync'), false);
   assert.equal(teammate.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${sentArt}`);
 
@@ -4846,7 +4846,7 @@ test('a request approved in the browser saves a browser connection, without aski
   assert.deepEqual(app.notices, ['Connected to Roam · Roam iOS as dana@example.com']);
   assert.equal(app.element('status').textContent, 'Connected to Roam · Roam iOS as dana@example.com. 1 placement available.');
   assert.equal(routeCount(app, 'token'), 0, 'the names came with the token');
-  assert.equal(app.requests.at(-1).url, `${connection.origin}/api/apps/${orgUuid}/${appUuid}/placements`);
+  assert.equal(app.requests.findLast(request => request.route === 'placements').url, `${connection.origin}/api/apps/${orgUuid}/${appUuid}/placements`);
   assert.equal(app.requests.at(-1).authorization, `Bearer ${token}`);
   assert.deepEqual([app.element('app').getAttribute('data-view'), app.element('settings').open, app.element('pairing').hidden], ['shell', false, true]);
   assert.equal(app.activeElement(), app.element('settings-summary'), 'focus left the request’s block for the account chip');
@@ -5257,6 +5257,7 @@ test('a browser connection another window replaced is taken up, and no token is 
   // The second window still holds the ended token. Its next read is refused, and it takes up the device's connection
   // rather than offering Connect again.
   second.element('tab-insert').dispatch('click');
+  second.element('insert-refresh').dispatch('click');
   await settle();
   assert.equal(lastConnection(second).token, replacement);
   assert.deepEqual([second.element('insert-token').hidden, routeCount(second, 'start'), second.element('chip-warning').hidden], [true, 0, true]);
@@ -5269,6 +5270,7 @@ test('a browser connection another window replaced is taken up, and no token is 
   assert.ok(consoleState.revoked.has(replacement));
   // The others take up the newest when their reads are refused, so the only token left in force is the one every window uses.
   first.element('tab-insert').dispatch('click');
+  first.element('insert-refresh').dispatch('click');
   await settle();
   second.element('insert-refresh').dispatch('click');
   await settle();
@@ -5773,7 +5775,7 @@ test('linked Send hides its footer, keeps a plain upload, and guards Cmd+Enter o
   await settle();
   assert.equal(app.drafts().length, 1, 'busy rules prevent a second upload');
   assert.equal(app.drafts()[0].body.rebind, false);
-  assert.equal(app.element('sync-meta').textContent, 'old · Light · b · sent to Draft');
+  assert.equal(app.element('sync-meta').textContent, 'Draft has different art now. Sync replaces it with this layer.');
   pick(app, 'appearance', 'dark');
   assert.equal(app.element('send-bar').hidden, false);
   assert.equal(app.element('send-plain').hidden, true);
@@ -6007,4 +6009,348 @@ test('Cancel returns a healthy pasted connection to Connect with browser', async
   app.element('switch-workspace').focus(); app.element('switch-workspace').dispatch('click'); await settle();
   app.element('pairing-cancel').focus(); app.element('pairing-cancel').dispatch('click'); await settle();
   assert.equal(app.activeElement(), app.element('switch-workspace'));
+});
+
+// ---- Batch 3: current artwork on either tab, Update, publication status, and placement navigation ----
+function batch3({ environment = 'production', stale = false, layer = {}, link = {}, prefs = { tab: 'send' }, ...options } = {}) {
+  let time = 100000;
+  const data = artwork();
+  data.environments.production = { sequence: 12, createdAt: '2026-10-14T00:00:00.000Z' };
+  for (const cell of data.placements[0].cells) cell.production = cellArt(stale ? armArt : baseArt, null, null);
+  const ownLink = { v: 1, origin: connection.origin, orgId: connection.orgId, appId: connection.appId,
+    placementKey: placement.key, state: 'old', appearance: null, arm: null, environment, assetId: baseArt,
+    nodeId: node.id, insertedAt: '2026-10-14T00:00:00.000Z', ...link };
+  const app = harness({ remembered: null, prefs, now: () => time,
+    selection: [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'original', scaleMode: 'FILL' }], pluginData: { [LINK_KEY]: JSON.stringify(ownLink) }, ...layer }],
+    ...options, console: { artwork: data, ...options.console } });
+  return { ...app, advance: ms => { time += ms; }, layer: app.figma.currentPage.selection[0] };
+}
+const rowThumb = (app, key = placement.key) => descendants(rowFor(app, key)).find(item => item.tagName === 'IMG');
+
+test('Batch 3: artwork loads once per generation on Send, survives Images search, and aborts on connection change', async () => {
+  const app = batch3({ console: { gates: { artwork: deferred() } } });
+  await settle();
+  assert.equal(artworkReads(app).length, 1);
+  assert.equal(app.element('panel-send').hidden, false);
+  app.element('tab-insert').dispatch('click');
+  app.element('browse-images').dispatch('click');
+  pick(app, 'insert-search', 'coast');
+  app.element('insert-search').dispatch('input'); app.fireTimers(300);
+  await settle();
+  assert.equal(artworkReads(app)[0].signal.aborted, false, 'Images does not cancel the quiet artwork request');
+  app.console.gates.artwork.resolve();
+  await settle();
+  assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(2));
+  assert.ok(app.element('sync-thumb').src);
+  app.element('tab-send').dispatch('click');
+  app.element('tab-insert').dispatch('click');
+  await settle();
+  assert.equal(artworkReads(app).length, 1);
+  app.advance(60000); app.console.gates.artwork = deferred(); app.focusWindow();
+  await settle();
+  const quiet = artworkReads(app).at(-1);
+  app.saveConnection({ ...connection, token: tok('batch3-next') });
+  await settle();
+  assert.equal(quiet.signal.aborted, true);
+  app.console.gates.artwork.resolve(); await settle();
+  assert.equal(app.element('error').hidden, true);
+});
+
+test('Batch 3: quiet artwork refresh throttles focus, visibility and linked selection from completion, including failures', async () => {
+  const app = batch3(); await settle();
+  assert.equal(artworkReads(app).length, 1);
+  app.advance(59999); app.focusWindow(); app.setVisibility('visible'); app.selectionChanged(); await settle();
+  assert.equal(artworkReads(app).length, 1);
+  app.advance(1); app.console.gates.artwork = deferred(); app.focusWindow(); await settle();
+  assert.equal(artworkReads(app).length, 2);
+  assert.equal(app.element('insert-list').getAttribute('aria-busy'), null);
+  app.advance(10000); app.setVisibility('visible'); app.selectionChanged(); await settle();
+  assert.equal(artworkReads(app).length, 2, 'one request while the earlier refresh waits');
+  app.console.gates.artwork.resolve(); await settle();
+  app.advance(59999); app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, 2);
+  const before = app.element('sync-thumb').src;
+  app.console.statuses.artwork = 503;
+  app.advance(1); app.setVisibility('hidden'); await settle(); assert.equal(artworkReads(app).length, 2);
+  app.setVisibility('visible'); await settle();
+  assert.equal(artworkReads(app).length, 3);
+  assert.equal(app.element('sync-thumb').src, before, 'failure retains the previous artwork');
+  assert.equal(app.element('error').hidden, true);
+  assert.equal(app.element('connection-error').hidden, true);
+  app.focusWindow(); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, 3);
+  delete app.console.statuses.artwork;
+  app.advance(60000); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, 4, 'linked selection refreshes old art');
+  app.element('tab-insert').dispatch('click'); await settle();
+  app.element('insert-refresh').dispatch('click'); await settle();
+  const full = artworkReads(app).length;
+  app.advance(59999); app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, full, 'full load completion resets the throttle too');
+});
+
+test('Batch 3: Send and Sync refresh the bound draft preview and row without Refresh', async () => {
+  for (const action of ['sync', 'send-plain']) {
+    const app = batch3({ environment: 'draft', prefs: { tab: 'insert' } }); await settle();
+    const next = rendition(sentArt, 777, 'image/png', 1000, 1000, pngHeader(1000, 1000));
+    app.console.renditions.push(next.served);
+    app.console.draft = body => {
+      app.console.artwork.assets[sentArt] = asset(sentArt, 'New draft', 1000, 1000, [next]);
+      for (const cell of app.console.artwork.placements[0].cells) if (cell.state === 'old' && cell.appearance === null && cell.arm === null) cell.draft = cellArt(sentArt, null, null);
+      return boundDraft(body);
+    };
+    const reads = artworkReads(app).length;
+    const oldRow = rowThumb(app).getAttribute('data-sha');
+    if (action === 'send-plain') app.element('tab-send').dispatch('click');
+    app.element(action).dispatch('click'); await settle();
+    assert.equal(artworkReads(app).length, reads + 1, action);
+    assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(777));
+    assert.ok(app.requests.some(request => request.route === 'rendition' && request.url.includes(`/${sentArt}/renditions/${sha(777)}`)));
+    app.element('tab-insert').dispatch('click'); await settle();
+    assert.notEqual(rowThumb(app).getAttribute('data-sha'), oldRow);
+    assert.equal(rowThumb(app).getAttribute('data-sha'), sha(777));
+    assert.match(textOf(rowFor(app, placement.key)), /Changed in Draft/);
+  }
+});
+
+test('Batch 3: Update replaces Production art in place, keeps crop and link environment, and commits one undo step', async () => {
+  const app = batch3({ prefs: { tab: 'insert' } }); await settle();
+  const crop = [[0.8, 0, 0.1], [0, 0.8, 0.1]];
+  app.layer.fills = [solid, { type: 'IMAGE', imageHash: 'original', scaleMode: 'CROP', imageTransform: crop }, { type: 'IMAGE', imageHash: 'hidden', scaleMode: 'FIT', visible: false }];
+  const beforeGeometry = [app.layer.width, app.layer.height, app.layer.x, app.layer.y];
+  for (const cell of app.console.artwork.placements[0].cells) cell.production = cellArt(armArt, null, null);
+  app.advance(60000); app.focusWindow(); await settle();
+  assert.equal(app.element('sync-meta').textContent, 'Production has different art now');
+  assert.equal(app.element('sync-update').hidden, false);
+  assert.equal(app.element('sync-update').className, 'primary small');
+  assert.equal(app.element('sync').className, 'secondary');
+  assert.equal(app.element('sync').title, 'Sync replaces Draft’s art for this cell with this layer.');
+  assert.equal(app.element('sync-console').hidden, true);
+  assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(13));
+  assert.equal(app.element('selection-bar').title, 'Update puts this Production art in the layer. Sync updates Draft only; publishing stays in the console.');
+  app.element('insert-search').focus(); app.keydown({ key: 'Enter', metaKey: true }); await settle();
+  assert.equal(app.element('status').textContent, 'Update first, or choose Sync to draft to replace Draft’s art with this layer.');
+  assert.equal(app.exportMessages().length, 0);
+  const commits = app.undoCommits.length;
+  app.element('sync-update').dispatch('click'); await settle();
+  assert.deepEqual(app.insertMessages().at(-1).update, { from: baseArt });
+  assert.notEqual(app.layer.fills[1].imageHash, 'original');
+  assert.deepEqual(clone(app.layer.fills[1].imageTransform), crop);
+  assert.equal(app.layer.fills[1].scaleMode, 'CROP');
+  assert.equal(app.layer.fills[2].imageHash, 'hidden', 'the visible image was updated beneath the hidden paint');
+  assert.deepEqual([app.layer.width, app.layer.height, app.layer.x, app.layer.y], beforeGeometry);
+  assert.equal(linkOf(app.layer).assetId, armArt);
+  assert.equal(linkOf(app.layer).environment, 'production');
+  assert.equal(app.undoCommits.length, commits + 1);
+  assert.equal(app.notifications.at(-1).message, 'Updated Hero artwork with the latest Production art');
+  assert.equal(app.notifications.at(-1).options.button.text, 'Undo');
+  app.notifications.at(-1).options.button.action(); await settle();
+  assert.equal(app.undoTriggers.length, 1);
+});
+
+test('Batch 3: Update alone says Updating while every conflicting action waits and the Insert footer keeps its label', async () => {
+  const app = batch3({ stale: true, prefs: { tab: 'insert' } }); await settle();
+  rowFor(app, placement.key).dispatch('click');
+  const label = app.element('insert').textContent;
+  app.console.gates.rendition = deferred();
+  app.element('sync-update').dispatch('click'); await settle();
+  assert.equal(app.element('sync-update').textContent, 'Updating…');
+  assert.equal(app.element('sync-update').getAttribute('aria-busy'), 'true');
+  assert.equal(app.element('insert').textContent, label);
+  assert.equal(app.element('insert').getAttribute('aria-busy'), null);
+  for (const id of ['sync-update', 'sync', 'insert', 'insert-new', 'send', 'send-plain', 'sync-match', 'match-ratio', 'connect', 'disconnect']) {
+    assert.equal(off(app, id), true, id); app.element(id).dispatch('click');
+  }
+  drag(rowFor(app, placement.key)); await settle(); assert.equal(app.pluginDrops.length, 0);
+  assert.equal(app.exportMessages().length, 0);
+  app.console.gates.rendition.resolve(); await settle();
+  assert.equal(app.insertMessages().length, 1);
+  assert.equal(app.element('sync-update').getAttribute('aria-busy'), null);
+});
+
+for (const change of ['asset', 'cell', 'environment', 'children', 'hidden']) test(`Batch 3: Update refuses a layer whose ${change} changed after the UI checked`, async () => {
+  const app = batch3({ stale: true }); await settle();
+  if (change === 'children') app.layer.children = [{ id: 'child', type: 'RECTANGLE' }];
+  else if (change === 'hidden') app.layer.fills = [{ ...app.layer.fills[0], visible: false }];
+  else {
+    const link = linkOf(app.layer);
+    if (change === 'asset') link.assetId = uuid(555);
+    if (change === 'cell') link.appearance = 'dark';
+    if (change === 'environment') link.environment = 'staging';
+    app.layer.setPluginData(LINK_KEY, JSON.stringify(link));
+  }
+  app.element('sync-update').dispatch('click'); await settle();
+  assert.equal(app.element('error').textContent, 'This layer changed since the plugin checked it. Select it again.');
+  assert.equal(app.images.length, 0);
+  assert.equal(app.undoCommits.length, 0);
+  assert.equal(app.layer.fills[0].imageHash, 'original');
+});
+
+test('Batch 3: Update requires a visible image and no children; empty environment art has its own meta', async () => {
+  for (const layer of [{ fills: [] }, { fills: [{ type: 'IMAGE', imageHash: 'hidden', visible: false }] }, { children: [{ id: 'child', type: 'RECTANGLE', width: 20, height: 20 }] }]) {
+    const app = batch3({ environment: 'draft', link: { assetId: armArt }, layer }); await settle();
+    assert.equal(app.element('sync-update').hidden, true);
+    assert.equal(app.element('sync-meta').textContent, 'Draft has different art now. Sync replaces it with this layer.');
+    const production = batch3({ stale: true, layer }); await settle();
+    assert.equal(production.element('sync-update').hidden, true);
+    assert.doesNotMatch(production.element('sync-meta').textContent, /Draft has different/);
+  }
+  for (const environment of ['draft', 'staging', 'production']) {
+    const app = batch3({ environment });
+    for (const cell of app.console.artwork.placements[0].cells) cell[environment] = null;
+    await settle();
+    assert.equal(app.element('sync-update').hidden, true);
+    assert.equal(app.element('sync-meta').textContent, `${environment[0].toUpperCase()}${environment.slice(1)} no longer has art for this cell.`);
+  }
+});
+
+test('Batch 3: a sent vector frame inserts into its children; a hidden image alone is Fill, not Replace', async () => {
+  const app = batch3({ layer: { fills: [], children: [{ id: 'child', type: 'RECTANGLE', width: 20, height: 20 }] }, prefs: { tab: 'insert' } });
+  await settle(); rowFor(app, placement.key).dispatch('click');
+  assert.equal(app.element('insert').textContent, 'Insert into Hero artwork');
+  const hidden = batch3({ layer: { type: 'RECTANGLE', fills: [{ type: 'IMAGE', imageHash: 'hidden', visible: false }] }, prefs: { tab: 'insert' } });
+  await settle(); rowFor(hidden, placement.key).dispatch('click');
+  assert.equal(hidden.element('insert').textContent, 'Fill Hero artwork');
+  assert.equal(lastSelection(hidden).link.image, false);
+  assert.equal(lastSelection(hidden).link.children, 0);
+});
+
+test('Batch 3: publication status prefers Production then Staging then Draft without a pre-Sync cell count', async () => {
+  for (const [environments, expected] of [
+    [['draft', 'staging', 'production'], 'in Production (release 12)'],
+    [['draft', 'staging'], 'in Staging, not in Production'],
+    [['draft'], 'in Draft, not published'],
+  ]) {
+    const app = batch3({ environment: 'draft' });
+    for (const cell of app.console.artwork.placements[0].cells) for (const env of ['draft', 'staging', 'production']) cell[env] = environments.includes(env) ? cellArt(baseArt, null, null) : null;
+    await settle();
+    assert.equal(app.element('sync-meta').textContent, `old · Any · Control · ${expected}`);
+    assert.doesNotMatch(app.element('selection-bar').title, /may also update|other draft cell|live/);
+  }
+});
+
+test('Batch 3: title reveals a linked or copied Production cell from an Images search and disables other-workspace titles', async () => {
+  for (const copy of [false, true]) {
+    const app = batch3({ prefs: { tab: 'insert', browse: 'images' }, link: { appearance: 'dark', ...(copy ? { nodeId: 'original:1' } : {}) } }); await settle();
+    app.element('insert-search').value = 'no matching placement'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+    assert.equal(app.element('sync-title').title, `Show ${placement.key} in the Insert list`);
+    app.element('sync-title').dispatch('click'); await settle();
+    assert.equal(app.element('panel-insert').hidden, false);
+    assert.equal(app.element('browse-placements').getAttribute('aria-checked'), 'true');
+    assert.equal(app.element('insert-search').value, '');
+    assert.equal(app.element('insert-appearance').value, 'dark');
+    assert.equal(app.element('env-production').getAttribute('aria-checked'), 'true');
+    assert.equal(app.activeElement(), rowFor(app, placement.key));
+    assert.equal(rowFor(app, placement.key).getAttribute('aria-selected'), 'true');
+    if (!copy) assert.equal(app.element('insert').textContent, 'Replace image');
+  }
+  const other = batch3({ link: { appId: 'another-app' } }); await settle();
+  assert.equal(other.element('sync-title').disabled, true);
+});
+
+test('Batch 3: Open in console uses artwork slotId only, falls back to image before it loads, and supports remembered targets', async () => {
+  const app = batch3({ console: { placements: [{ ...placement, slotId: uuid(400) }], gates: { artwork: deferred() } } });
+  await settle();
+  assert.equal(app.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${baseArt}`);
+  app.console.artwork.placements[0].slotId = uuid(401);
+  app.console.gates.artwork.resolve(); await settle();
+  assert.equal(app.element('sync-console').href, `${connection.origin}/w/org-one/app-a/placements/${uuid(401)}`);
+  delete app.console.artwork.placements[0].slotId;
+  app.advance(60000); app.focusWindow(); await settle();
+  assert.equal(app.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${baseArt}`);
+  const remembered = harness(); remembered.console.artwork.placements[0].slotId = uuid(402); await settle();
+  assert.equal(remembered.element('sync-console').hidden, false);
+  assert.equal(remembered.element('sync-console').href, `${connection.origin}/w/org-one/app-a/placements/${uuid(402)}`);
+});
+
+test('Batch 3: Match ratio remains primary ahead of Update on Insert and Send', async () => {
+  for (const tab of ['insert', 'send']) {
+    const app = batch3({ stale: true, layer: { width: 1000, height: 800 }, prefs: { tab } }); await settle();
+    assert.equal(app.element('sync-update').className, 'secondary small');
+    assert.equal(app.element(tab === 'insert' ? 'sync-match' : 'match-ratio').className, 'primary small');
+    assert.equal(app.element('sync').className, 'secondary');
+    assert.equal(app.element('sync-console').hidden, true);
+    assert.equal(off(app, 'sync'), true);
+    app.element(tab === 'insert' ? 'sync-match' : 'match-ratio').dispatch('click'); await settle();
+    assert.equal(app.layer.height, 1000);
+    assert.equal(app.element('sync-update').className, 'primary small');
+  }
+});
+
+test('Batch 3: a remembered different cell suppresses Update and linked-art messages', async () => {
+  const app = batch3({ stale: true, remembered: rememberedB }); await settle();
+  assert.equal(app.element('sync-update').hidden, true);
+  assert.doesNotMatch(app.element('sync-meta').textContent, /different art/);
+  app.keydown({ key: 'Enter', metaKey: true }); await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'new', appearance: 'dark', arm: 'c' });
+});
+
+test('Batch 3: title reveal waits for artwork and retains its cell and environment', async () => {
+  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: deferred() } } }); await settle();
+  app.element('sync-title').dispatch('click'); await settle();
+  assert.equal(app.element('panel-insert').hidden, false);
+  assert.equal(artworkReads(app).length, 1, 'the pending quiet artwork request is reused');
+  app.console.gates.artwork.resolve(); await settle();
+  assert.equal(app.element('insert-appearance').value, 'dark');
+  assert.equal(app.element('env-production').getAttribute('aria-checked'), 'true');
+  assert.equal(app.activeElement(), rowFor(app, placement.key));
+  assert.equal(app.element('insert').textContent, 'Replace image');
+});
+
+test('Batch 3: a refused save restarts a quiet Send artwork load discarded while the save waited', async () => {
+  const app = batch3({ failingWrites: ['assetlib.connection.v1'], console: { gates: { artwork: deferred() } } }); await settle();
+  const write = app.delayConnectionWrite();
+  app.saveConnection({ ...connection, token: tok('batch3-refused') }); await settle();
+  app.console.gates.artwork.resolve(); await settle();
+  assert.equal(artworkReads(app).length, 1);
+  write.resolve(); await settle();
+  assert.equal(artworkReads(app).length, 2);
+  assert.ok(app.element('sync-thumb').src);
+  assert.equal(app.element('connection-error').textContent, SAVE_REFUSED);
+});
+
+test('Batch 3: a pending drop refuses a separate Update without committing its placeholder', async () => {
+  const app = await canvas([]);
+  app.console.gates.rendition = deferred();
+  drag(rowFor(app, card.key)); app.dropOnCanvas({ absoluteX: 10, absoluteY: 10 }); await settle();
+  const placeholder = app.frames[0];
+  app.postToMain({ type: 'insert', requestId: 9999, connectionGeneration: 0, bytes: pngHeader(1200, 800), name: card.key,
+    frame: { width: 1200, height: 800 }, scale: 1, target: { kind: 'fill', nodeIds: [placeholder.id] }, update: { from: cardArt },
+    link: { placementKey: card.key, state: null, appearance: null, arm: null, environment: 'draft', assetId: baseArt } });
+  await settle();
+  assert.deepEqual(errorsFor(app, 9999), ['An image is already being inserted or exported.']);
+  assert.equal(app.undoCommits.length, 0);
+  assert.equal(app.images.length, 0);
+  app.console.gates.rendition.resolve(); await settle();
+  assert.equal(app.undoCommits.length, 1);
+  assert.equal(linkOf(placeholder).assetId, cardArt);
+});
+
+test('Batch 3: a bound Sync during Refresh queues one quiet artwork reload after the full load', async () => {
+  const app = batch3({ prefs: { tab: 'insert' }, console: { draft: boundDraft } }); await settle();
+  app.console.gates.artwork = deferred();
+  app.element('insert-refresh').dispatch('click'); await settle();
+  const loading = artworkReads(app).length;
+  app.element('sync').dispatch('click'); await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(artworkReads(app).length, loading, 'the full load owns artwork until it ends');
+  app.console.gates.artwork.resolve(); await settle();
+  assert.equal(artworkReads(app).length, loading + 1, 'the bound Sync gets a later quiet read');
+});
+
+test('Batch 3: an initial quiet failure after switching to Placements runs one full load with its normal error state', async () => {
+  const app = batch3({ console: { gates: { artwork: deferred() }, statuses: { artwork: 404 } } }); await settle();
+  app.element('tab-insert').dispatch('click'); await settle();
+  assert.equal(artworkReads(app).length, 1);
+  app.console.gates.artwork.resolve(); await settle();
+  assert.equal(artworkReads(app).length, 2);
+  assert.equal(app.element('insert-empty').hidden, false);
+  assert.equal(app.element('insert-empty-title').textContent, 'Insert isn’t available here');
+  assert.equal(app.element('error').hidden, true);
+});
+
+test('Batch 3: a missing linked asset previews its own environment, and a removed title is plain text', async () => {
+  const app = batch3({ environment: 'staging', link: { assetId: uuid(987), appearance: 'light', arm: 'b' }, layer: { fills: [] } }); await settle();
+  assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(2), 'Staging base art, not the different Draft arm art');
+  assert.notEqual(app.element('sync-thumb').getAttribute('data-sha'), sha(13));
+  const removed = batch3({ console: { placements: [] } }); await settle();
+  assert.equal(removed.element('sync-title').disabled, true);
+  assert.equal(removed.element('sync-update').hidden, true);
 });

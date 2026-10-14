@@ -1,5 +1,5 @@
 import type { Appearance, CellBinding, Placement, Variants } from './types.js';
-import { boundedString, isRecord, positiveDimension, validArm, validState } from './validation.js';
+import { boundedString, isRecord, positiveDimension, validArm, validState, validUuid } from './validation.js';
 
 // A placements list or variant set the plugin can't use: one plain sentence for people, whatever the detail.
 const invalidPlacements = 'The console sent placements the plugin can’t read. Try again.';
@@ -58,7 +58,7 @@ export function parsePlacements(value: unknown): Placement[] {
     } else if (item.defaultState !== undefined && item.defaultState !== null) {
       throw new Error(invalidPlacements);
     }
-    return { key: item.key, screen: item.screen, width: item.width, height: item.height,
+    return { key: item.key, ...(validUuid(item.slotId) ? { slotId: item.slotId } : {}), screen: item.screen, width: item.width, height: item.height,
       states, defaultState, variants: parseVariants(item.variants), origin: item.origin };
   });
 }

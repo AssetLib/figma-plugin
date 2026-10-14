@@ -76,17 +76,23 @@ export function nodeLink(node: SceneNode, config: Connection | null): StoredLink
   const link = config ? storedLink(node) : null;
   return link && config && linkInApp(link, config) && link.nodeId === node.id ? link : null;
 }
+/** True when a layer shows an image; a hidden IMAGE paint alone is not an image to replace or update. */
+export function hasImagePaint(node: BaseNode): boolean {
+  return 'fills' in node && Array.isArray(node.fills) && node.fills.some((paint: Paint) => paint.type === 'IMAGE' && paint.visible !== false);
+}
 /** The layer's link as the Sync bar reads it: linked here, a copy of a linked layer, or another app's. */
 function selectedLink(node: SceneNode, config: Connection | null): SelectedLink | null {
   const link = config ? storedLink(node) : null;
   if (!link || !config) return null;
   const { placementKey, state, appearance, arm, environment, assetId } = link;
+  const image = hasImagePaint(node);
+  const children = 'children' in node ? node.children.length : 0;
   // Another app's link names that app, so the Sync bar can offer to switch to it.
   if (!linkInApp(link, config)) {
     const origin = link.origin === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : link.origin;
-    return { kind: 'other', placementKey, state, appearance, arm, environment, assetId, origin, orgId: link.orgId, appId: link.appId };
+    return { kind: 'other', placementKey, state, appearance, arm, environment, assetId, image, children, origin, orgId: link.orgId, appId: link.appId };
   }
-  return { kind: link.nodeId === node.id ? 'linked' : 'copy', placementKey, state, appearance, arm, environment, assetId };
+  return { kind: link.nodeId === node.id ? 'linked' : 'copy', placementKey, state, appearance, arm, environment, assetId, image, children };
 }
 
 /**
@@ -115,7 +121,7 @@ export function inComponent(node: BaseNode): boolean {
 export function insertTarget(nodes: readonly SceneNode[], config: Connection | null): CanvasTarget {
   const one = nodes.length === 1;
   return classifyInsertTarget(nodes.map(node => ({ id: node.id, name: node.name, type: node.type, width: node.width, height: node.height,
-    children: 'children' in node ? node.children.length : 0, linked: one && nodeLink(node, config) !== null, inComponent: one && inComponent(node) })));
+    children: 'children' in node ? node.children.length : 0, image: hasImagePaint(node), linked: one && nodeLink(node, config) !== null, inComponent: one && inComponent(node) })));
 }
 
 export async function reportSelection(): Promise<void> {

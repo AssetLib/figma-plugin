@@ -9,12 +9,12 @@ export type ConsoleSection = 'overview' | 'placements' | 'images' | 'releases';
 const SECTIONS: readonly ConsoleSection[] = ['overview', 'placements', 'images', 'releases'];
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-/** `{origin}/w/{orgId}/{appId}/{section}`, plus an image's uuid for `images`. Throws on anything else. */
-export function consoleLink(connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>, section: ConsoleSection, imageId?: string): string {
+/** `{origin}/w/{orgId}/{appId}/{section}`, plus an image's or placement's uuid. Throws on anything else. */
+export function consoleLink(connection: Pick<Connection, 'origin' | 'orgId' | 'appId'>, section: ConsoleSection, itemId?: string): string {
   const origin = normalizeConsoleOrigin(connection.origin);
   if (!ID.test(connection.orgId) || !ID.test(connection.appId) || !SECTIONS.includes(section)) throw new Error('This console link is not valid.');
-  if (imageId !== undefined && (section !== 'images' || !validUuid(imageId))) throw new Error('This console link is not valid.');
-  return `${origin}/w/${connection.orgId}/${connection.appId}/${section}${imageId ? `/${imageId.toLowerCase()}` : ''}`;
+  if (itemId !== undefined && ((section !== 'images' && section !== 'placements') || !validUuid(itemId))) throw new Error('This console link is not valid.');
+  return `${origin}/w/${connection.orgId}/${connection.appId}/${section}${itemId ? `/${itemId.toLowerCase()}` : ''}`;
 }
 
 // The console's /connect/figma page for each console origin. The development console signs people in on 127.0.0.1 only
@@ -38,7 +38,7 @@ export function isConsoleLink(url: unknown, connection: Pick<Connection, 'origin
   if (typeof url !== 'string' || !connection) return false;
   const prefix = `${connection.origin}/w/${connection.orgId}/${connection.appId}/`;
   if (!url.startsWith(prefix)) return false;
-  const [section, imageId, ...rest] = url.slice(prefix.length).split('/');
+  const [section, itemId, ...rest] = url.slice(prefix.length).split('/');
   if (rest.length || !SECTIONS.includes(section as ConsoleSection)) return false;
-  try { return consoleLink(connection, section as ConsoleSection, imageId) === url; } catch { return false; }
+  try { return consoleLink(connection, section as ConsoleSection, itemId) === url; } catch { return false; }
 }

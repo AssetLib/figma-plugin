@@ -7,6 +7,7 @@ export interface Variants {
 
 export interface Placement {
   key: string;
+  slotId?: string;
   screen: string;
   width: number;
   height: number;

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import {
   MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
   apiUrl, artworkAsset, aspectMismatch, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
-  cellOptions, chooseExportSettings, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
+  cellOptions, changedArt, chooseExportSettings, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
   insertRendition, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
   normalizeConsoleOrigin, parseArtwork, parseAssetPage, parseDraftResponse, parsePlacements, parsePngDimensions,
   parsePreferences, parseStoredLink, placementMarker, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
@@ -108,6 +108,14 @@ test('placements parse stateless and stateful picker data without importing bind
   assert.deepEqual(cellOptions(placement), { states: [null], appearances: [null], arms: [null] });
   assert.deepEqual(parsePlacements({ placements: [] }), []);
   assert.deepEqual(parsePlacements({ placements: [{ ...placement, states: undefined, defaultState: undefined, variants: undefined }] }), [placement]);
+});
+
+test('placements keep a valid placement id and omit an invalid one', () => {
+  const slotId = '00000000-0000-4000-8000-00000000000a';
+  assert.deepEqual(parsePlacements({ placements: [{ ...placement, slotId }] }), [{ ...placement, slotId }]);
+  for (const slotId of [undefined, null, '', 'not-a-uuid', '../images', 42]) {
+    assert.deepEqual(parsePlacements({ placements: [{ ...placement, slotId }] }), [placement]);
+  }
 });
 
 // What people read for any of them: one plain sentence and the next step, never which field the console got wrong.
@@ -418,6 +426,21 @@ test('artwork parses contracts, cells, and environments, ignoring rendition urls
   assert.deepEqual(parseArtwork(artworkPayload({ environments: { staging: null, production: null }, placements: [], assets: {} })).placements, []);
 });
 
+test('changedArt compares the linked environment and cell, including inherited art', () => {
+  const artwork = parseArtwork(artworkPayload());
+  const link = { placementKey: family.key, state: 'growing', appearance: 'dark', arm: 'b', environment: 'draft', assetId };
+  assert.deepEqual(changedArt(artwork, link), art(otherId, 'b', 'dark'));
+  assert.equal(changedArt(artwork, { ...link, assetId: otherId }), null, 'the same image is current');
+  assert.equal(changedArt(artwork, { ...link, environment: 'staging' }), null, 'compare Staging, not Draft');
+  assert.equal(changedArt(artwork, { ...link, environment: 'production' }), null, 'missing environment art is not an update');
+  assert.equal(changedArt(artwork, { ...link, placementKey: 'removed' }), null);
+  assert.equal(changedArt(artwork, { ...link, state: 'removed' }), null);
+  assert.deepEqual(changedArt(artwork, { ...link, arm: null, assetId: otherId }), art(assetId), 'a dark cell inherits newer base art');
+  const slotId = '00000000-0000-4000-8000-00000000000a';
+  const withId = parseArtwork(artworkPayload({ placements: [{ ...family, slotId, cells: familyCells() }] }));
+  assert.equal(withId.placements[0].slotId, slotId, 'artwork preserves the validated placement page id');
+});
+
 test('artwork rejects illegal coordinates and inheritance, and drops an invalid image instead of failing', () => {
   const withCell = change => artworkPayload({ placements: [{ ...family, cells: [{ ...familyCells()[0], ...change }] }] });
   for (const change of [{ state: null }, { state: 'missing' }, { state: '__proto__' }, { appearance: 'light' }, { appearance: 'any' },
@@ -638,6 +661,7 @@ test('main reads only well-formed messages from the UI', () => {
     { type: 'insert', requestId: 5, connectionGeneration: 0, bytes: [1], name: 'x', frame: null, scale: 4, link: null, target: { kind: 'new' } },
     { type: 'insert', requestId: 5, connectionGeneration: 0, name: 'x', link: null, target: { kind: 'into', nodeId: '1:2' } },
     { type: 'insert', requestId: 5, connectionGeneration: 0, name: 'x', link: null, target: { kind: 'fill', nodeIds: ['1:2', 'I1:3;4:5'] } },
+    { type: 'insert', requestId: 5, connectionGeneration: 0, name: 'x', link: {}, target: { kind: 'fill', nodeIds: ['1:2'] }, update: { from: assetId } },
     { type: 'save-preferences', preferences: null },
     { type: 'match-ratio', requestId: 6, nodeId: '1:2', width: 1, height: 1 },
     { type: 'clear-connection', requestId: 7 },
@@ -670,6 +694,8 @@ test('main reads only well-formed messages from the UI', () => {
     // Where the insert goes is required, and an into or a fill names its layers.
     ...[undefined, null, 'new', { kind: 'replace' }, { kind: 'into' }, { kind: 'into', nodeId: 5 }, { kind: 'fill', nodeIds: [] }, { kind: 'fill', nodeIds: '1:2' },
       { kind: 'fill', nodeIds: ['1:2', 3] }].map(target => ({ type: 'insert', requestId: 11, connectionGeneration: 0, name: 'x', link: null, target })),
+    ...[null, 'update', {}, { from: 'x' }, { from: null }, { from: 5 }].map(update => ({ type: 'insert', requestId: 11,
+      connectionGeneration: 0, name: 'x', link: {}, target: { kind: 'fill', nodeIds: ['1:2'] }, update })),
     { type: 'match-ratio', requestId: 12, nodeId: 5, width: 1, height: 1 },
     { type: 'clear-connection' }, { type: 'notify' }, { type: 'notify', text: 'x', button: { text: 'Review' } }, { type: 'notify', text: 'x', button: 'Review' },
     { type: 'remember', requestId: 4, assetId: 5 }, { type: 'save-file-url', requestId: 2, url: 'https://www.figma.com/design/abc/x', force: 'yes' },
@@ -725,13 +751,17 @@ test('console links are built from validated ids on the connected origin, and ma
   const image = '00000000-0000-4000-8000-00000000000A';
   assert.equal(consoleLink(config, 'releases'), 'https://console.assetlib.dev/w/org-1/app-1/releases');
   assert.equal(consoleLink(config, 'images', image), 'https://console.assetlib.dev/w/org-1/app-1/images/00000000-0000-4000-8000-00000000000a');
-  for (const [section, id] of [['settings'], ['images', 'not-a-uuid'], ['releases', '00000000-0000-4000-8000-000000000001']]) {
+  assert.equal(consoleLink(config, 'placements', image), 'https://console.assetlib.dev/w/org-1/app-1/placements/00000000-0000-4000-8000-00000000000a');
+  for (const [section, id] of [['settings'], ['images', 'not-a-uuid'], ['placements', 'not-a-uuid'], ['releases', '00000000-0000-4000-8000-000000000001']]) {
     assert.throws(() => consoleLink(config, section, id), /not valid/, section);
   }
   assert.throws(() => consoleLink({ ...config, orgId: '../x' }, 'releases'), /not valid/);
   assert.equal(isConsoleLink('https://console.assetlib.dev/w/org-1/app-1/releases', config), true);
   assert.equal(isConsoleLink(consoleLink(config, 'images', image), config), true);
+  assert.equal(isConsoleLink(consoleLink(config, 'placements', image), config), true);
   for (const url of ['https://console.assetlib.dev/w/org-1/app-2/releases', 'https://console.assetlib.dev/w/org-1/app-1/settings/tokens',
+    'https://console.assetlib.dev/w/org-1/app-1/placements/not-a-uuid',
+    'https://console.assetlib.dev/w/org-1/app-1/placements/00000000-0000-4000-8000-00000000000a/x',
     'https://console.assetlib.dev/w/org-1/app-1/releases/x', 'https://evil.test/w/org-1/app-1/releases', 'javascript:alert(1)', 5]) {
     assert.equal(isConsoleLink(url, config), false, String(url));
   }
@@ -796,11 +826,11 @@ test('fillRendition picks the smallest sufficient rendition', () => {
   assert.deepEqual(fillRendition({ width: 600, height: 450, renditions: [png300, png600] }, 100, 1000), png600, 'still never more than the original');
 });
 
-test('classifyInsertTarget: replace a linked layer, insert into a container, fill shapes, else a new frame', () => {
-  const layer = (id, type, extra = {}) => ({ id, name: `Layer ${id}`, type, width: 100, height: 50, children: 0, linked: false, ...extra });
+test('classifyInsertTarget: replace a linked layer showing an image, insert into a container, fill shapes, else a new frame', () => {
+  const layer = (id, type, extra = {}) => ({ id, name: `Layer ${id}`, type, width: 100, height: 50, children: 0, linked: false, image: false, ...extra });
   const only = node => classifyInsertTarget([node]);
   assert.deepEqual(classifyInsertTarget([]), { mode: 'new', label: 'Insert', count: 0, nodeIds: [] });
-  assert.deepEqual(only(layer('1:1', 'COMPONENT', { linked: true, children: 2, width: 390 })),
+  assert.deepEqual(only(layer('1:1', 'COMPONENT', { linked: true, image: true, children: 2, width: 390 })),
     { mode: 'replace', label: 'Replace image', count: 1, nodeIds: ['1:1'], name: 'Layer 1:1', containerWidth: 390, containerHeight: 50 }, 'a link wins, even with children');
   assert.deepEqual(only(layer('2:1', 'FRAME', { children: 3, width: 375 })),
     { mode: 'into', label: 'Insert into Layer 2:1', count: 1, nodeIds: ['2:1'], name: 'Layer 2:1', containerWidth: 375 });
@@ -825,7 +855,9 @@ test('classifyInsertTarget: replace a linked layer, insert into a container, fil
     { mode: 'fill', label: 'Fill 3 layers', count: 3, nodeIds: ['9:1', '9:2', '9:3'], skipped: 1, containerWidth: 100, containerHeight: 50 });
   // A sent text, group, or line carries a link too, but takes no image: Insert makes a new frame beside it.
   for (const type of ['TEXT', 'GROUP', 'LINE', 'SECTION']) assert.equal(only(layer('6:3', type, { linked: true })).mode, 'new', `a linked ${type}`);
-  assert.equal(only(layer('6:4', 'FRAME', { linked: true, children: 3 })).mode, 'replace', 'a linked frame with layers inside still swaps its image');
+  assert.equal(only(layer('6:4', 'FRAME', { linked: true, image: true, children: 3 })).mode, 'replace', 'a linked frame showing an image still swaps it with layers inside');
+  assert.equal(only(layer('6:4', 'FRAME', { linked: true, image: false, children: 3 })).mode, 'into', 'a sent frame with layers and no visible image takes a new layer');
+  assert.equal(only(layer('6:5', 'RECTANGLE', { linked: true, image: false })).mode, 'fill', 'a linked shape without a visible image is filled');
   assert.equal(classifyInsertTarget([layer('7:1', 'RECTANGLE', { linked: true }), layer('7:2', 'RECTANGLE')]).label, 'Fill 2 layers', 'several layers are filled, linked or not');
   assert.equal(only(layer('8:1', 'FRAME', { name: '  ', children: 1 })).label, 'Insert into this layer');
   assert.equal(insideInstance('I1:2;3:4'), true);

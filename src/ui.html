@@ -269,9 +269,13 @@
     .selection-bar:focus:not(:focus-visible) { outline: none; }
     .selection-bar:focus-visible { outline-offset: -2px; }
     .bar-text { flex: 1 1 120px; display: grid; min-width: 0; }
+    .bar-title { text-align: left; min-width: 0; }
+    .bar-title:hover:not(:disabled), .bar-title:focus-visible { text-decoration: underline; }
+    .bar-title:disabled { color: inherit; cursor: default; }
     /* Why it can't sync (a ratio, with what Match ratio makes of it; a copy) takes up to three lines rather than be cut short. */
     .bar-text .meta { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
     .bar-actions { display: flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; }
+    @media (min-width: 400px) { .selection-bar[data-compact="true"] .meta { display: block; white-space: nowrap; text-overflow: ellipsis; } }
     /* The wrong-file line under the file link field, and the file the document is linked to. */
     .file-mismatch { display: grid; justify-items: start; gap: 8px; margin-top: 8px; }
     .file-line { display: grid; gap: 2px; }
@@ -499,12 +503,13 @@
     <!-- The selected layer's link, on both tabs: Sync it to its cell's draft, or why it can't be. -->
     <section id="selection-bar" class="selection-bar" tabindex="-1" aria-labelledby="sync-title" hidden>
       <span id="sync-preview" class="thumb"><img id="sync-thumb" alt=""></span>
-      <div class="bar-text"><p id="sync-title" class="title"></p><p id="sync-meta" class="meta"></p></div>
+      <div class="bar-text"><button id="sync-title" class="title bar-title" type="button"></button><p id="sync-meta" class="meta"></p></div>
       <div class="bar-actions">
         <a id="sync-console" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a>
         <button id="sync-match" class="secondary small" type="button" hidden>Match ratio</button>
         <button id="sync-send" class="secondary small" type="button" hidden></button>
         <button id="sync-switch" class="secondary small" type="button" hidden>Switch workspace</button>
+        <button id="sync-update" class="secondary small" type="button" hidden>Update</button>
         <button id="sync" class="primary" type="button" aria-disabled="true" hidden>Sync to draft</button>
       </div>
     </section>
