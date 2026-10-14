@@ -5952,9 +5952,8 @@ test('refused pasted token form errors keep both views quiet after a selection c
   }
 });
 
-test('Connect again from either view focuses Check now for a pasted connection', async () => {
-  // A browser connection's Connect again stays visible with the settings open, so focus stays on it (never taken).
-  for (const saved of [connection]) for (const tab of ['insert', 'send']) {
+test('Connect again from either view focuses Check now for pasted and browser connections', async () => {
+  for (const saved of [connection, browserConnection]) for (const tab of ['insert', 'send']) {
     const app = harness({ saved, prefs: { tab }, console: { statuses: { placements: 401 } } });
     await settle();
     // Browser views also offer recovery with the account panel already open.
@@ -5965,6 +5964,18 @@ test('Connect again from either view focuses Check now for a pasted connection',
     gate.resolve(); await settle();
     assert.equal(app.activeElement(), app.element('pairing-check'), `${saved.method ?? 'pasted'} ${tab}`);
   }
+});
+
+test('focus moved elsewhere while a request starts stays there when it waits', async () => {
+  const app = harness({ saved: browserConnection, prefs: { tab: 'insert' }, console: { statuses: { placements: 401 } } });
+  await settle();
+  app.element('settings').open = true; app.element('settings').dispatch('toggle');
+  const gate = deferred(); app.console.gates.start = gate;
+  app.element('insert-token').focus(); app.element('insert-token').dispatch('click'); await settle();
+  app.element('insert-search').focus();
+  gate.resolve(); await settle();
+  assert.equal(app.activeElement(), app.element('insert-search'));
+  assert.equal(app.element('pairing').hidden, false);
 });
 
 test('a refused pasted token on an older console leaves Save token as the primary', async () => {

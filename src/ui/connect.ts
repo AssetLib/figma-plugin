@@ -69,6 +69,8 @@ const pairing = {
   saving: null as Connection | null,
   // Connect again from a view opened the settings to show the request; Cancel closes them again.
   openedSettings: false,
+  // The control that started the request: focus still on it when the request waits moves to Check now.
+  startedFrom: null as Element | null,
 };
 // Workspaces this page's linked layers name (main's connection message), while there is no connection.
 let hints: PairingHint[] = [];
@@ -145,6 +147,7 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
   Object.assign(pairing, { phase: 'starting', origin, hint: chosen, ended: null, note: '', readKey: '', writeKey: null, userCode: '', resumed: false, failures: 0 });
   // Connect again from a view: the request shows in the connection settings.
   pairing.openedSettings = Boolean(state.connection) && !settings.open;
+  pairing.startedFrom = document.activeElement;
   settings.open = true;
   setStatus('Connecting…');
   scheduleRender();
@@ -177,7 +180,8 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
 function wait(): void {
   pairing.phase = 'waiting';
   state.pairingActive = true;
-  const focus = followed();
+  // Focus that moved elsewhere while the request started stays there.
+  const focus = followed() || (pairing.startedFrom !== null && document.activeElement === pairing.startedFrom);
   setStatus(`Approve in your browser. The code is ${[...pairing.userCode].join(' ')}.`);
   countdown();
   scheduleRender();
@@ -329,7 +333,7 @@ function connected(): void {
 function reset(): void {
   stopTimers();
   if (pairing.userCode) post({ type: 'clear-pairing', userCode: pairing.userCode });
-  Object.assign(pairing, { phase: 'idle', writeKey: null, inFlight: false, saving: null, saveRequest: null, adoptRequest: null, openRequest: null });
+  Object.assign(pairing, { phase: 'idle', startedFrom: null, writeKey: null, inFlight: false, saving: null, saveRequest: null, adoptRequest: null, openRequest: null });
   held = null;
   state.pairingActive = false;
 }
