@@ -12,8 +12,8 @@ import { webpToPng } from '../image.js';
 import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
 import {
-  announceError, arrowKeys, clearError, element, errorText, flushRender, inField, keyOf, post, postDrop, preferFocus, rovingStops, scheduleRender, sentence,
-  setBusy, setStatus, setUnavailable, showError,
+  announceError, arrowKeys, clearError, element, errorText, flushRender, inField, keyOf, post, postDrop, preferFocus, reloadConnection, rovingStops,
+  scheduleRender, sentence, setBusy, setStatus, setUnavailable, showError,
 } from './dom.js';
 import { readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
@@ -665,6 +665,7 @@ async function loadArtwork(): Promise<void> {
     const result = await send(config, { path: 'placements/artwork', channel: 'list' });
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
+      if (await replacedElsewhere(config, generation, result)) return;
       if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
       const failure = readFailureOf(result, readFailure(result, config, 'insert'));
       artwork = null;
@@ -712,6 +713,7 @@ async function loadImages(reset: boolean): Promise<void> {
     const result = await send(config, { path: assetsPath({ limit: 24, cursor, q: q || undefined }), channel: 'list' });
     if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
+      if (await replacedElsewhere(config, generation, result)) return;
       if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_REFUSED, field: 'token' });
       failure = readFailureOf(result, readFailure(result, config, 'insert'));
       throw new Error(failure.text);
@@ -740,12 +742,20 @@ function searchImages(): void {
   // A search for something else replaces the load in flight.
   if (state.ops.loadingList === 'images' ? loadingQuery !== q : !images || images.q !== q) void loadImages(true);
 }
+/**
+ * A browser connection the console refused: true when another plugin window replaced it on this device and this window
+ * now uses that one (reloadConnection), so the read is dropped quietly and the new connection's lists load.
+ */
+async function replacedElsewhere(config: Connection, generation: number, result: HttpResult): Promise<boolean> {
+  return config.method === 'browser' && tokenRefused(result.status, result.payload) && await reloadConnection(generation);
+}
 /** Downloads a version and checks it, as PNG bytes (a WebP is converted); null when a connection change abandoned it. */
 async function fetchPng(config: Connection, generation: number, asset: LibraryAsset, rendition: RenditionInfo,
   converting: () => void): Promise<Uint8Array | null> {
   const result = await send(config, { path: renditionPath(asset.id, rendition.sha256), bytes: rendition.bytes });
   if (generation !== state.connectionGeneration || result.kind === 'aborted') return null;
   if (result.status !== 200) {
+    if (await replacedElsewhere(config, generation, result)) return null;
     const refused = tokenRefused(result.status, result.payload);
     if (refused) needsAttention();
     // A browser connection the console refused is made again (showInsertError offers Connect again).

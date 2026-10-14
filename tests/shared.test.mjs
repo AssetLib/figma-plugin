@@ -653,6 +653,9 @@ test('main reads only well-formed messages from the UI', () => {
     { type: 'save-pairing', pairing: {} },
     { type: 'clear-pairing', userCode: 'BCDFGHJK' },
     { type: 'adopt-connection', requestId: 9, userCode: 'BCDFGHJK' },
+    { type: 'adopt-connection', requestId: 9, userCode: 'BCDFGHJK', once: true },
+    { type: 'claim-turn', requestId: 10, userCode: 'BCDFGHJK', interval: 2 },
+    { type: 'reload-connection', requestId: 11, connectionGeneration: 0 },
   ];
   for (const message of good) assert.equal(parseUiMessage(message), message, message.type);
   const bad = [
@@ -678,6 +681,9 @@ test('main reads only well-formed messages from the UI', () => {
     { type: 'save-pairing' }, { type: 'save-pairing', pairing: 'record' }, { type: 'save-pairing', pairing: [] },
     { type: 'clear-pairing' }, { type: 'clear-pairing', userCode: 8 },
     { type: 'adopt-connection', userCode: 'BCDFGHJK' }, { type: 'adopt-connection', requestId: 0, userCode: 'BCDFGHJK' }, { type: 'adopt-connection', requestId: 9 },
+    { type: 'adopt-connection', requestId: 9, userCode: 'BCDFGHJK', once: 'yes' },
+    { type: 'claim-turn', requestId: 10, userCode: 'BCDFGHJK' }, { type: 'claim-turn', userCode: 'BCDFGHJK', interval: 2 }, { type: 'claim-turn', requestId: 10, interval: 2 },
+    { type: 'reload-connection', requestId: 11 }, { type: 'reload-connection', requestId: 11, connectionGeneration: 1.5 }, { type: 'reload-connection', connectionGeneration: 0 },
   ];
   for (const message of bad) assert.throws(() => parseUiMessage(message), { message: UNREADABLE_MESSAGE }, JSON.stringify(message));
   assert.equal(messageRequestId({ type: 'x', requestId: 7 }), 7);

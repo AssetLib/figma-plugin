@@ -58,8 +58,9 @@ export interface Connection {
 /**
  * A one-click Connect request waiting for approval, in client storage (`assetlib.pairing.v1`) so a reopened plugin
  * resumes it. Never the write key. `deadline` is local epoch ms; `interval` the seconds between polls (2 to 30).
+ * `polledAt` (local epoch ms) and `polledBy` name the plugin window that last asked the console about it (main sets them).
  */
-export interface PairingRecord { v: 1; origin: string; readKey: string; userCode: string; deadline: number; interval: number }
+export interface PairingRecord { v: 1; origin: string; readKey: string; userCode: string; deadline: number; interval: number; polledAt?: number; polledBy?: string }
 
 /** A workspace the console may preselect on its connect page: a linked layer's, on one of the two console origins. */
 export interface PairingHint { origin: string; orgId: string; appId: string }

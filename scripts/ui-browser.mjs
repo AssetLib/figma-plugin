@@ -362,7 +362,9 @@ function installFakes(config) {
       case 'open-connect-page': opened.push(`https://console.assetlib.dev/connect/figma#${message.writeKey}`); break;
       case 'save-pairing': config.pairing = message.pairing; break;
       case 'clear-pairing': if (config.pairing?.userCode === message.userCode) config.pairing = null; break;
-      case 'adopt-connection': reply({ type: 'adopted', requestId: message.requestId, adopted: false }); break;
+      // One window: no other saved the request's connection or replaced this one, and the turn to ask is always this one's.
+      case 'adopt-connection': case 'reload-connection': reply({ type: 'adopted', requestId: message.requestId, adopted: false }); break;
+      case 'claim-turn': reply({ type: 'turn', requestId: message.requestId, turn: 'poll', after: 0 }); break;
       case 'insert': {
         targets.push(message.target);
         insertDrops.push(message.drop ?? null);

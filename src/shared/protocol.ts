@@ -72,12 +72,18 @@ export type UiMessage =
   | { type: 'clear-connection'; requestId: number; revoked?: boolean }
   // One-click Connect: main opens the console's connect page for this write key, built from a fixed map (connectPageUrl).
   | { type: 'open-connect-page'; requestId: number; origin: string; writeKey: string }
-  // The request waiting for approval, kept so a reopened plugin resumes it, and forgotten once it ends. Never refused.
+  // The request waiting for approval, kept so a reopened plugin resumes it (and this window keeps the turn to ask about
+  // it), and forgotten once it ends, unless another window's request replaced it. Never refused.
   | { type: 'save-pairing'; pairing: PairingRecord }
   | { type: 'clear-pairing'; userCode: string }
-  // The console said this request was claimed already: main looks for the connection another window saved from it.
-  // Always answered with `adopted`.
-  | { type: 'adopt-connection'; requestId: number; userCode: string }
+  // The console said this request was claimed already (or Cancel, `once`: read once): main looks for the connection
+  // another window saved from it. Always answered with `adopted`.
+  | { type: 'adopt-connection'; requestId: number; userCode: string; once?: boolean }
+  // Before a poll: whether this window may ask the console now (`interval`, the console's latest). Always answered with `turn`.
+  | { type: 'claim-turn'; requestId: number; userCode: string; interval: number }
+  // The console refused this window's browser connection: main adopts the connection saved on this device now, on the
+  // same console, if another window replaced this one there. Always answered with `adopted`.
+  | { type: 'reload-connection'; requestId: number; connectionGeneration: number }
   // A Figma toast for a finished operation. Main shortens the text to 100 characters and opens only a console link
   // for the connected app from the button.
   | { type: 'notify'; text: string; button?: NotifyButton }
@@ -93,11 +99,16 @@ export type NotifyButton = { text: string; url: string };
 
 export type MainMessage =
   // `pairing`: a Connect request waiting for approval (resumed by the UI); `hints`: workspaces linked on this page, while
-  // there is no connection.
+  // there is no connection. `replaced`: after this window's save, the browser connection the device held before it,
+  // which another window may have saved, so the UI ends its token too.
   | { type: 'connection'; connectionGeneration: number; connection: Connection | null; savedFileUrl: string; preferences: Preferences;
-    pairing: PairingRecord | null; hints: PairingHint[] }
-  // Whether a connection saved from a claimed request (another window's) was found and is now this window's.
+    pairing: PairingRecord | null; hints: PairingHint[]; replaced?: { origin: string; token: string } }
+  // Whether a connection saved on this device by another window (from a claimed request, or replacing a refused one)
+  // was found and is now this window's.
   | { type: 'adopted'; requestId: number; adopted: boolean }
+  // Ask the console now (`poll`), not before `after` ms (`wait`: another window asked within the interval), or not at
+  // all (`adopted`: another window saved the request's connection, which is this window's now).
+  | { type: 'turn'; requestId: number; turn: 'poll' | 'wait' | 'adopted'; after: number }
   | { type: 'selection'; connectionGeneration: number; selection: SelectionState }
   // `session`: the document couldn't keep the key (a view-only file), so it lasts until the plugin closes.
   | { type: 'file-saved'; requestId: number; fileKey: string; session: boolean }
@@ -135,6 +146,8 @@ export const OLDER_CONSOLE_CONNECT = 'This console can’t connect from Figma ye
 export const PAIRING_UNREACHABLE = 'Assetlib couldn’t be reached. Check your connection and try again, or use a token instead.';
 export const PAIRING_BUSY = 'Too many connection requests. Wait a minute and try again.';
 export const PAIRING_FAILED = 'Assetlib couldn’t finish connecting. Connect again.';
+// A draft refused because another plugin window replaced this window's connection on the device: this window uses that one now.
+export const CONNECTION_REPLACED = 'The connection changed in another plugin window, so nothing was sent. Try again.';
 export const OPEN_PAGE_FAILED = 'Figma couldn’t open your browser. Choose Open browser again.';
 
 /** A toast's text: at most 100 characters, the last one an ellipsis when it was longer. */
@@ -185,7 +198,9 @@ export function parseUiMessage(value: unknown): UiMessage {
       // Main checks the record's values itself.
       case 'save-pairing': return isRecord(m.pairing);
       case 'clear-pairing': return text(m.userCode);
-      case 'adopt-connection': return requestId(m.requestId) && text(m.userCode);
+      case 'adopt-connection': return requestId(m.requestId) && text(m.userCode) && (m.once === undefined || typeof m.once === 'boolean');
+      case 'claim-turn': return requestId(m.requestId) && text(m.userCode) && size(m.interval);
+      case 'reload-connection': return requestId(m.requestId) && typeof m.connectionGeneration === 'number' && Number.isSafeInteger(m.connectionGeneration);
       case 'notify': return text(m.text) && (m.button === undefined || (isRecord(m.button) && text(m.button.text) && text(m.button.url)));
       case 'resize': return Number.isFinite(m.width) && Number.isFinite(m.height);
       case 'reset-size': return true;

@@ -8,7 +8,9 @@ import {
 import type { Connection, Placement } from '../shared/index.js';
 import { DISCONNECTED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, toastText } from '../shared/protocol.js';
 import type { MainMessage } from '../shared/protocol.js';
-import { announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, setBusy, setStatus, setUnavailable, showError } from './dom.js';
+import {
+  announceError, clearError, element, errorText, flushRender, inField, post, reloadConnection, scheduleRender, setBusy, setStatus, setUnavailable, showError,
+} from './dom.js';
 import { identify, readFailure, revokeConnection, send } from './http.js';
 import type { HttpResult } from './http.js';
 import { clearPlacements, clearRememberedSelection, showPlacements } from './send.js';
@@ -402,6 +404,8 @@ export async function loadPlacements(): Promise<ReadFailure | null> {
     if (generation !== state.connectionGeneration || result.kind === 'aborted') return null;
     if (result.status !== 200) {
       failure = failureOf(result, readFailure(result, config));
+      // Another plugin window may have replaced this browser connection on the device: that one is tested instead.
+      if (config.method === 'browser' && (result.status === 401 || result.status === 403) && await reloadConnection(generation)) return null;
       throw new Error(failure.text);
     }
     try { showPlacements(parsePlacements(result.payload)); }
@@ -463,9 +467,14 @@ async function reloadPlacements(): Promise<void> {
 
 /** Main's `connection` message: the saved connection, or none, and a new generation. */
 export function applyConnection(message: Extract<MainMessage, { type: 'connection' }>): void {
-  // A browser connection this window's save replaced ends: its token is no longer anyone's (best effort).
-  const replaced = pendingConnection && message.connection?.token === pendingConnection.next.token ? pendingConnection.replaced : null;
-  if (replaced?.method === 'browser' && replaced.token !== message.connection?.token) void revokeConnection(replaced.origin, replaced.token);
+  // The browser connections this window's save replaced end, their tokens no longer anyone's (best effort): the one this
+  // window held, and the one the device held, which another window may have saved since.
+  const saved = pendingConnection && message.connection?.token === pendingConnection.next.token ? pendingConnection : null;
+  const ended = new Map<string, string>();
+  if (saved?.replaced?.method === 'browser') ended.set(saved.replaced.token, saved.replaced.origin);
+  if (saved && message.replaced) ended.set(message.replaced.token, message.replaced.origin);
+  ended.delete(message.connection?.token ?? '');
+  for (const [token, origin] of ended) void revokeConnection(origin, token);
   pendingConnection = null;
   tokenChosen = false;
   // A token being identified for the connection this replaces is no longer wanted.

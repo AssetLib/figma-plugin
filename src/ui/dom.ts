@@ -1,4 +1,5 @@
-import type { DropMetadata, UiMessage } from '../shared/protocol.js';
+import type { DropMetadata, MainMessage, UiMessage } from '../shared/protocol.js';
+import { nextRequestId, state } from './state.js';
 
 export function element<T extends HTMLElement = HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -15,6 +16,27 @@ export const COMMAND = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctr
  */
 export function postDrop(drop: { clientX: number; clientY: number; files: File[]; dropMetadata: DropMetadata }): void {
   parent.postMessage({ pluginDrop: drop }, '*');
+}
+// Main's answers to reload-connection, by request id.
+const reloads = new Map<number, (adopted: boolean) => void>();
+/**
+ * The console refused this window's browser connection (of `generation`): another plugin window may have saved a newer
+ * one on this device, ending this one, and main then makes that one this window's (its connection message comes first).
+ * Resolves true when the connection changed meanwhile, so the caller drops what it would have said and offered.
+ */
+export async function reloadConnection(generation: number | null): Promise<boolean> {
+  if (generation === null || generation !== state.connectionGeneration) return true;
+  if (state.connection?.method !== 'browser') return false;
+  const requestId = nextRequestId();
+  const adopted = await new Promise<boolean>(resolve => { reloads.set(requestId, resolve); post({ type: 'reload-connection', requestId, connectionGeneration: generation }); });
+  return adopted || generation !== state.connectionGeneration;
+}
+/** Main's `adopted` for a reload-connection; false when it answers another request. */
+export function reloaded(message: Extract<MainMessage, { type: 'adopted' }>): boolean {
+  const resolve = reloads.get(message.requestId);
+  reloads.delete(message.requestId);
+  resolve?.(message.adopted);
+  return Boolean(resolve);
 }
 /** The status live region (visually hidden): progress, results, and every toast's words. */
 export function setStatus(text: string): void { element('status').textContent = text; }

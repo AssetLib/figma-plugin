@@ -182,7 +182,9 @@ const REVOKED = 'This Figma connection was ended. Connect again from the Assetli
  * state.pairings ({readKey, writeKey, userCode, status, interval, hint, connection, answers}; state.pairingStart merges
  * into its 201 answer). A claim answers its request's next scripted `answers` entry ([status, body, headers]) if any,
  * else by its status: pending; approved, which issues a token (state.issued) for its `connection` once and is then
- * claimed; or how it ended (410). Unknown read keys answer 410 expired. A cancel ends a pending or approved request and
+ * claimed; or how it ended (410). With a clock (state.now, the harness's `now`), a pending request claimed less than its
+ * interval − 0.5 s after the last claim answers 429 slow_down and its interval grows by 5 s, to 30, as the console's
+ * does. Unknown read keys answer 410 expired. A cancel ends a pending or approved request and
  * ends the token of a claimed one (state.revoked). DELETE current ends an issued token (204), refuses a pasted one (400),
  * and an ended token gets 403 `revoked` from every other route. A console from before one-click Connect is
  * failures: ['start'] (its routes send no CORS headers), with GET /api/token still answering.
@@ -228,7 +230,15 @@ export function fakeConsole(state) {
       case 'claim': {
         if (!/^alr_[A-Za-z0-9_-]{43}$/.test(bearer)) return jsonResponse(401, { error: 'Missing or invalid pairing key.' });
         if (!pairing) return jsonResponse(410, { status: 'expired' });
+        // Every claim moves the last poll, as the console's does; a pending one asked too soon is told to slow down.
+        const at = state.now?.();
+        const early = at !== undefined && pairing.polledAt !== undefined && at - pairing.polledAt < (pairing.interval - 0.5) * 1000;
+        if (at !== undefined) pairing.polledAt = at;
         if (pairing.answers.length) { const [answer, body, headers] = pairing.answers.shift(); return jsonResponse(answer, body, headers); }
+        if (pairing.status === 'pending' && early) {
+          pairing.interval = Math.min(pairing.interval + 5, 30);
+          return jsonResponse(429, { status: 'slow_down', interval: pairing.interval });
+        }
         if (pairing.status === 'pending') return jsonResponse(200, { status: 'pending', interval: pairing.interval });
         if (pairing.status !== 'approved') return jsonResponse(410, { status: pairing.status });
         const token = `alk_figma${String(state.issued.size + 1).padStart(38, '0')}`;
@@ -396,7 +406,8 @@ export function createHarness({
   const windowListeners = new Map();
   const window = {
     innerWidth: 420, innerHeight: 720,
-    setTimeout(callback, delay) { timerId += 1; timers.set(timerId, { callback, delay }); return timerId; },
+    // With a clock, each timer knows when it is due (fireDue).
+    setTimeout(callback, delay) { timerId += 1; timers.set(timerId, { callback, delay, due: now ? now() + delay : null }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
     addEventListener(type, callback) { windowListeners.set(type, callback); },
   };
@@ -658,6 +669,11 @@ export function createHarness({
     postToMain(message) { parent.postMessage({ pluginMessage: message }); },
     fireTimers(delay) {
       for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback(); }
+    },
+    /** With `now`: runs every timer due by now, earliest first (one set after this call starts waits for the next). */
+    fireDue() {
+      const due = [...timers].filter(([, timer]) => timer.due !== null && timer.due <= now()).sort((a, b) => a[1].due - b[1].due);
+      for (const [id, timer] of due) if (timers.delete(id)) timer.callback();
     },
     /**
      * Types `next` into the connection form and submits it. The console knows a typed token's organization and app

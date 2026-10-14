@@ -6,10 +6,11 @@ import {
   reconnectText, refusalCode, sizeLabel, tokenRefused, validUuid, validateBinding,
 } from '../shared/index.js';
 import type { Appearance, CellBinding, Connection, DraftResult, InsertLink, PairingHint, Placement } from '../shared/index.js';
+import { CONNECTION_REPLACED } from '../shared/protocol.js';
 import type { MainMessage, RememberedTarget } from '../shared/protocol.js';
 import {
-  announceError, clearError, element, errorText, flushRender, inField, post, scheduleRender, sentence, setBusy, setStatus, setUnavailable, showError,
-  toast,
+  announceError, clearError, element, errorText, flushRender, inField, post, reloadConnection, scheduleRender, sentence, setBusy, setStatus, setUnavailable,
+  showError, toast,
 } from './dom.js';
 import { send } from './http.js';
 import { actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, state } from './state.js';
@@ -26,7 +27,7 @@ const fileUrl = element<HTMLInputElement>('file-url');
 const CHOOSE_PLACEMENT = 'Choose placement…';
 export const VIEW_ONLY = 'This file is view-only, so the link lasts until you close the plugin.';
 
-let pending: { id: number; connection: Connection; placement: Placement; bind: CellBinding; rebind: boolean; result: DraftResult | null } | null = null;
+let pending: { id: number; connection: Connection; generation: number | null; placement: Placement; bind: CellBinding; rebind: boolean; result: DraftResult | null } | null = null;
 // The request id of the last Match ratio, so its error is shown.
 let pendingMatch: number | null = null;
 // The file link being saved: its request id and the link, for Use anyway.
@@ -405,7 +406,7 @@ function beginSend(rebind: boolean): void {
   try {
     const remembered = rebind ? rememberedBinding() : null;
     const bind = remembered?.bind ?? chosenBinding(placement);
-    pending = { id: nextRequestId(), connection: { ...state.connection }, placement, bind, rebind, result: null };
+    pending = { id: nextRequestId(), connection: { ...state.connection }, generation: state.connectionGeneration, placement, bind, rebind, result: null };
     element('result').hidden = true;
     state.ops[rebind ? 'syncing' : 'sending'] = true;
     setStatus('Exporting selected artwork…');
@@ -436,9 +437,13 @@ export async function sendExport(message: Extract<MainMessage, { type: 'exported
     if (result.kind === 'timeout') throw new Error(mapTimeoutError(result.timeoutSeconds, 'send'));
     if (result.kind === 'network') throw new Error(`${mapNetworkError(operation.connection.origin)} ${DRAFT_MAY_HAVE_ARRIVED}`);
     if (operation.connection.method === 'browser' && result.kind === 'http' && tokenRefused(result.status, result.payload)) {
-      // The console refused the token, so the draft wasn't saved: the browser connection is made again.
+      // The console refused the token, so the draft wasn't saved: the browser connection is made again, unless another
+      // plugin window replaced it on this device, which this window uses now.
+      const replaced = await reloadConnection(operation.generation);
+      if (pending !== operation) return;
       endSend(); setStatus('');
-      showError(reconnectText(refusalCode(result.payload)), { label: 'Connect again', run: reconnect });
+      if (replaced) showError(CONNECTION_REPLACED);
+      else showError(reconnectText(refusalCode(result.payload)), { label: 'Connect again', run: reconnect });
       return;
     }
     if (result.status !== 201 && result.status !== 409) throw new Error(mapHttpError(result.status, result.payload));

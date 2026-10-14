@@ -2,9 +2,9 @@
 // once per frame, and resizes the window from its grip.
 import { clampWindow } from '../shared/index.js';
 import type { MainMessage } from '../shared/protocol.js';
-import { adopted, applyPairing, connectFocus, failOpenPage, hintOfCurrent, initConnect, renderConnect, saveRefused, startConnect } from './connect.js';
+import { adopted, applyPairing, connectFocus, failOpenPage, hintOfCurrent, initConnect, releaseHeld, renderConnect, saveRefused, startConnect, turned } from './connect.js';
 import { applyConnection, failConnection, initConnection, loadPlacements, openSettings, problemInSettings, renderConnection } from './connection.js';
-import { COMMAND, arrowKeys, element, inField, post, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
+import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
 import { abortAll } from './http.js';
 import {
   applyPreferences, connectionKept, dropped, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
@@ -25,6 +25,8 @@ function render(): void {
   // the page stays as ui.html draws it, so a render then (the window sizing, a font loading) never shows the first-run
   // screen, which would leave the connection settings open over the saved connection.
   if (!state.preferencesLoaded) return;
+  // A Connect request's connection, held while a Send, Sync, or Insert ran, is saved once it ended.
+  releaseHeld();
   const { tab } = state.prefs;
   // Without a connection there is only the first-run screen: no tabs, no lists, no footers.
   const firstRun = !state.connection;
@@ -116,7 +118,8 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
     case 'remembered': remembered(message); break;
     case 'inserted': inserted(message); break;
     case 'dropped': dropped(message); break;
-    case 'adopted': adopted(message); break;
+    case 'adopted': if (!reloaded(message)) adopted(message); break;
+    case 'turn': turned(message); break;
     case 'error': onError(message); break;
   }
 };

@@ -64,7 +64,8 @@ const renditionsServed = () => [...baseItems, ...armItems].flatMap(item => item.
 // The plugin opens on Insert by default ('default tab is insert'); most tests start from a saved Send tab, as a person
 // who last used Send would. `prefs: null` leaves no saved preferences.
 function harness({ remembered = rememberedA, bytes = pngHeader(1000, 1000), saved = connection, storage = [], console: state = {}, prefs = { tab: 'send' }, ...options } = {}) {
-  const consoleState = { placements: [clone(placement)], artwork: artwork(), library: [], renditions: renditionsServed(), ...state };
+  // The console keeps the harness's clock, so its slow_down rule is timed as the plugin's polls are.
+  const consoleState = { placements: [clone(placement)], artwork: artwork(), library: [], renditions: renditionsServed(), ...(options.now ? { now: options.now } : {}), ...state };
   const app = createHarness({
     ...sources, fetch: fakeConsole(consoleState), exportBytes: () => bytes, selection: [node],
     storage: [...(prefs ? [['assetlib.preferences.v1', prefs]] : []), ...(saved ? [['assetlib.connection.v1', saved], [storageKey(saved), remembered]] : []), ...storage],
@@ -4681,6 +4682,36 @@ function linkedNode(id, origin, orgId, appId) {
   return { ...node, id, pluginData: { [LINK_KEY]: JSON.stringify({ v: 1, origin, orgId, appId, nodeId: id, insertedAt: '2026-10-11T00:00:00.000Z',
     placementKey: placement.key, state: null, appearance: null, arm: null, environment: 'draft', assetId: baseArt }) } };
 }
+const otherApp = '44444444-4444-4444-8444-444444444444';
+// A browser connection saved from an earlier request than the fake console's first (whose code is browserConnection's).
+const earlier = { ...browserConnection, pairing: 'XXXXXXXX' };
+/**
+ * Plugin windows in different files: `open()` makes one. They share client storage, the console, and a clock
+ * (`clock.now`), which `advance` moves.
+ */
+function windows({ storage = [], console: extra = {} } = {}) {
+  const clock = { now: 7_000_000 };
+  const now = () => clock.now;
+  const store = new Map([['assetlib.preferences.v1', { tab: 'send' }], ...storage]);
+  const consoleState = { placements: [clone(placement)], artwork: artwork(), library: [], renditions: renditionsServed(), now, ...extra };
+  const fetch = fakeConsole(consoleState);
+  return { clock, store, consoleState, open: () => ({ ...createHarness({ ...sources, fetch, store, selection: [node], exportBytes: () => pngHeader(1000, 1000), now }), console: consoleState }) };
+}
+/** Moves the shared clock `ms` on, 100 ms at a time, running the timers of the windows given (a closed one's never run). */
+async function advance(clock, apps, ms) {
+  for (let step = 0; step < ms; step += 100) {
+    clock.now += 100;
+    for (const app of apps) app.fireDue();
+    await settle();
+  }
+}
+const lastConnection = app => app.mainMessages.filter(message => message.type === 'connection').at(-1).connection;
+async function switchWorkspace(app) {
+  app.element('settings').open = true;
+  app.element('settings').dispatch('toggle');
+  app.element('switch-workspace').dispatch('click');
+  await settle();
+}
 
 test('Connect to Assetlib starts a request, offering a workspace this page links, and opens the console’s connect page', async () => {
   const devOrg = '33333333-3333-4333-8333-333333333333';
@@ -4699,8 +4730,9 @@ test('Connect to Assetlib starts a request, offering a workspace this page links
   const [{ readKey, writeKey }] = app.console.pairings;
   assert.deepEqual(app.externalUrls, [`https://console.assetlib.dev/connect/figma#${writeKey}`]);
   const record = app.storage.get('assetlib.pairing.v1');
-  assert.deepEqual(Object.keys(record).sort(), ['deadline', 'interval', 'origin', 'readKey', 'userCode', 'v']);
-  assert.deepEqual([record.readKey, record.userCode, record.interval, record.origin], [readKey, 'BCDFGHJK', 2, connection.origin]);
+  assert.deepEqual(Object.keys(record).sort(), ['deadline', 'interval', 'origin', 'polledAt', 'polledBy', 'readKey', 'userCode', 'v']);
+  assert.deepEqual([record.readKey, record.userCode, record.interval, record.origin, record.polledAt], [readKey, 'BCDFGHJK', 2, connection.origin, now],
+    'the start is this window’s turn');
   assert.ok(!JSON.stringify([...app.storage.values()]).includes(writeKey), 'the write key is never stored');
   // Waiting: the code to compare, and the request's actions.
   assert.equal(app.element('pairing').hidden, false);
@@ -4961,7 +4993,8 @@ test('polls follow the console’s interval, come early on focus or visibility w
 });
 
 test('a request claimed elsewhere is adopted from this device’s saved connection, or stopped', async () => {
-  // Another window of the plugin saved it: this one takes that connection, with no toast and nothing cancelled.
+  // Another window of the plugin saved it: before asking the console, this one takes that connection, with no toast
+  // and nothing cancelled.
   const app = harness({ saved: null });
   await settle();
   await startConnect(app);
@@ -4969,12 +5002,24 @@ test('a request claimed elsewhere is adopted from this device’s saved connecti
   app.storage.set('assetlib.connection.v1', { ...browserConnection });
   app.fireTimers(2000);
   await settle();
-  assert.deepEqual(posted(app, 'adopt-connection').map(message => message.userCode), ['BCDFGHJK']);
-  assert.deepEqual(app.mainMessages.filter(message => message.type === 'adopted').map(message => message.adopted), [true]);
-  assert.equal(routeCount(app, 'cancel'), 0);
+  assert.deepEqual(app.mainMessages.filter(message => message.type === 'turn').map(message => message.turn), ['adopted']);
+  assert.deepEqual([claims(app).length, routeCount(app, 'cancel')], [0, 0]);
   assert.deepEqual([app.element('app').getAttribute('data-view'), app.element('pairing').hidden], ['shell', true]);
   assert.deepEqual(app.notices, [], 'the other window said Connected');
   assert.equal(app.storage.has('assetlib.pairing.v1'), false);
+  // The console says it was claimed, and the other window's save lands within 3 s: adopted the same way.
+  const late = harness({ saved: null });
+  await settle();
+  await startConnect(late);
+  late.console.pairings[0].status = 'claimed';
+  late.fireTimers(2000);
+  await settle();
+  assert.deepEqual(posted(late, 'adopt-connection').map(message => message.userCode), ['BCDFGHJK']);
+  late.storage.set('assetlib.connection.v1', { ...browserConnection });
+  late.fireTimers(1000);
+  await settle();
+  assert.deepEqual(late.mainMessages.filter(message => message.type === 'adopted').map(message => message.adopted), [true]);
+  assert.deepEqual([late.element('app').getAttribute('data-view'), routeCount(late, 'cancel')], ['shell', 0]);
 
   // Nobody here saved it within 3 s: the console ends the token it issued, and the panel says why.
   const lost = harness({ saved: null });
@@ -4990,28 +5035,221 @@ test('a request claimed elsewhere is adopted from this device’s saved connecti
   assert.equal(lost.element('pairing-note').textContent, 'This request was already used, so Assetlib stopped it. Connect again.');
   assert.equal(lost.storage.has('assetlib.connection.v1'), false);
 
-  // Two windows sharing client storage: one claims, the other adopts, and one token was issued.
-  const store = new Map([['assetlib.preferences.v1', { tab: 'send' }]]);
-  const consoleState = { placements: [clone(placement)], artwork: artwork(), library: [], renditions: renditionsServed() };
-  const fetch = fakeConsole(consoleState);
-  const first = { ...createHarness({ ...sources, fetch, store, selection: [node] }), console: consoleState };
+  // Two windows sharing client storage: the one asking the console claims, the other, waiting its turn, adopts, and one
+  // token was issued.
+  const { clock, consoleState, open } = windows();
+  const first = open();
   await settle();
   await startConnect(first);
-  const second = { ...createHarness({ ...sources, fetch, store, selection: [node] }), console: consoleState };
+  const second = open();
   await settle();
   assert.equal(second.element('pairing').hidden, false, 'the second window resumed the request');
   approve(first);
-  first.fireTimers(2000);
-  await settle();
-  second.fireTimers(2000);
-  await settle();
+  await advance(clock, [first, second], 3000);
   assert.equal(consoleState.issued.size, 1);
   for (const window of [first, second]) {
     assert.equal(window.element('app').getAttribute('data-view'), 'shell');
-    assert.equal(window.mainMessages.filter(message => message.type === 'connection').at(-1).connection.token, [...consoleState.issued.keys()][0]);
+    assert.equal(lastConnection(window).token, [...consoleState.issued.keys()][0]);
   }
-  assert.equal(routeCount(second, 'cancel'), 0);
-  assert.equal(consoleState.revoked.size, 0);
+  assert.deepEqual([claims(second).length, routeCount(second, 'cancel'), consoleState.revoked.size], [0, 0, 0]);
+});
+
+test('two plugin windows on one request take turns asking, so the console never slows them down', async () => {
+  const { clock, consoleState, open } = windows();
+  const first = open();
+  await settle();
+  await startConnect(first);
+  const second = open();
+  await settle();
+  await advance(clock, [first, second], 20000);
+  const [request] = consoleState.pairings;
+  assert.equal(request.interval, 2, 'never too soon');
+  assert.deepEqual([claims(first).length, claims(second).length], [10, 0], 'the window that asked last keeps asking every 2 s; the other waits its turn');
+  // The first window closes: the second takes the turn once the first's has passed, and connects.
+  first.close();
+  await advance(clock, [second], 4000);
+  assert.deepEqual([claims(second).length, request.interval], [1, 2]);
+  approve(second);
+  await advance(clock, [second], 2000);
+  assert.equal(second.storage.get('assetlib.connection.v1').pairing, 'BCDFGHJK');
+  assert.equal(consoleState.issued.size, 1);
+});
+
+test('Cancel in a second window keeps the connection another window saved from the request', async () => {
+  const { clock, consoleState, open } = windows();
+  const first = open();
+  await settle();
+  await startConnect(first);
+  const second = open();
+  await settle();
+  approve(first);
+  await advance(clock, [first, second], 2000);
+  const { token } = first.storage.get('assetlib.connection.v1');
+  assert.equal(second.element('pairing-cancel').hidden, false, 'the second window still waits for its turn');
+  second.element('pairing-cancel').dispatch('click');
+  await settle();
+  assert.deepEqual([routeCount(second, 'cancel'), consoleState.revoked.size], [0, 0], 'nothing ended on the console');
+  assert.equal(lastConnection(second).token, token, 'the second window uses it too');
+  assert.equal(second.storage.get('assetlib.connection.v1').token, token);
+  // With nothing saved from it, Cancel tells the console.
+  const alone = harness({ saved: null });
+  await settle();
+  await startConnect(alone);
+  alone.element('pairing-cancel').dispatch('click');
+  await settle();
+  assert.deepEqual([posted(alone, 'adopt-connection').map(message => message.once), routeCount(alone, 'cancel')], [[true], 1]);
+});
+
+test('a request one window ends never erases a newer request another window started', async () => {
+  const { clock, store, open } = windows();
+  const first = open();
+  await settle();
+  await startConnect(first);
+  const second = open();
+  await settle();
+  // The first window cancels and starts again; the second, still on the first request, then finds it cancelled.
+  first.element('pairing-cancel').dispatch('click');
+  await settle();
+  await startConnect(first);
+  assert.equal(store.get('assetlib.pairing.v1').userCode, 'LMNPQRST');
+  await advance(clock, [second], 3000);
+  assert.equal(second.element('pairing-note').textContent, 'The request was cancelled. Connect again when you’re ready.');
+  assert.equal(store.get('assetlib.pairing.v1')?.userCode, 'LMNPQRST', 'the newer request stays');
+  // So a window opened now (the first one closed and opened again, say) resumes it.
+  const reopened = open();
+  await settle();
+  assert.equal(reopened.element('pairing-code').textContent, 'LMNP-QRST');
+});
+
+test('an approval during a Send or an Insert waits for it, then the connection changes', async () => {
+  // A draft on its way: the connection waits, the draft arrives with the token it was sent with, then the new one is saved.
+  const app = harness({ saved: earlier, console: { issued: issued() } });
+  await settle();
+  await switchWorkspace(app);
+  pick(app, 'placement', placement.key);
+  app.console.gates.drafts = deferred();
+  app.element('send').dispatch('click');
+  await settle();
+  const [draft] = app.requests.filter(request => request.route === 'drafts');
+  approve(app, { appId: otherApp, appName: 'Roam Android' });
+  app.fireTimers(2000);
+  await settle();
+  assert.equal(app.console.issued.size, 2, 'approved and claimed');
+  assert.deepEqual([posted(app, 'save-connection').length, app.element('pairing-status').textContent, draft.signal.aborted], [0, 'Saving connection…', false]);
+  // It keeps the request's turn meanwhile, so another window never finds it claimed and ends its token.
+  const turn = app.storage.get('assetlib.pairing.v1').polledAt;
+  app.fireTimers(2000);
+  await settle();
+  assert.equal(posted(app, 'save-pairing').length, 3);
+  assert.ok(app.storage.get('assetlib.pairing.v1').polledAt >= turn);
+  app.console.gates.drafts.resolve();
+  await settle();
+  assert.ok(app.notices.includes('Sent to hero.artwork draft'), 'the draft arrived and said so');
+  assert.equal(app.storage.get('assetlib.connection.v1').appId, otherApp, 'then the connection was saved');
+  assert.ok(app.notices.includes('Connected to Roam · Roam Android as dana@example.com'));
+  assert.ok(app.console.revoked.has(figmaToken), 'and the token it replaced ended');
+  assert.equal(app.element('error').hidden, true);
+
+  // Main still exporting: the draft goes with the token it started with, which ends only after it.
+  const exporting = harness({ saved: earlier, console: { issued: issued() } });
+  await settle();
+  await switchWorkspace(exporting);
+  pick(exporting, 'placement', placement.key);
+  const gate = exporting.delayExport();
+  exporting.element('send').dispatch('click');
+  await settle();
+  approve(exporting, { appId: otherApp, appName: 'Roam Android' });
+  exporting.fireTimers(2000);
+  await settle();
+  assert.equal(posted(exporting, 'save-connection').length, 0);
+  gate.resolve();
+  await settle();
+  const [sent] = exporting.requests.filter(request => request.route === 'drafts');
+  assert.equal(sent.authorization, `Bearer ${figmaToken}`);
+  assert.equal(exporting.element('error').hidden, true, 'never refused: the token was still in force');
+  assert.deepEqual([exporting.storage.get('assetlib.connection.v1').appId, exporting.console.revoked.has(figmaToken)], [otherApp, true]);
+
+  // An Insert downloading: it inserts, then the connection changes. A request claimed elsewhere waits the same way.
+  const inserting = harness({ saved: earlier, prefs: { tab: 'insert' }, console: { issued: issued() } });
+  await openInsert(inserting);
+  await switchWorkspace(inserting);
+  rowFor(inserting, placement.key).dispatch('click');
+  inserting.console.gates.rendition = deferred();
+  inserting.element('insert').dispatch('click');
+  await settle();
+  inserting.console.pairings.at(-1).answers.push([410, { status: 'claimed' }]);
+  inserting.fireTimers(2000);
+  await settle();
+  assert.deepEqual(posted(inserting, 'adopt-connection'), [], 'adopting waits too');
+  inserting.console.gates.rendition.resolve();
+  await settle();
+  assert.equal(inserting.frames.length, 1, 'inserted');
+  assert.equal(posted(inserting, 'adopt-connection').length, 1);
+});
+
+test('Connect again while a request waits opens the settings on it', async () => {
+  const app = harness({ saved: earlier, prefs: { tab: 'insert' }, console: { statuses: { placements: 403 }, errors: { placements: 'Ended.' }, codes: { placements: 'revoked' } } });
+  await settle();
+  app.element('insert-token').dispatch('click');
+  await settle();
+  assert.deepEqual([routeCount(app, 'start'), app.element('settings').open], [1, true]);
+  // The person closes the settings to look at the list, where Connect again still shows.
+  app.element('settings').open = false;
+  app.element('settings').dispatch('toggle');
+  app.element('insert-token').focus();
+  app.element('insert-token').dispatch('click');
+  await settle();
+  assert.deepEqual([routeCount(app, 'start'), app.element('settings').open, app.activeElement()], [1, true, app.element('pairing-check')], 'the same request, in view');
+  // Cancel closes the settings it opened.
+  app.element('pairing-cancel').dispatch('click');
+  await settle();
+  assert.equal(app.element('settings').open, false);
+});
+
+test('a browser connection another window replaced is taken up, and no token is left live on no device', async () => {
+  const { clock, consoleState, open } = windows({ storage: [['assetlib.connection.v1', earlier]], console: { issued: issued() } });
+  const [first, second, third] = [open(), open(), open()];
+  await settle();
+  // The first window switches workspace: its connection replaces the device's, and the token it replaces ends.
+  await switchWorkspace(first);
+  approve(first, { appId: otherApp, appName: 'Roam Android' });
+  await advance(clock, [first], 2000);
+  const replacement = first.storage.get('assetlib.connection.v1').token;
+  assert.ok(consoleState.revoked.has(figmaToken));
+  // The second window still holds the ended token. Its next read is refused, and it takes up the device's connection
+  // rather than offering Connect again.
+  second.element('tab-insert').dispatch('click');
+  await settle();
+  assert.equal(lastConnection(second).token, replacement);
+  assert.deepEqual([second.element('insert-token').hidden, routeCount(second, 'start'), second.element('chip-warning').hidden], [true, 0, true]);
+  assert.equal(rowFor(second, placement.key)?.getAttribute('data-key'), placement.key, 'the list loads with it');
+  // The third never noticed and switches workspace itself: the token the device held, the first window's, ends too.
+  await switchWorkspace(third);
+  approve(third);
+  await advance(clock, [third], 2000);
+  const newest = third.storage.get('assetlib.connection.v1').token;
+  assert.ok(consoleState.revoked.has(replacement));
+  // The others take up the newest when their reads are refused, so the only token left in force is the one every window uses.
+  first.element('tab-insert').dispatch('click');
+  await settle();
+  second.element('insert-refresh').dispatch('click');
+  await settle();
+  for (const window of [first, second, third]) assert.equal(lastConnection(window).token, newest);
+  assert.deepEqual([...consoleState.issued.keys()].filter(token => !consoleState.revoked.has(token)), [newest]);
+
+  // A draft refused for that reason wasn't sent: the window takes up the device's connection and says to try again.
+  const sending = windows({ storage: [['assetlib.connection.v1', earlier]], console: { issued: issued() } });
+  const [switching, stale] = [sending.open(), sending.open()];
+  await settle();
+  await switchWorkspace(switching);
+  approve(switching);
+  await advance(sending.clock, [switching], 2000);
+  pick(stale, 'placement', placement.key);
+  stale.element('send').dispatch('click');
+  await settle();
+  assert.deepEqual([stale.element('error').textContent, stale.element('error-action').hidden],
+    ['The connection changed in another plugin window, so nothing was sent. Try again.', true]);
+  assert.equal(lastConnection(stale).token, switching.storage.get('assetlib.connection.v1').token);
 });
 
 test('a connection Figma can’t save ends its token, and the token never reaches a field', async () => {
@@ -5045,7 +5283,7 @@ test('names asked again keep a browser connection’s method, approver, and code
 });
 
 test('Disconnect ends a browser connection’s token, with no Undo; offline it says where to end it', async () => {
-  const app = harness({ saved: browserConnection, console: { issued: issued() } });
+  const app = harness({ saved: earlier, console: { issued: issued() } });
   await settle();
   app.element('settings').open = true;
   app.element('disconnect').focus();
@@ -5061,7 +5299,7 @@ test('Disconnect ends a browser connection’s token, with no Undo; offline it s
   assert.deepEqual([app.element('app').getAttribute('data-view'), app.activeElement()], ['first-run', app.element('connect-browser')]);
 
   // The console can't be reached: forgotten here anyway, and the toast says where to end it.
-  const offline = harness({ saved: browserConnection, console: { failures: new Set(['current']) } });
+  const offline = harness({ saved: earlier, console: { failures: new Set(['current']) } });
   await settle();
   offline.element('disconnect').dispatch('click');
   await settle();
@@ -5070,7 +5308,7 @@ test('Disconnect ends a browser connection’s token, with no Undo; offline it s
     [['Disconnected on this device. End the connection in the console under Settings › Profile.', undefined]]);
   assert.equal(offline.storage.has('assetlib.connection.v1'), false);
   // An already ended token (401) counts as ended.
-  const ended = harness({ saved: browserConnection, console: { statuses: { current: 401 } } });
+  const ended = harness({ saved: earlier, console: { statuses: { current: 401 } } });
   await settle();
   ended.element('disconnect').dispatch('click');
   await settle();
@@ -5108,7 +5346,6 @@ test('Switch workspace keeps Insert working while it waits, and ends the token i
   app.element('settings').dispatch('toggle');
   assert.equal(app.element('pairing-note').hidden, true, 'seen, it goes');
   // Approved for another app: saved, and the token it replaces is ended.
-  const otherApp = '44444444-4444-4444-8444-444444444444';
   app.element('switch-workspace').dispatch('click');
   await settle();
   approve(app, { appId: otherApp, appName: 'Roam Android' });
@@ -5203,6 +5440,44 @@ test('an older console opens the token form; one that can’t be reached, or is 
   await settle();
   await startConnect(busy);
   assert.equal(busy.element('pairing-note').textContent, 'Too many connection requests. Wait a minute and try again.');
+});
+
+test('a refused insert, drop, or Load more on a browser connection offers Connect again in the error line', async () => {
+  const ended = 'This Figma connection was ended. Connect again to keep working.';
+  const refuse = (app, route) => Object.assign(app.console, { statuses: { [route]: 403 }, errors: { [route]: 'Ended.' }, codes: { [route]: 'revoked' } });
+  async function reconnects(app, what) {
+    assert.deepEqual([app.element('error').textContent, app.element('error-action').textContent, app.element('error-action').hidden], [ended, 'Connect again', false], what);
+    app.element('error-action').dispatch('click');
+    await settle();
+    assert.deepEqual(app.requests.filter(request => request.route === 'start').map(request => request.body), [{ client: 'figma', hint: { orgId: orgUuid, appId: appUuid } }], what);
+  }
+  const insert = harness({ saved: browserConnection, prefs: { tab: 'insert' }, console: { issued: issued() } });
+  await openInsert(insert);
+  rowFor(insert, placement.key).dispatch('click');
+  refuse(insert, 'rendition');
+  insert.element('insert').dispatch('click');
+  await settle();
+  assert.equal(insert.frames.length, 0);
+  await reconnects(insert, 'Insert');
+
+  const drop = await canvas([], { saved: browserConnection, console: canvasConsole({ issued: issued() }) });
+  refuse(drop, 'rendition');
+  drag(rowFor(drop, card.key));
+  drop.dropOnCanvas({ absoluteX: 10, absoluteY: 10 });
+  await settle();
+  assert.equal(drop.frames[0].removed, true, 'its placeholder goes');
+  await reconnects(drop, 'a drop');
+
+  const entries = Array.from({ length: 30 }, (_, index) => libraryAsset(index, `Tile ${index}`, 400, 200));
+  const more = harness({ saved: browserConnection, prefs: { tab: 'insert' }, console: { ...library(entries), issued: issued() } });
+  await openInsert(more);
+  more.element('browse-images').dispatch('click');
+  await settle();
+  refuse(more, 'assets');
+  more.element('images-more').dispatch('click');
+  await settle();
+  assert.equal(tilesOf(more).length, 24, 'the pages shown stay');
+  await reconnects(more, 'Load more');
 });
 
 test('a browser connection the console refuses says why, with Connect again, never the token form', async () => {

@@ -2,7 +2,7 @@
 // the plugin polls until the person approves there; the console then issues this plugin a draft-only token of its own,
 // saved as a browser connection. The token form (connection.ts) stays the secondary path. Every request goes through
 // http.ts (pairingRequest); the write key stays in memory, and main keeps only the read key (assetlib.pairing.v1), so a
-// reopened plugin resumes the request.
+// reopened plugin resumes the request. Plugin windows share that record, and ask main for the turn before each poll.
 import { DEVICE_STORAGE, PRODUCTION_ORIGIN, formatUserCode, mapHttpError, normalizeConsoleOrigin, pairingUrl, parseClaim, parsePairingStart, validUuid } from '../shared/index.js';
 import type { ClaimAnswer, ClaimedConnection, Connection, PairingHint, PairingRecord, PairingStart } from '../shared/index.js';
 import {
@@ -72,6 +72,14 @@ const pairing = {
 };
 // Workspaces this page's linked layers name (main's connection message), while there is no connection.
 let hints: PairingHint[] = [];
+// The claim-turn awaiting main's answer.
+let turnRequest: { id: number; resolve: (turn: Extract<MainMessage, { type: 'turn' }>) => void } | null = null;
+// An approved connection's save, or a claimed request's adopt-connection, waiting for a Send, Sync, or Insert to end
+// (releaseHeld): switching the connection under it would drop its draft or send it with a token just ended.
+let held: (() => void) | null = null;
+// Cancels asking main first whether another window saved the request's connection, by request id: /cancel follows only
+// if none did.
+const cancelling = new Map<number, { origin: string; readKey: string }>();
 
 /** The connected app, so Connect again offers its workspace first; null unless its IDs are UUIDs. */
 export function hintOfCurrent(): PairingHint | null {
@@ -127,7 +135,9 @@ function cancelOnConsole(origin: string, readKey: string): void {
  * main, and asks main to open the console's connect page. Never `ops.connecting`: Insert and Send keep working while it waits.
  */
 export async function startConnect(hint?: PairingHint | null): Promise<void> {
-  if (pairing.phase === 'starting' || pairing.phase === 'waiting' || pairing.phase === 'saving' || state.ops.connecting) return;
+  // A request runs already: Connect again shows it (the settings may have been closed since).
+  if (pairing.phase === 'starting' || pairing.phase === 'waiting' || pairing.phase === 'saving') { showRequest(); return; }
+  if (state.ops.connecting) return;
   const origin = chosenOrigin();
   const chosen = hint?.origin === origin ? hint : hints.find(item => item.origin === origin) ?? null;
   const ticket = ++pairing.ticket;
@@ -194,6 +204,17 @@ async function poll(): Promise<void> {
   const { origin, readKey } = pairing;
   pairing.inFlight = true;
   pairing.lastSentAt = now;
+  // Another plugin window may hold this request too: one asks at a time, and one that saved its connection hands it over.
+  const turn = await new Promise<Extract<MainMessage, { type: 'turn' }>>(resolve => {
+    turnRequest = { id: nextRequestId(), resolve };
+    post({ type: 'claim-turn', requestId: turnRequest.id, userCode: pairing.userCode, interval: pairing.interval });
+  });
+  if (ticket !== pairing.ticket) return;
+  if (turn.turn !== 'poll') {
+    pairing.inFlight = false;
+    if (turn.turn === 'adopted') connected(); else schedule(turn.after);
+    return;
+  }
   const result = await pairingRequest(pairingUrl(origin, 'claim'), { method: 'POST', bearer: readKey });
   if (ticket !== pairing.ticket) return;
   pairing.inFlight = false;
@@ -243,12 +264,9 @@ function checkNow(): void {
 
 /** Approved: the token the console issued is saved as a browser connection, with the names it gave. */
 function finish(claimed: ClaimedConnection): void {
-  stopTimers();
-  pairing.phase = 'saving';
   const next: Connection = { origin: pairing.origin, ...claimed, method: 'browser', pairing: pairing.userCode };
   pairing.saving = next;
-  pairing.saveRequest = saveConnection(next);
-  scheduleRender();
+  hold(() => { pairing.saveRequest = saveConnection(next); });
 }
 
 /**
@@ -256,11 +274,39 @@ function finish(claimed: ClaimedConnection): void {
  * this one before its answer was lost. Main looks for the connection saved from it.
  */
 function adopt(): void {
+  hold(() => {
+    pairing.adoptRequest = nextRequestId();
+    post({ type: 'adopt-connection', requestId: pairing.adoptRequest, userCode: pairing.userCode });
+  });
+}
+
+/** True while a Send, Sync, or Insert runs, which a connection change would cut short. */
+function operationRunning(): boolean {
+  const { sending, syncing, inserting } = state.ops;
+  return sending || syncing || inserting;
+}
+/**
+ * Saving (or adopting) the request's connection, now or, while an operation runs, once it ends (releaseHeld): "Saving
+ * connection…" meanwhile. Other windows keep off the request (heartbeat).
+ */
+function hold(run: () => void): void {
   stopTimers();
   pairing.phase = 'saving';
-  pairing.adoptRequest = nextRequestId();
-  post({ type: 'adopt-connection', requestId: pairing.adoptRequest, userCode: pairing.userCode });
+  if (operationRunning()) { held = run; heartbeat(); } else run();
   scheduleRender();
+}
+/** Held: this window keeps the request's turn (save-pairing), so no other window asks about it, finds it claimed, and ends its token. */
+function heartbeat(): void {
+  post({ type: 'save-pairing', pairing: record() });
+  pairing.timer = window.setTimeout(() => { pairing.timer = null; if (held) heartbeat(); }, pairing.interval * 1000);
+}
+/** Before each render: a held save or adopt runs once the operation it waited for ended. */
+export function releaseHeld(): void {
+  if (!held || operationRunning()) return;
+  const run = held;
+  held = null;
+  clearTimer();
+  run();
 }
 
 /**
@@ -282,6 +328,7 @@ function reset(): void {
   stopTimers();
   if (pairing.userCode) post({ type: 'clear-pairing', userCode: pairing.userCode });
   Object.assign(pairing, { phase: 'idle', writeKey: null, inFlight: false, saving: null, saveRequest: null, adoptRequest: null, openRequest: null });
+  held = null;
   state.pairingActive = false;
 }
 
@@ -300,12 +347,17 @@ function end(kind: EndKind, text?: string): void {
   (state.connection ? note : connectButton).focus({ preventScroll: true });
 }
 
-/** Cancel: the console is told (fire and forget), and the panel goes back to where the request started. */
+/**
+ * Cancel: the panel goes back to where the request started. Another window may have saved the request's connection
+ * already, which then becomes this one's (adopt-connection, read once); otherwise the console is told (fire and forget).
+ */
 function cancel(): void {
   if (pairing.phase !== 'waiting') return;
   ++pairing.ticket;
   abortPairing();
-  cancelOnConsole(pairing.origin, pairing.readKey);
+  const requestId = nextRequestId();
+  cancelling.set(requestId, { origin: pairing.origin, readKey: pairing.readKey });
+  post({ type: 'adopt-connection', requestId, userCode: pairing.userCode, once: true });
   reset();
   Object.assign(pairing, { ended: null, note: '' });
   setStatus('');
@@ -334,12 +386,35 @@ export function applyPairing(message: Extract<MainMessage, { type: 'connection' 
 
 /** Main's answer to adopt-connection: another window's connection is this one's now, or the request was used elsewhere. */
 export function adopted(message: Extract<MainMessage, { type: 'adopted' }>): void {
+  const cancelled = cancelling.get(message.requestId);
+  if (cancelled) {
+    cancelling.delete(message.requestId);
+    if (!message.adopted) cancelOnConsole(cancelled.origin, cancelled.readKey);
+    return;
+  }
   if (message.requestId !== pairing.adoptRequest) return;
   // The connection arrived with main's connection message; the other window said Connected.
   if (message.adopted) { connected(); return; }
   // Nobody on this device has it: the console ends the token it issued.
   cancelOnConsole(pairing.origin, pairing.readKey);
   end('reused');
+}
+
+/** Main's answer to claim-turn, for the poll waiting on it. */
+export function turned(message: Extract<MainMessage, { type: 'turn' }>): void {
+  if (message.requestId !== turnRequest?.id) return;
+  const { resolve } = turnRequest;
+  turnRequest = null;
+  resolve(message);
+}
+
+/** Connect again while a request runs: the settings open on it (Cancel closes them again), at its Check now. */
+function showRequest(): void {
+  if (state.connection && !settings.open) pairing.openedSettings = true;
+  settings.open = true;
+  scheduleRender();
+  flushRender();
+  connectFocus()?.focus({ preventScroll: true });
 }
 
 /** Main couldn't open the browser (an error for open-connect-page); false when the error is another operation's. */
