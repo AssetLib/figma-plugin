@@ -818,9 +818,11 @@ test('classifyInsertTarget: replace a linked layer, insert into a container, fil
   for (const type of ['TEXT', 'LINE', 'GROUP', 'SECTION', 'SLICE', 'CONNECTOR']) assert.equal(only(layer('4:1', type)).mode, 'new', type);
   assert.deepEqual(classifyInsertTarget([layer('5:1', 'TEXT'), layer('5:2', 'RECTANGLE', { width: 80, height: 300 }), layer('I5:3;1:1', 'ELLIPSE', { width: 240 }),
     layer('5:4', 'GROUP', { children: 2 }), layer('5:5', 'FRAME', { children: 1 })]),
-  { mode: 'fill', label: 'Fill 2 layers', count: 2, nodeIds: ['5:2', 'I5:3;1:1'], containerWidth: 240, containerHeight: 300 },
+  { mode: 'fill', label: 'Fill 2 layers', count: 2, nodeIds: ['5:2', 'I5:3;1:1'], skipped: 3, containerWidth: 240, containerHeight: 300 },
   'text, groups, and frames with children are skipped; the widest and the tallest filled layer size the download');
-  assert.equal(classifyInsertTarget([layer('6:1', 'TEXT'), layer('6:2', 'LINE')]).mode, 'new');
+  assert.deepEqual(classifyInsertTarget([layer('6:1', 'TEXT'), layer('6:2', 'LINE')]), { mode: 'new', label: 'Insert', count: 0, nodeIds: [], beside: true });
+  assert.deepEqual(classifyInsertTarget([layer('9:1', 'RECTANGLE'), layer('9:2', 'RECTANGLE'), layer('9:3', 'RECTANGLE'), layer('9:4', 'TEXT')]),
+    { mode: 'fill', label: 'Fill 3 layers', count: 3, nodeIds: ['9:1', '9:2', '9:3'], skipped: 1, containerWidth: 100, containerHeight: 50 });
   // A sent text, group, or line carries a link too, but takes no image: Insert makes a new frame beside it.
   for (const type of ['TEXT', 'GROUP', 'LINE', 'SECTION']) assert.equal(only(layer('6:3', type, { linked: true })).mode, 'new', `a linked ${type}`);
   assert.equal(only(layer('6:4', 'FRAME', { linked: true, children: 3 })).mode, 'replace', 'a linked frame with layers inside still swaps its image');
@@ -963,4 +965,9 @@ test('a refused Figma connection’s code names why, and Connect again says it',
   // The plugin's 403 rule already reads a Figma connection's refusal as a refused token, not a scope.
   assert.equal(mapHttpError(403, { error: 'Your role in this workspace no longer allows drafts. Ask an owner, then connect again.', code: 'member' }), TOKEN_REFUSED);
   assert.equal(requestTimeoutMs('DELETE'), requestTimeoutMs('GET'), 'Disconnect’s DELETE is timed as a read');
+});
+
+test('introSeen keeps only a boolean preference', () => {
+  for (const introSeen of [true, false]) assert.deepEqual(parsePreferences({ introSeen }), { ...defaultPreferences(), introSeen });
+  for (const introSeen of [null, 1, 'true', {}, []]) assert.deepEqual(parsePreferences({ introSeen }), defaultPreferences());
 });

@@ -207,10 +207,10 @@ export function classifyInsertTarget(nodes: InsertCandidate[]): CanvasTarget {
     }
   }
   const layers = nodes.filter(fillable);
-  if (!layers.length) return { mode: 'new', label: 'Insert', count: 0, nodeIds: [] };
+  if (!layers.length) return { mode: 'new', label: 'Insert', count: 0, nodeIds: [], ...(nodes.length ? { beside: true as const } : {}) };
   const one = layers.length === 1 ? layers[0]! : null;
   return { mode: 'fill', label: one ? `Fill ${named(one)}` : `Fill ${layers.length} layers`, count: layers.length, nodeIds: layers.map(node => node.id),
-    ...(one ? { name: named(one) } : {}), containerWidth: Math.max(...layers.map(node => node.width)), containerHeight: Math.max(...layers.map(node => node.height)) };
+    ...(one ? { name: named(one) } : {}), ...(nodes.length > layers.length ? { skipped: nodes.length - layers.length } : {}), containerWidth: Math.max(...layers.map(node => node.width)), containerHeight: Math.max(...layers.map(node => node.height)) };
 }
 
 /** The smallest WebP by area, else the smallest PNG, within the preview byte cap. */
@@ -333,5 +333,6 @@ export function parsePreferences(value: unknown): Preferences {
     }
   }
   if (typeof value.hintSeen === 'boolean') result.hintSeen = value.hintSeen;
+  if (typeof value.introSeen === 'boolean') result.introSeen = value.introSeen;
   return result;
 }

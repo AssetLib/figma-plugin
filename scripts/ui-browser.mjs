@@ -176,6 +176,8 @@ function installFakes(config) {
   const specs = count <= 7 ? named.slice(0, count) : Array.from({ length: count }, (_, i) => [`screen${Math.floor(i / 8)}.slot${i}`, `Screen ${Math.floor(i / 8)}`, 1000, 1000]);
   const assets = {};
   const placements = specs.map(([key, screen, width, height], i) => {
+    if (config.screenOnly && i === 0) screen = 'Onboarding';
+    if (config.longKey && i === 0) key = config.longKey;
     const art = asset(10000 + i, `${key} art`, width, height);
     assets[art.id] = art;
     const cellArt = { assetId: art.id, via: { arm: null, appearance: null } };
@@ -268,7 +270,7 @@ function installFakes(config) {
     const route = pairing ? pairing[1] ?? 'start' : /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork'
       : path === 'placements' ? 'placements' : /^assets(\?|$)/.test(path) ? 'assets' : /^assets\/[^/]+\/renditions\/[^/]+$/.test(path) ? 'rendition'
         : path === 'drafts' ? 'drafts' : 'unknown';
-    const entry = { route, url, started: performance.now(), done: false, aborted: false };
+    const entry = { route, url, body: typeof init.body === 'string' ? init.body : null, started: performance.now(), done: false, aborted: false };
     log.push(entry);
     const { signal } = init;
     const abort = () => { entry.aborted = true; reject(new DOMException('The operation was aborted.', 'AbortError')); };
@@ -405,7 +407,7 @@ const fakeToken = name => `alk_${name.padEnd(43, '0')}`;
 const DEFAULTS = {
   connection: { origin: 'https://console.assetlib.dev', orgId: 'org-one', appId: 'app-a', token: fakeToken('saved'), workspaceName: 'Sample workspace', appName: 'Sample app' },
   identity: { orgId: 'org-one', appId: 'app-a', workspaceName: 'Sample workspace', appName: 'Sample app', scopes: ['draft'] },
-  preferences: { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1 },
+  preferences: { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1, introSeen: true },
   selection: { node: null, reason: 'Select a frame or layer to send.', fileKey: 'abc123', remembered: null },
   delays: {},
   // What the console issues when one-click Connect is approved: the workspace, the app, and who approved it.
@@ -557,9 +559,11 @@ const timesShown = text => `(() => { let count = 0; const walker = document.crea
   return count; })()`;
 /**
  * The ink primaries a person can see and use: visible, available, and filled with the text colour. Buttons fade their
- * background over 120 ms, so the colours are read once running transitions end.
+ * background over 120 ms, so the colours are read once running transitions end (only transitions: a spinner's animation
+ * never finishes).
  */
-const inkPrimaries = `Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {}))).then(() =>
+const inkPrimaries = `Promise.all(document.getAnimations().filter(animation => animation instanceof CSSTransition)
+  .map(animation => animation.finished.catch(() => {}))).then(() =>
   [...document.querySelectorAll('.primary')].filter(button => button.checkVisibility() && button.getAttribute('aria-disabled') !== 'true'
   && getComputedStyle(button).backgroundColor === getComputedStyle(document.body).color).map(button => button.id))`;
 
@@ -707,7 +711,7 @@ test('the Sync bar shows a linked layer above the footer on both tabs, and Cmd+E
     await page.waitFor(`${rows} === 7`);
     await page.waitFor(shown('selection-bar'));
     assert.equal(await page.evaluate(textOf('sync-title')), 'Linked to home.banner');
-    assert.equal(await page.evaluate(textOf('sync-meta')), 'from Production');
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'Production art');
     assert.equal(await page.evaluate(`document.getElementById('sync-console').href`), `https://console.assetlib.dev/w/org-one/app-a/images/${bannerArt}`);
     await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/')`, { message: 'the linked image’s preview' });
     assert.equal(await page.evaluate(inViewport('selection-bar')), true);
@@ -738,7 +742,8 @@ test('the Sync bar shows a linked layer above the footer on both tabs, and Cmd+E
     await page.click('#tab-send');
     assert.equal(await page.evaluate(shown('selection-bar')), true);
     await page.waitFor(`${inkPrimaries}.then(ids => JSON.stringify(ids) === '["sync"]')`, { message: 'Sync, the primary on Send' });
-    assert.equal(await page.evaluate(`document.getElementById('send').className`), 'secondary');
+    assert.equal(await page.evaluate(shown('send-bar')), false);
+    assert.equal(await page.evaluate(shown('send-plain')), true);
   } finally { await page.close(); }
 
   // Opened from the layer's Sync to Assetlib button: the bar's Sync has focus, and nothing has synced.
@@ -1030,10 +1035,11 @@ const longRebound = (() => {
 // several shapes or one linked layer.
 const longFrame = 'A frame with a long name that has to be shortened somewhere';
 const intoLong = { mode: 'into', label: `Insert into ${longFrame}`, count: 1, nodeIds: ['40:1'], name: longFrame, containerWidth: 390 };
-const fillThree = { mode: 'fill', label: 'Fill 3 layers', count: 3, nodeIds: ['41:1', '41:2', '41:3'], containerWidth: 120 };
+const fillThree = { mode: 'fill', label: 'Fill 3 layers', count: 3, skipped: 1, nodeIds: ['41:1', '41:2', '41:3'], containerWidth: 120 };
 const replaceOne = { mode: 'replace', label: 'Replace image', count: 1, nodeIds: ['42:1'], name: 'home.banner', containerWidth: 390 };
 const intoComponent = { mode: 'into', label: 'Insert into Card', count: 1, nodeIds: ['43:1'], name: 'Card', containerWidth: 390, insideComponent: true };
-const canvasSelection = insertTarget => ({ selection: { ...DEFAULTS.selection, insertTarget } });
+const canvasSelection = insertTarget => ({ selection: { ...(insertTarget.mode === 'replace'
+  ? linkedSelection({ id: '42:1', name: 'home.banner', type: 'FRAME', width: 390, height: 160 }) : DEFAULTS.selection), insertTarget } });
 // A layer linked to home.banner as main reports it (A.7): its link, written on it for this app, names Production art.
 const bannerArt = '00000000-0000-4000-8000-000000010002';
 const linkedSelection = layer => ({ node: layer, reason: null, fileKey: 'abc123', file: { source: 'figma', name: '' },
@@ -1065,7 +1071,7 @@ test('no overflow at 320×480, 420×720, 640×900', async () => {
     // A Sync's Details name other cells by key, and keys run up to 120 characters with no spaces.
     ['Sync’s Details with a long placement key', longRebound,
       async page => { await page.click('#sync'); await page.waitFor(shown('result')); await page.click('#result summary'); }],
-    // The footer's primary names the frame it inserts into, with the hint and Insert as new frame under it.
+    // The footer's primary names the frame it inserts into, with the hint and Insert as new layer under it.
     ['Insert into a frame with a long name', canvasSelection(intoLong),
       async page => { await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
     ['Fill several layers', canvasSelection(fillThree),
@@ -1092,7 +1098,7 @@ test('no overflow at 320×480, 420×720, 640×900', async () => {
   }
 });
 
-test('the selection names the footer’s primary, and Insert as new frame sits under it', async () => {
+test('the selection names the footer’s primary, and Insert as new layer sits under it', async () => {
   const page = await openUi(canvasSelection(intoLong));
   try {
     await page.waitFor(`${rows} === 7`);
@@ -1104,7 +1110,7 @@ test('the selection names the footer’s primary, and Insert as new frame sits u
       const b = document.getElementById('insert-new').getBoundingClientRect(); return { below: b.top >= a.bottom - 0.5, right: Math.round(a.right - b.right) }; })()`),
     { below: true, right: 0 }, 'under the primary, right-aligned with it');
     // The frame's name, quoted and cut to 24 characters, so the note stays short.
-    assert.equal(await page.evaluate(textOf('insert-note')), `Wider than “${longFrame.slice(0, 23)}…” (390\u00a0px). Try 3×.`);
+    assert.equal(await page.evaluate(textOf('insert-note')), `Adds a new layer inside ${longFrame}. Wider than “${longFrame.slice(0, 23)}…” (390 px).`);
     assert.equal(await page.evaluate(shown('scale-group')), true);
     assert.equal(await page.evaluate(inViewport('insert-new')), true);
     await page.click('#insert');
@@ -1139,7 +1145,7 @@ test('the selection names the footer’s primary, and Insert as new frame sits u
     await component.waitFor(`${rows} === 7`);
     await component.click('#insert-list .placement[data-key="home.banner"]');
     assert.deepEqual(await component.evaluate(`[${textOf('insert')}, ${shown('insert-new')}, ${textOf('insert-note')}, ${shown('insert-note')}]`),
-      ['Insert', false, 'Figma doesn’t put components inside components, so this goes beside Card.', true]);
+      ['Insert', false, 'Adds a new layer beside the selection. Figma doesn’t put components inside components, so this goes beside Card.', true]);
     await component.press('Enter');
     await component.waitFor('window.__harness.targets.length === 1');
     assert.deepEqual(await component.evaluate('window.__harness.targets'), [{ kind: 'new' }]);
@@ -1377,8 +1383,8 @@ test('footer, chip, grid, and tile details fit at 420 px', async () => {
     await page.evaluate(choose('insert-arm', 'b'));
     await page.frames();
     // Inherited art: the pickers name the cell, and the line names what it inherits, whole.
-    assert.equal(await page.evaluate(textOf('insert-meta')), 'Draft · Uses Control · Any art');
-    assert.equal(await page.evaluate(`(() => { const el = document.getElementById('insert-meta'); return el.scrollWidth <= el.clientWidth; })()`), true, 'the meta line is not cut');
+    assert.match(await page.evaluate(textOf('insert-meta')), /^→ .+ · Draft · inherits Control · Any art$/);
+    assert.equal(await page.evaluate(`document.getElementById('insert-meta').title === document.getElementById('insert-meta').textContent`), true, 'the full meta is available on hover');
     // Each label sits 4 px from its select and 12 px from the next picker.
     const gaps = await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker:not([hidden])')].map(label => {
       const words = document.createRange(); words.selectNodeContents(label.firstChild);
@@ -1939,7 +1945,7 @@ test('the layout follows the window: an Environment dropdown and value-only pick
     await tagged.frames();
     const edges = await tagged.evaluate(`[...document.querySelectorAll('#insert-list .placement[data-key]')].map(row => [row.querySelector('.tag')?.textContent ?? '',
       Math.round(row.querySelector('.size').getBoundingClientRect().right), row.querySelector('.tag') ? Math.round(row.querySelector('.tag').getBoundingClientRect().right) : null])`);
-    assert.deepEqual(edges.map(([tag]) => tag), ['Draft only', '', 'Changed', 'Unavailable', 'Not set', '', 'Needs re-upload']);
+    assert.deepEqual(edges.map(([tag]) => tag), ['New in Draft', '', 'Changed in Draft', 'Unavailable', 'Not set', '', 'Needs re-upload']);
     assert.equal(new Set(edges.map(([, size]) => size)).size, 1, JSON.stringify(edges));
     assert.equal(new Set(edges.filter(([tag]) => tag).map(([, , right]) => right)).size, 1, 'tags end at the row’s padding');
   } finally { await tagged.close(); }
@@ -2069,6 +2075,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['insert-loading', { delays: { artwork: 8000 } }, page => page.waitFor(skeletonRows)],
     // Nothing chosen: the hint bar sits where the footer goes, until the first insert.
     ['insert-list', { unset: ['home.tile'], legacy: ['settings.empty'] }, ready],
+    ['insert-intro', { preferences: { introSeen: false } }, ready],
     ['insert-hint-seen', { preferences: { hintSeen: true } }, ready],
     ['insert-selected-pickers', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
     ['insert-scale-3x', {}, async page => { await ready(page); await page.click('#insert-list .placement[data-key="onboarding.hero"]'); await page.click('#scale-3'); }],
@@ -2147,7 +2154,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
         bound: null, bindError: 'This placement changed since the plugin loaded it.', rebound: [] } } },
       async page => { await pickBanner(page); await page.click('#send'); await page.waitFor(shown('result')); }],
   ];
-  const narrow = [['narrow-first-run', { connection: null }], ['narrow-account-pasted', {}, async page => { await ready(page); await page.click('#settings-summary'); }], ['narrow-hint', {}, ready], ['narrow-list', { declared: true, placements: 30 },
+  const narrow = [['narrow-intro', { preferences: { introSeen: false } }, ready], ['narrow-first-run', { connection: null }], ['narrow-account-pasted', {}, async page => { await ready(page); await page.click('#settings-summary'); }], ['narrow-hint', {}, ready], ['narrow-list', { declared: true, placements: 30 },
     async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
   ['narrow-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, askForLink],
   ['narrow-sync-bar', { selection: linkedSelection(node) }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
@@ -2221,7 +2228,7 @@ test('Change reveals and focuses the console select, and first run and pasted ac
       assert.equal(await page.evaluate(shown('origin-line')), true);
       assert.equal(await page.evaluate(shown('origin-field')), false);
       assert.equal(await page.evaluate(textOf('origin-host')), 'console.assetlib.dev');
-      assert.equal(await page.evaluate(`document.getElementById('guide-link').href`), 'https://www.assetlib.dev/guide');
+      assert.equal(await page.evaluate(`document.getElementById('guide-link').href`), 'https://www.assetlib.dev/guide#figma');
       assert.equal(await page.evaluate(textOf('guide-link')), 'How the Figma plugin works');
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
       assert.ok(await page.evaluate(`(() => { const r = document.querySelector('#settings .panel').getBoundingClientRect(); return Math.abs((r.left + r.right) / 2 - innerWidth / 2) < 2; })()`));
@@ -2324,4 +2331,172 @@ test('a failed list leaves the primary to the linked layer’s Sync bar', async 
     assert.equal(await page.evaluate(`document.getElementById('insert-retry').className`), 'secondary');
     assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
   } finally { await page.close(); }
+});
+
+// Batch 2: changes to the linked Send action, footer explanations, and first connected view.
+const batch2Fits = `(() => {
+  const width = document.documentElement.clientWidth;
+  const region = document.getElementById('list-region');
+  return document.documentElement.scrollWidth <= width && region.scrollWidth <= region.clientWidth
+    && [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden')).every(el => {
+      const r = el.getBoundingClientRect(); return !r.width || r.right <= width + 0.5;
+    });
+})()`;
+
+test('intro fits, Got it is a tab stop on the callout surface, and screen search finds placements', async () => {
+  for (const theme of ['light', 'dark']) for (const width of [320, 420]) {
+    const page = await openUi({ preferences: { introSeen: false } }, { width, height: 720, theme });
+    try {
+      await page.waitFor(shown('intro'));
+      assert.equal(await page.evaluate(shown('hint-bar')), false);
+      assert.equal(await page.evaluate(batch2Fits), true);
+      assert.equal(await page.evaluate(`document.querySelector('#intro a').href`), 'https://www.assetlib.dev/guide#figma');
+      assert.equal(await page.evaluate(textOf('intro-close')), 'Got it');
+      assert.equal(await page.evaluate(`(() => { const b = document.getElementById('intro-close'); const s = getComputedStyle(b);
+        return b.tabIndex === 0 && s.backgroundColor === getComputedStyle(document.body).backgroundColor && s.borderTopWidth === '1px'; })()`), true);
+      await page.evaluate(`document.querySelector('#intro a').focus()`);
+      await page.press('Tab');
+      assert.equal(await page.focused(), 'intro-close');
+    } finally { await page.close(); }
+  }
+});
+
+test('intro dismissal and first insert persist, and a screen-only search keeps its rows', async () => {
+  const page = await openUi({ preferences: { introSeen: false }, placements: 30, screenOnly: true });
+  try {
+    await page.waitFor(shown('intro'));
+    await page.evaluate(`document.querySelector('#intro a').focus()`);
+    await page.press('Tab');
+    assert.equal(await page.focused(), 'intro-close');
+    await page.press('Enter');
+    await page.waitFor(`!${shown('intro')}`);
+    assert.equal(await page.focused(), 'insert-search');
+    assert.equal(await page.evaluate(`__harness.saved.at(-1).introSeen`), true);
+    assert.equal(await page.evaluate(`document.getElementById('insert-search').placeholder`), 'Search placements or screens');
+    await page.type('Onboarding');
+    await page.waitFor(`${rows} === 1`);
+    assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement').dataset.key`), 'screen0.slot0');
+    // The search carries over to Images, where no image is named Onboarding: the grid's no-results state, still no intro.
+    await page.click('#browse-images'); await page.waitFor(`${tiles} > 0 || ${shown('insert-empty')}`);
+    assert.equal(await page.evaluate(shown('intro')), false);
+  } finally { await page.close(); }
+  const first = await openUi({ preferences: { introSeen: false } });
+  try {
+    await first.waitFor(shown('intro'));
+    await first.click('#insert-list .placement[data-key="home.banner"]');
+    await first.click('#insert');
+    await first.waitFor(`!${shown('intro')}`);
+    assert.equal(await first.evaluate(`__harness.saved.at(-1).introSeen`), true);
+  } finally { await first.close(); }
+});
+
+test('mode notes and Use 3× fit at 320 and 420 px with one primary', async () => {
+  for (const width of [320, 420]) {
+    const page = await openUi(canvasSelection(intoLong), { width, height: 720 });
+    try {
+      await page.waitFor(`${rows} === 7`);
+      await page.click('#insert-list .placement[data-key="home.banner"]');
+      assert.equal(await page.evaluate(textOf('insert-fit-scale')), 'Use 3×');
+      assert.equal(await page.evaluate(batch2Fits), true);
+      assert.match(await page.evaluate(textOf('insert-meta')), /^→ 1170 × 480 · Draft/);
+      assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
+      await page.click('#insert-fit-scale');
+      await page.waitFor(`document.getElementById('scale-3').getAttribute('aria-checked') === 'true'`);
+      assert.equal(await page.evaluate(`__harness.saved.at(-1).scale`), 3);
+      assert.equal(await page.evaluate(textOf('insert-note')), `Adds a new layer inside ${longFrame}.`);
+      assert.equal(await page.evaluate(batch2Fits), true);
+    } finally { await page.close(); }
+    for (const target of [fillThree, replaceOne]) {
+      const page = await openUi(canvasSelection(target), { width, height: 720 });
+      try {
+        await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]');
+        assert.equal(await page.evaluate(textOf('insert-note')), target.mode === 'fill'
+          ? 'Puts this image in 3 layers and links each to home.banner. 1 other selected layer can’t show an image and stay as they are.'
+          : 'Replaces the image in home.banner. It stays linked to home.banner.');
+        assert.equal(await page.evaluate(batch2Fits), true);
+        assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
+      } finally { await page.close(); }
+    }
+  }
+});
+
+test('Send has one primary, a plain upload, and Cmd+Enter announces rather than syncing another picked cell', async () => {
+  const node = { id: '40:1', name: 'Hero', type: 'FRAME', width: 1000, height: 1000 };
+  const key = 'screen0.slot0';
+  const selection = { ...linkedSelection(node), remembered: { fileKey: 'abc123', nodeId: node.id, placementKey: key, state: 'welcome', appearance: 'light', arm: null },
+    link: { ...linkedSelection(node).link, placementKey: key, state: 'welcome', appearance: 'light' } };
+  const page = await openUi({ declared: true, placements: 30, preferences: { tab: 'send' }, selection, delays: { drafts: 200 } });
+  try {
+    await page.waitFor(shown('send-plain'));
+    assert.equal(await page.evaluate(shown('send-bar')), false);
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
+    await page.click('#send-plain');
+    await page.waitFor(`__harness.log.filter(entry => entry.route === 'drafts').length === 1`);
+    await page.waitFor(`!document.getElementById('send').hasAttribute('aria-busy')`);
+    assert.equal(await page.evaluate(`JSON.parse(__harness.log.filter(entry => entry.route === 'drafts').at(-1).body).rebind`), false);
+    await page.evaluate(choose('appearance', 'dark')); await page.frames();
+    assert.equal(await page.evaluate(shown('send-bar')), true);
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['send']);
+    assert.equal(await page.evaluate(textOf('send-relink')), `Sends this layer to the draft of ${key} · welcome · Dark · Control and links it there. Until then it stays linked to ${key} · welcome · Light · Control.`);
+    const command = await page.evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`) ? 4 : 2;
+    await page.press('Enter', command);
+    assert.match(await page.evaluate(textOf('status')), /Enter syncs screen0.slot0 · welcome · Light · Control\. Choose Send to draft to send to screen0.slot0 · welcome · Dark · Control\.$/);
+    assert.equal(await page.evaluate(`__harness.received.filter(type => type === 'export').length`), 1);
+    await page.evaluate(`document.getElementById('send').focus()`);
+    await page.evaluate(choose('appearance', 'light')); await page.frames();
+    assert.equal(await page.focused(), 'tab-send');
+    assert.equal(await page.evaluate(shown('send-bar')), false);
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
+    await page.press('Enter', command);
+    await page.waitFor(`__harness.received.filter(type => type === 'export').length === 2`);
+    assert.equal(await page.evaluate(`JSON.parse(__harness.log.filter(entry => entry.route === 'drafts').at(-1).body).rebind`), true);
+  } finally { await page.close(); }
+});
+
+test('inheritance and Draft tags fit beside a long key at 420 px, and environment tooltips explain releases', async () => {
+  const key = 'onboarding.welcome_carousel_slide_three_hero_illustration_large';
+  for (const declared of [false, true]) {
+    const page = await openUi({ longKey: key, declared }, { width: 420, height: 720 });
+    try {
+      await page.waitFor(`${rows} === 7`);
+      assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement .tag').textContent`), declared ? '10 of 12 inherit' : 'New in Draft');
+      assert.equal(await page.evaluate(batch2Fits), true);
+      assert.equal(await page.evaluate(`(() => { const tag = document.querySelector('#insert-list .placement .tag'); return tag.scrollWidth <= tag.clientWidth; })()`), true);
+      assert.equal(await page.evaluate(`document.getElementById('env-draft').title`), 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.');
+      // The fixture's release is midnight UTC; the plugin names its day in local time, as Chrome and Node share it here.
+      const released = new Date('2026-10-01T00:00:00.000Z');
+      const day = `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][released.getMonth()]} ${released.getDate()}`
+        + (released.getFullYear() === new Date().getFullYear() ? '' : `, ${released.getFullYear()}`);
+      assert.equal(await page.evaluate(`document.getElementById('env-production').title`), `Production: the release published to your app’s users. Release 4, ${day}.`);
+      assert.equal(await page.evaluate(`document.getElementById('env-staging').title`), 'Nothing published to Staging yet.');
+      assert.equal(await page.evaluate(`document.getElementById('env-staging').disabled`), true);
+      await page.click('#insert-list .placement');
+      assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
+    } finally { await page.close(); }
+  }
+});
+
+test('copy Send chooses another cell and ratio callouts describe the result', async () => {
+  const node = { id: '40:1', name: 'Copy', type: 'FRAME', width: 1000, height: 1000 };
+  const page = await openUi({ declared: true, placements: 30, selection: { node, reason: null, fileKey: 'abc123', remembered: null,
+    link: { ...linkedSelection(node).link, kind: 'copy', placementKey: 'screen0.slot0', state: 'welcome', appearance: 'light', arm: null } } });
+  try {
+    await page.waitFor(`${rows} === 30`);
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'Copies aren’t linked. Send it to a cell of screen0.slot0.');
+    await page.click('#sync-send');
+    assert.equal(await page.focused(), 'state');
+    assert.deepEqual(await page.evaluate(`['state', 'appearance', 'arm'].map(id => document.getElementById(id).value)`), ['welcome', '', 'b']);
+    // The click left the pointer where the footer now is; move it off so Send shows its own colour, not its hover.
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }); await page.frames();
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['send']);
+  } finally { await page.close(); }
+  for (const height of [844, 170]) {
+    const ratio = await openUi({ preferences: { tab: 'send' }, selection: { node: { ...node, width: 390, height }, reason: null, fileKey: 'abc123', remembered: null } });
+    try {
+      await ratio.waitFor(`document.getElementById('placement').options.length > 1`);
+      await ratio.evaluate(choose('placement', 'home.banner')); await ratio.frames();
+      assert.equal((await ratio.evaluate(textOf('aspect-text'))).replaceAll('\u00a0', ' '), `This frame is 390 × ${height}. home.banner needs 2.44 : 1 (1170 × 480). Match ratio makes it 390 × 160.${height === 844 ? ' Or choose a placement that fits.' : ''}`);
+      assert.ok((await ratio.evaluate(inkPrimaries)).length <= 1);
+    } finally { await ratio.close(); }
+  }
 });

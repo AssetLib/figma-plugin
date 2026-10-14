@@ -144,7 +144,7 @@ function place(config: Connection, target: InsertDestination, selection: readonl
   const marker = link ? placementMarker(config, link.placementKey, frame) : null;
   const container = target.kind === 'into' ? selection[0] as FrameNode | ComponentNode : null;
   // Figma puts no component inside another; the UI offers Insert beside one instead.
-  if (container && marker && inComponent(container)) throw new Error(`Placement art is a component, and Figma can’t put one inside ${container.name}. Choose Insert as new frame.`);
+  if (container && marker && inComponent(container)) throw new Error(`Placement art is a component, and Figma can’t put one inside ${container.name}. Choose Insert as new layer.`);
   const component = marker ? figma.createComponent() : null;
   const node: ComponentNode | FrameNode = component ?? figma.createFrame();
   node.name = name;
@@ -156,7 +156,7 @@ function place(config: Connection, target: InsertDestination, selection: readonl
     try { container.appendChild(node); }
     catch {
       node.remove();
-      throw new Error(`Figma couldn’t put the image inside ${container.name}. Choose Insert as new frame.`);
+      throw new Error(`Figma couldn’t put the image inside ${container.name}. Choose Insert as new layer.`);
     }
     // Auto layout places the child itself; any other container centers it.
     if (!container.layoutMode || container.layoutMode === 'NONE') {
@@ -207,7 +207,7 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
     } else unlinked.push(node);
   }
   const first = filled[0];
-  if (!first) throw new Error('Figma couldn’t fill this layer. Choose Insert as new frame.');
+  if (!first) throw new Error('Figma couldn’t fill this layer. Choose Insert as new layer.');
   const skipped = layers.length - filled.length;
   // Placement art is named by its key; a library image by its name.
   const art = link ? link.placementKey : name;

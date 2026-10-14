@@ -10,7 +10,7 @@ import {
   applyPreferences, connectionKept, dropped, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
   renderInsertControls, renderList, resetInsert, rowFor, savePreferences,
 } from './insert.js';
-import { applyFileUrl, applySelection, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport } from './send.js';
+import { applyFileUrl, applySelection, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { actionsBlocked, state } from './state.js';
 import { initSyncBar, launched, renderSyncBar, syncFromKeyboard } from './syncbar.js';
 import type { ReadFailure } from './state.js';
@@ -36,7 +36,7 @@ function render(): void {
   rovingStops([tabInsert, tabSend]);
   element('panel-send').hidden = firstRun || tab !== 'send';
   element('panel-insert').hidden = firstRun || tab !== 'insert';
-  element('send-bar').hidden = firstRun || tab !== 'send';
+  element('send-bar').hidden = firstRun || tab !== 'send' || sendHidden();
   renderConnection();
   renderConnect();
   renderSend(problemInSettings());

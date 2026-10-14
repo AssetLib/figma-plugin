@@ -5,7 +5,7 @@ import {
   placementMeta, pngSize, reconnectText, refusalCode, renditionPath, tokenRefused,
 } from '../shared/index.js';
 import type {
-  Appearance, ArtworkResponse, CanvasTarget, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
+  Appearance, ArtworkResponse, CanvasTarget, CellArtwork, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
 } from '../shared/index.js';
 import type { InsertDestination, MainMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
@@ -17,7 +17,7 @@ import {
 } from './dom.js';
 import { readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
-import { syncBar } from './send.js';
+import { bindingLabel, syncBar } from './send.js';
 import { NEW_FRAME, actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, refusedToken, state } from './state.js';
 import type { ReadFailure } from './state.js';
 import { releaseListImages, resetThumbnails, retryFailedThumbnails, showThumbnail, thumbnailFrame } from './thumbnails.js';
@@ -119,11 +119,11 @@ function shortDate(value: string): string {
 }
 /** Each environment's tooltip: what it is, and its release when one is published. */
 function environmentTitle(name: EnvironmentName): string {
-  if (name === 'draft') return 'Unpublished changes. Send and Sync update Draft.';
+  if (name === 'draft') return 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.';
   if (artwork && !published(name)) return `Nothing published to ${environmentLabel(name)} yet.`;
   const meta = artwork?.environments[name];
   const release = meta ? ` Release ${meta.sequence}${shortDate(meta.createdAt) ? `, ${shortDate(meta.createdAt)}` : ''}.` : '';
-  return `The latest release published to ${name}.${release}`;
+  return `${environmentLabel(name)}: the release published ${name === 'staging' ? 'for testing' : 'to your app’s users'}.${release}`;
 }
 function environmentNote(): string {
   if (state.previewNote) return state.previewNote;
@@ -157,27 +157,47 @@ function besideComponent(canvas: CanvasTarget, target: InsertTarget | null): boo
 /** What Insert does with this choice and the canvas selection. */
 function canvasTarget(target: InsertTarget | null): CanvasTarget {
   const canvas = reportedTarget();
-  return besideComponent(canvas, target) ? NEW_FRAME : canvas;
+  return besideComponent(canvas, target) ? { ...NEW_FRAME, beside: true } : canvas;
 }
 /** A fill or a replace keeps the layer's size, so Insert at does not apply. */
 function filling(canvas: CanvasTarget): boolean { return canvas.mode === 'fill' || canvas.mode === 'replace'; }
 /** A side in Figma when Insert at divides it, rounded as main rounds it. */
 function side(value: number, scale: number): number { return Math.round((value / scale) * 100) / 100; }
-/** The frame size in Figma when Insert at divides it, or nothing at 1× or for a fill. */
+/** The frame size in Figma when Insert at divides it, or nothing for a fill. */
 function scaledSize(frame: { width: number; height: number }): string {
   const { scale } = state.prefs;
-  return scale === 1 || filling(reportedTarget()) ? '' : `→ ${side(frame.width, scale)} × ${side(frame.height, scale)}`;
+  return filling(reportedTarget()) ? '' : `→ ${side(frame.width, scale)} × ${side(frame.height, scale)}`;
 }
 /** A layer's name quoted in a note, cut to 24 characters so the note stays short in a narrow window. */
 function quoted(name: string): string { return `“${name.length > 24 ? `${name.slice(0, 23)}…` : name}”`; }
 /** Into a container narrower than the new frame: a hint naming an Insert at that fits. Insert stays available. */
-function widthHint(frame: { width: number }, canvas: CanvasTarget): string {
+function widthHint(frame: { width: number }, canvas: CanvasTarget): { text: string; fits?: 2 | 3 } {
   const width = canvas.containerWidth;
   const { scale } = state.prefs;
-  if (canvas.mode !== 'into' || !width || side(frame.width, scale) <= width) return '';
+  if (canvas.mode !== 'into' || !width || side(frame.width, scale) <= width) return { text: '' };
   const fits = ([2, 3] as const).find(next => next > scale && side(frame.width, next) <= width);
-  return `Wider than ${canvas.name ? quoted(canvas.name) : 'this frame'} (${Number(width.toFixed(2))}\u00a0px).${fits ? ` Try ${fits}×.` : ''}`;
+  return { text: `Wider than ${canvas.name ? quoted(canvas.name) : 'this frame'} (${Number(width.toFixed(2))} px).`, fits };
 }
+/** The destination and link effects, before any width or component limitation. */
+function modeNote(canvas: CanvasTarget, target: InsertTarget): string {
+  const label = (link: InsertLink) => bindingLabel({ ...link, slotKey: link.placementKey });
+  const cell = target.link ? label(target.link) : null;
+  const old = state.selection.link?.kind === 'linked' ? state.selection.link : null;
+  let note = '';
+  if (canvas.mode === 'replace' && old) {
+    const same = !target.link || (target.link.placementKey === old.placementKey && target.link.state === old.state
+      && target.link.appearance === old.appearance && target.link.arm === old.arm);
+    note = same ? `Replaces the image in ${canvas.name}. It stays linked to ${label(old)}.`
+      : `Replaces the image in ${canvas.name} and relinks it from ${label(old)} to ${cell}.`;
+  } else if (canvas.mode === 'fill') {
+    note = canvas.count === 1 ? `Puts this image in ${canvas.name}${cell ? ` and links it to ${cell}` : ''}. Its size and position stay.`
+      : `Puts this image in ${canvas.count} layers${cell ? ` and links each to ${cell}` : ''}.`;
+    if (canvas.skipped) note += ` ${canvas.skipped} other selected layer${canvas.skipped === 1 ? '' : 's'} can’t show an image and stay as they are.`;
+  } else if (canvas.mode === 'into') note = `Adds a new layer inside ${canvas.name}.`;
+  else if (canvas.beside) note = 'Adds a new layer beside the selection.';
+  return note;
+}
+
 /** Why an image can't be inserted, with a console link to it, or null when it can. */
 function blocked(asset: LibraryAsset, connection: Connection | null): { note: string; link: string | null } | null {
   if (insertRendition(asset)) return null;
@@ -210,7 +230,7 @@ function insertTarget(choice = selected): InsertTarget | null {
     if (!asset) return { ...target, note: 'The console didn’t return this image. Refresh to try again.' };
     // The link names the picked cell, never the family it inherits from, so a Sync never touches the base art.
     const inherited = art.via.arm !== cell.arm || art.via.appearance !== cell.appearance;
-    const meta = inherited ? `${target.meta} · Uses ${art.via.arm ?? 'Control'} · ${appearanceLabel(art.via.appearance)} art` : target.meta;
+    const meta = inherited ? `${target.meta} · inherits ${art.via.arm ?? 'Control'} · ${appearanceLabel(art.via.appearance)} art` : target.meta;
     const stop = blocked(asset, state.connection);
     return { ...target, meta, ready: !stop, note: stop?.note ?? '', noteLink: stop?.link ?? null,
       link: { placementKey: placement.key, state: cell.state, appearance: cell.appearance, arm: cell.arm, environment: shown, assetId: art.assetId } };
@@ -299,7 +319,16 @@ function selectionChanged(id: string): void {
   rows.get(id)?.scrollIntoView({ block: 'nearest' });
 }
 type Tag = { word: string; title: string; blocking: boolean };
-/** A row's tag: a word in meta with a dot, or, when Insert can't use the art, a word in text with a warning glyph. */
+/** Own art has exactly this cell's family; inherited art is present but belongs to another family. */
+function owns(art: CellArtwork | null, cell: CellCoordinate): boolean {
+  return art !== null && art.via.arm === cell.arm && art.via.appearance === cell.appearance;
+}
+function axesLabel(placement: PlacementArtwork, cell: CellCoordinate): string {
+  return [cell.arm, cell.appearance ?? (cell.arm ? 'Any' : null), placement.states && cell.state !== placement.defaultState ? cell.state : null]
+    .filter(part => part !== null).join(' · ') || 'Any';
+}
+function listed(items: string[]): string { return [...items.slice(0, 6), ...(items.length > 6 ? [`and ${items.length - 6} more`] : [])].join(', '); }
+/** A row's tag: a word in meta, or a warning glyph when Insert cannot use the base art. */
 function rowTag(placement: PlacementArtwork): Tag | null {
   const base = findCell(placement, baseCoordinate(placement));
   const shown = shownEnvironment();
@@ -308,10 +337,23 @@ function rowTag(placement: PlacementArtwork): Tag | null {
   const asset = artworkAsset(artwork, art);
   if (!asset) return { word: 'Unavailable', title: 'The console didn’t return this image. Refresh to try again.', blocking: true };
   if (!asset.renditions.length) return { word: 'Needs re-upload', title: 'Upload it again in the Assetlib console to use it in Figma.', blocking: true };
-  if (shown !== 'draft' || !artwork.environments.production) return null;
-  if (!base?.production) return { word: 'Draft only', title: 'Production has no image here yet.', blocking: false };
-  return base.production.assetId !== art.assetId ? { word: 'Changed', title: 'Draft differs from Production.', blocking: false } : null;
+  if (shown === 'draft' && artwork.environments.production) {
+    const own = placement.cells.filter(cell => owns(cell.draft, cell));
+    if (own.some(cell => !cell.production)) return { word: 'New in Draft', title: 'Draft has art that isn’t in Production yet. It goes out when someone publishes.', blocking: false };
+    const changed = own.filter(cell => cell.draft!.assetId !== cell.production?.assetId);
+    if (changed.length) return { word: 'Changed in Draft', title: `Draft differs from Production in ${changed.length} cells: ${listed(changed.map(cell => axesLabel(placement, cell)))}`, blocking: false };
+  }
+  const inherited = placement.cells.filter(cell => cell !== base && cell[shown] !== null && !owns(cell[shown], cell));
+  return inherited.length ? { word: `${inherited.length} of ${placement.cells.length} inherit`,
+    title: `These cells show other cells’ art: ${listed(inherited.map(cell => axesLabel(placement, cell) + ' → ' + axesLabel(placement, { ...cell, ...cell[shown]!.via })))}`, blocking: false } : null;
 }
+/** Prefer another cell without its own Draft art, including one showing inherited art. */
+export function otherCell(key: string, cell: CellCoordinate): CellCoordinate | null {
+  if (!artwork || artworkGeneration !== state.connectionGeneration) return null;
+  const others = artwork.placements.find(item => item.key === key)?.cells.filter(item => item.state !== cell.state || item.appearance !== cell.appearance || item.arm !== cell.arm) ?? [];
+  return others.find(item => !owns(item.draft, item)) ?? others[0] ?? null;
+}
+
 function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HTMLElement {
   const row = document.createElement('div');
   row.className = 'placement';
@@ -484,7 +526,13 @@ export function renderList(): void {
   updateSelected();
   listState = empty;
   renderEmpty(listState);
+  renderIntro();
   element('images-more').hidden = browse !== 'images' || !images?.nextCursor;
+}
+
+function renderIntro(): void {
+  element('intro').hidden = !state.connection || state.prefs.tab !== 'insert' || state.prefs.browse !== 'placements'
+    || !artwork?.placements.length || state.prefs.introSeen === true || listError !== null || listState !== null;
 }
 
 export function renderInsertControls(): void {
@@ -494,7 +542,7 @@ export function renderInsertControls(): void {
   rovingStops(browseButtons);
   // Typing stays possible while a list loads; a new search replaces the load.
   searchInput.disabled = !state.connection;
-  const label = browse === 'placements' ? 'Search placements' : 'Search images';
+  const label = browse === 'placements' ? 'Search placements or screens' : 'Search images';
   searchInput.placeholder = label;
   searchInput.setAttribute('aria-label', label);
   searchClear.hidden = !searchInput.value;
@@ -529,6 +577,7 @@ export function renderInsertControls(): void {
   }
   // Opening or closing the connection settings shows or hides a failure the settings say instead.
   renderEmpty(listState);
+  renderIntro();
 }
 export function renderInsertBar(): void {
   const target = insertTarget();
@@ -544,7 +593,11 @@ export function renderInsertBar(): void {
   const canvas = canvasTarget(target);
   const reported = reportedTarget();
   const beside = besideComponent(reported, target) ? `Figma doesn’t put components inside components, so this goes beside ${reported.name ?? 'the selection'}.` : '';
-  const note = target?.note || (target?.ready ? beside || widthHint(target.frame, canvas) : '');
+  const width = target?.ready ? widthHint(target.frame, canvas) : { text: '' };
+  const note = target?.note || (target?.ready ? [modeNote(canvas, target), beside || width.text].filter(Boolean).join(' ') : '');
+  const fit = element('insert-fit-scale');
+  fit.hidden = !width.fits || Boolean(target?.note);
+  fit.textContent = width.fits ? `Use ${width.fits}×` : '';
   element('insert-note').textContent = note;
   element('insert-note').hidden = !note;
   const noteLink = element<HTMLAnchorElement>('insert-note-link');
@@ -578,7 +631,7 @@ export function renderInsertBar(): void {
   // How to insert, until the first insert or until closed; the footer takes its place while something is chosen.
   // The Sync bar, when it shows, is what the selection is about.
   hintBar.hidden = !state.connection || state.prefs.tab !== 'insert' || !insertBar.hidden || state.prefs.hintSeen === true || rows.size === 0
-    || syncBar() !== null;
+    || syncBar() !== null || !element('intro').hidden;
 }
 
 /** Opens the Insert tab's list for this connection, unless it is loaded or loading. Waits for the connection test. */
@@ -801,7 +854,7 @@ function download(config: Connection, generation: number, asset: LibraryAsset, r
 
 /**
  * Insert, Insert into, Fill, or Replace image, as the canvas selection decides when it is chosen (main refuses it if the
- * selection changes during the download); `asNew`, Insert as new frame. A fill downloads only what the layer needs.
+ * selection changes during the download); `asNew`, Insert as new layer. A fill downloads only what the layer needs.
  */
 async function beginInsert(asNew = false): Promise<void> {
   const config = state.connection;
@@ -950,8 +1003,8 @@ export function inserted(message: Extract<MainMessage, { type: 'inserted' }>): v
   pendingInsert = null;
   state.ops.inserting = false;
   setStatus(sentence(message.notice));
-  // The first insert (or drop) retires the hint for good.
-  if (!state.prefs.hintSeen) { state.prefs.hintSeen = true; savePreferences(); }
+  // The first insert (or drop) retires the hint and intro for good.
+  if (!state.prefs.hintSeen || !state.prefs.introSeen) { state.prefs.hintSeen = true; state.prefs.introSeen = true; savePreferences(); }
   scheduleRender();
 }
 
@@ -1110,6 +1163,17 @@ function listKeydown(event: KeyboardEvent): void {
 }
 
 export function initInsert(goToSend: () => void): void {
+  element('intro-close').addEventListener('click', () => {
+    state.prefs.introSeen = true;
+    savePreferences();
+    scheduleRender();
+    searchInput.focus();
+  });
+  element('insert-fit-scale').addEventListener('click', () => {
+    const target = insertTarget();
+    const fits = target?.ready ? widthHint(target.frame, canvasTarget(target)).fits : undefined;
+    if (fits) setScale(fits);
+  });
   element('browse-placements').addEventListener('click', () => setBrowse('placements'));
   element('browse-images').addEventListener('click', () => setBrowse('images'));
   for (const name of ENVIRONMENTS) element(`env-${name}`).addEventListener('click', () => setEnvironment(name));

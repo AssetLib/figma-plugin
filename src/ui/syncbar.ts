@@ -4,8 +4,8 @@
 import { consoleLink } from '../shared/index.js';
 import { startConnect } from './connect.js';
 import { element, flushRender, setBusy, setUnavailable } from './dom.js';
-import { linkedArt } from './insert.js';
-import { beginSync, matchRatio, prefillSend, sendElsewhere, sendRatioPlacement, syncAvailable, syncBar } from './send.js';
+import { linkedArt, otherCell } from './insert.js';
+import { announceSyncTarget, beginSync, matchRatio, otherDeclaredCell, prefillSend, sendElsewhere, sendOtherCell, sendRatioPlacement, syncAvailable, syncBar } from './send.js';
 import type { SyncBar } from './send.js';
 import { actionsBlocked, state } from './state.js';
 import { showThumbnail } from './thumbnails.js';
@@ -32,14 +32,14 @@ export function renderSyncBar(): void {
   // The title says what the layer is linked to, in one line; why it can't sync is the meta's sentence, on up to two.
   const title = !shown ? '' : shown.kind === 'linked' || shown.kind === 'removed' ? `Linked to ${shown.key}` : shown.kind === 'copy' ? 'Copy of a linked frame'
     : 'Linked to another workspace';
-  const meta = !shown ? '' : shown.kind === 'linked' ? ratio ?? shown.meta : shown.kind === 'copy' ? `Copies aren’t linked. Send it to replace ${shown.key}’s draft.`
+  const meta = !shown ? '' : shown.kind === 'linked' ? ratio ?? shown.meta : shown.kind === 'copy' ? `Copies aren’t linked. Send it to a cell of ${shown.key}.`
     : shown.kind === 'removed' ? `This ${shown.cell ? 'cell' : 'placement'} no longer exists in this app.`
       : shown.hint ? 'Switch to that workspace to sync it.' : 'Connect to that workspace to sync it.';
   element('sync-title').textContent = title;
   element('sync-meta').textContent = meta;
   element('sync-meta').hidden = !meta;
   // The whole of what a narrow window shortens, on hover.
-  bar.title = linked ? `${linked.detail}${ratio ? ` ${ratio}` : ''}` : [title, meta].filter(Boolean).join(' ');
+  bar.title = linked ? `${linked.detail}${ratio ? ` ${ratio}` : ''} Sync updates Draft only; publishing stays in the console.` : [title, meta].filter(Boolean).join(' ');
   const art = linked ? linkedArt(linked.key, linked.cell, linked.assetId) : shown?.kind === 'copy' ? linkedArt(shown.key, shown.link, shown.link.assetId) : null;
   showThumbnail(thumb, bar.hidden ? null : art);
   // No image to show (another workspace's link, a removed placement, art not loaded yet): no empty square that reads as a broken one.
@@ -51,8 +51,8 @@ export function renderSyncBar(): void {
   // ratio, the one action that helps.
   const footer = state.prefs.tab === 'insert' && !element('insert-bar').hidden;
   const recovering = state.tokenRefused && element<HTMLDetailsElement>('settings').open && !state.pairingActive;
-  syncButton.className = footer || ratio || recovering ? 'secondary' : 'primary';
-  matchButton.className = ratio && !footer && !recovering ? 'primary small' : 'secondary small';
+  syncButton.className = footer || ratio || recovering || sendOtherCell() ? 'secondary' : 'primary';
+  matchButton.className = ratio && !footer && !recovering && !sendOtherCell() ? 'primary small' : 'secondary small';
   matchButton.hidden = !ratio;
   setUnavailable(matchButton, actionsBlocked());
   sendButton.hidden = shown?.kind !== 'copy' && shown?.kind !== 'removed';
@@ -77,6 +77,7 @@ export function launched(): void { focusOnLaunch = true; }
 /** Cmd+Enter (Ctrl+Enter off Apple platforms): Sync while the bar offers it. False when the bar doesn't, so the key is left alone. */
 export function syncFromKeyboard(): boolean {
   if (!shown || shown.kind !== 'linked' || bar.hidden) return false;
+  if (sendOtherCell()) { announceSyncTarget(); return true; }
   if (syncAvailable()) beginSync();
   return true;
 }
@@ -86,14 +87,16 @@ export function initSyncBar(actions: { showSend: () => void }): void {
   syncButton.addEventListener('click', () => beginSync());
   matchButton.addEventListener('click', () => { if (shown?.kind === 'linked' && shown.placement && !actionsBlocked()) matchRatio(shown.placement); });
   switchButton.addEventListener('click', () => { if (shown?.kind === 'other' && shown.hint) void startConnect(shown.hint); });
-  // A copy is sent to its link's placement and cell, without rebind; a removed target to a placement the person chooses.
+  // A copy prefers another cell without its own Draft art; a removed target needs a placement chosen by the person.
   sendButton.addEventListener('click', () => {
     const current = shown;
-    if (current?.kind === 'copy') prefillSend(current.link);
-    else if (current?.kind === 'removed') sendElsewhere();
+    if (current?.kind === 'copy') {
+      const cell = otherCell(current.key, current.link) ?? otherDeclaredCell(state.placements.find(item => item.key === current.key), current.link) ?? current.link;
+      prefillSend({ placementKey: current.key, ...cell });
+    } else if (current?.kind === 'removed') sendElsewhere();
     else return;
     showSend();
     flushRender();
-    element(current.kind === 'copy' ? 'send' : 'placement').focus();
+    element(current.kind === 'copy' ? ['state', 'appearance', 'arm'].find(id => !element(`${id}-label`).hidden) ?? 'send' : 'placement').focus();
   });
 }

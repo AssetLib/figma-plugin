@@ -181,6 +181,10 @@ export interface CanvasTarget {
    * there, so placement art, a component, goes beside it; a library image, a frame, still goes in.
    */
   insideComponent?: true;
+  /** Selected layers skipped by a fill because they cannot show an image. */
+  skipped?: number;
+  /** New layer beside a selection that cannot take the image. */
+  beside?: true;
 }
 
 /** pluginData `assetlib.link.v1` on an inserted frame. It never holds the token. */
@@ -198,7 +202,8 @@ export interface Preferences {
   browse: 'placements' | 'images';
   environment: EnvironmentName;
   scale: 1 | 2 | 3;
-  // Optional, absent until set: the window size the person dragged the grip to, and whether the insert hint was dismissed.
+  // Optional, absent until set: the window size the person dragged the grip to, and whether the insert hint and intro were dismissed.
   window?: { width: number; height: number };
   hintSeen?: boolean;
+  introSeen?: boolean;
 }

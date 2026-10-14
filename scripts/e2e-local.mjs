@@ -205,7 +205,8 @@ async function runToken() {
     if (!rendition || rendition.mime !== 'image/png') { skipped += 1; log(`skip - ${PLACEMENT} in ${environment} has no PNG to insert without a browser`); continue; }
     el(`env-${environment}`).dispatch('click');
     rowFor(PLACEMENT).dispatch('click');
-    assert.match(el('insert-meta').textContent, new RegExp(`^${environment[0].toUpperCase()}${environment.slice(1)}( · |$)`));
+    // The footer names the environment, after the size a new layer inserts at (at 1× too); a replace has no size.
+    assert.match(el('insert-meta').textContent, new RegExp(`^(→ \\d+ × \\d+ · )?${environment[0].toUpperCase()}${environment.slice(1)}( · |$)`));
     await selectNothing();
     assert.equal(el('insert').textContent, 'Insert');
     const frames = app.frames.length;
@@ -293,7 +294,7 @@ async function runToken() {
   app.select([inserted.draft]);
   await waitFor(() => app.mainMessages.length > selections && lastSelection()?.node?.id === inserted.draft.id, { message: 'the selection report' });
   await waitFor(() => !unavailable('sync'), { message: 'Sync to be ready' });
-  assert.equal(el('sync-meta').textContent, 'from Draft');
+  assert.equal(el('sync-meta').textContent, 'Draft art');
   el('sync').dispatch('click');
   assert.equal(el('file-fallback').hidden, false, 'the first Sync asks for the file link');
   assert.equal(app.drafts().length, 0);
@@ -331,7 +332,7 @@ async function runToken() {
   assert.deepEqual(after.environments, before.environments);
   if (after.environments.production) {
     const tags = descendants(rowFor(PLACEMENT)).filter(item => /^tag( |$)/.test(item.className ?? '')).map(item => item.textContent);
-    assert.deepEqual(tags, [base1.production ? 'Changed' : 'Draft only']);
+    assert.deepEqual(tags, [base1.production ? 'Changed in Draft' : 'New in Draft']);
   }
   ok(`GET placements/artwork after Sync: draft ${PLACEMENT} is ${created.id} via its own cell; staging and production unchanged`);
 
@@ -391,7 +392,7 @@ async function firePoll() {
   await new Promise(resolve => setTimeout(resolve, 2100));
   // Connected meanwhile: the timers left are the connection test's, not a poll.
   if (el('app').getAttribute('data-view') === 'shell') return;
-  const delays = [...app.timers.values()].map(timer => timer.delay).filter(delay => delay !== 30000);
+  const delays = [...app.timers.values()].map(timer => timer.delay).filter(delay => delay !== 15000);
   if (delays.length) app.fireTimers(Math.min(...delays));
   await waitFor(() => inFlight === 0, { message: 'the poll' });
 }

@@ -9,7 +9,7 @@ import type { Appearance, CellBinding, Connection, DraftResult, InsertLink, Pair
 import { CONNECTION_REPLACED } from '../shared/protocol.js';
 import type { MainMessage, RememberedTarget } from '../shared/protocol.js';
 import {
-  announceError, clearError, element, errorText, flushRender, inField, post, reloadConnection, scheduleRender, sentence, setBusy, setStatus, setUnavailable,
+  COMMAND, announceError, clearError, element, errorText, flushRender, inField, post, reloadConnection, scheduleRender, sentence, setBusy, setStatus, setUnavailable,
   showError, toast,
 } from './dom.js';
 import { send } from './http.js';
@@ -68,6 +68,30 @@ function rememberedBinding(): { placement: Placement; bind: CellBinding } | null
   try {
     return { placement, bind: validateBinding(placement, { slotKey: target.placementKey, state: target.state, appearance: target.appearance, arm: target.arm }) };
   } catch { return null; }
+}
+/** An empty placement picker does not ask to move the layer's link. */
+function pickedDiffers(): boolean {
+  const remembered = rememberedBinding();
+  const placement = chosenPlacement();
+  if (!remembered || !placementPicker.value) return false;
+  try { return !placement || !sameCell(chosenBinding(placement), remembered.bind); } catch { return true; }
+}
+export function sendHidden(): boolean { return rememberedBinding() !== null && !pickedDiffers(); }
+export function sendOtherCell(): boolean { return state.prefs.tab === 'send' && pickedDiffers(); }
+export function announceSyncTarget(): void {
+  const remembered = rememberedBinding();
+  const placement = chosenPlacement();
+  if (remembered && placement) {
+    try { setStatus(`${COMMAND}+Enter syncs ${bindingLabel(remembered.bind)}. Choose Send to draft to send to ${bindingLabel(chosenBinding(placement))}.`); } catch { /* invalid picker */ }
+  }
+}
+export function otherDeclaredCell(placement: Placement | undefined, cell: Pick<CellBinding, 'state' | 'appearance' | 'arm'>): Pick<CellBinding, 'state' | 'appearance' | 'arm'> | null {
+  if (!placement) return null;
+  const options = cellOptions(placement);
+  for (const state of options.states) for (const appearance of options.appearances) for (const arm of options.arms) {
+    if (state !== cell.state || appearance !== cell.appearance || arm !== cell.arm) return { state, appearance, arm };
+  }
+  return null;
 }
 function setOptions(picker: HTMLSelectElement, values: (string | null)[], label: (value: string | null) => string): void {
   picker.replaceChildren(...values.map(value => new Option(label(value), value ?? '')));
@@ -131,11 +155,14 @@ function ratioBlocks(placement: Placement | undefined | null): placement is Plac
 /** Why the ratio blocks Send (the callout) or Sync (the bar, which also says what Match ratio makes of the layer). */
 function ratioText(placement: Placement, forSend: boolean): string {
   const node = state.selection.node!;
-  if (forSend) {
-    return `This frame is ${sizeLabel(node)}. ${placement.key} needs ${ratioLabel(placement)} (${sizeLabel(placement)}). Resize the frame or match the ratio.`;
-  }
   let matched = '';
-  try { matched = ` Match ratio makes it ${sizeLabel({ width: node.width, height: matchedHeight(node.width, placement) })}.`; } catch { /* no size to name */ }
+  let largeChange = false;
+  try {
+    const height = matchedHeight(node.width, placement);
+    matched = ` Match ratio makes it ${sizeLabel({ width: node.width, height })}.`;
+    largeChange = Math.abs(height - node.height) > node.height / 2;
+  } catch { /* no size to name */ }
+  if (forSend) return `This frame is ${sizeLabel(node)}. ${placement.key} needs ${ratioLabel(placement)} (${sizeLabel(placement)}).${matched}${largeChange ? ' Or choose a placement that fits.' : ''}`;
   return `This frame is ${sizeLabel(node)}; ${placement.key} is ${sizeLabel(placement)}.${matched}`;
 }
 /** The chosen placement when the layer's ratio is off from it: Send's callout says so, with Match ratio. */
@@ -162,7 +189,7 @@ function actionPlacement(rebind: boolean): Placement | null {
   return placement && !ratioBlocks(placement) ? placement : null;
 }
 /** A cell as people read it: its placement and the axes the placement declares (all of them while its declaration is unknown). */
-function bindingLabel(bind: CellBinding): string {
+export function bindingLabel(bind: CellBinding): string {
   const placement = state.placements.find(item => item.key === bind.slotKey);
   const parts = placement ? cellLabel(placement, bind)
     : [bind.state ?? 'default state', appearanceLabel(bind.appearance), bind.arm ?? 'Control'];
@@ -203,7 +230,7 @@ export function syncBar(): SyncBar | null {
     }
     const placement = target?.placement ?? null;
     const environment = remembered.insertedFrom?.environment ?? 'draft';
-    const meta = [...cellLabel(placement, remembered), `from ${environmentLabel(environment)}`].join(' · ');
+    const meta = [...cellLabel(placement, remembered), remembered.insertedFrom ? `${environmentLabel(environment)} art` : 'sent to Draft'].join(' · ');
     const detail = target ? `${bindingLabel(target.bind)}. Sync sends this layer to that cell in Draft and replaces draft references to its earlier sends.` : meta;
     // Open in console names the image the layer's own link names, when that link is to this cell.
     const sameCell = link?.kind === 'linked' && link.placementKey === key && link.state === remembered.state && link.appearance === remembered.appearance
@@ -232,8 +259,8 @@ export function matchRatio(placement: Placement): void {
   post({ type: 'match-ratio', requestId: pendingMatch, nodeId: node.id, width: placement.width, height: placement.height });
 }
 
-/** A copy's Send…: the placement and cell its link names are chosen, for a Send without rebind. */
-export function prefillSend(link: InsertLink): void {
+/** Choose the copy's destination, for a Send without rebind. */
+export function prefillSend(link: Pick<InsertLink, 'placementKey' | 'state' | 'appearance' | 'arm'>): void {
   const placement = state.placements.find(item => item.key === link.placementKey);
   if (!placement) return;
   placementPicker.value = placement.key;
@@ -299,7 +326,16 @@ export function renderSend(inSettings: boolean): void {
   element('aspect-warning').hidden = !gate;
   setUnavailable(matchRatioButton, actionsBlocked());
   // A usable link or remembered target makes the Sync bar's Sync the expected action.
-  sendButton.className = rememberedBinding() || state.testFailure !== null || state.tokenRefused ? 'secondary' : 'primary';
+  sendButton.className = sendHidden() || state.testFailure !== null || state.tokenRefused ? 'secondary' : 'primary';
+  const plain = element('send-plain');
+  plain.hidden = !sendHidden();
+  setUnavailable(plain, !actionPlacement(false));
+  let pickedLabel = '';
+  try { if (placement) pickedLabel = bindingLabel(chosenBinding(placement)); } catch { /* a stale picker has no valid cell to name */ }
+  plain.title = pickedLabel ? `Uploads this layer to ${pickedLabel}’s draft without replacing your earlier sends in other cells.` : '';
+  const relink = element('send-relink');
+  relink.hidden = !pickedDiffers() || Boolean(gate) || !pickedLabel;
+  relink.textContent = !relink.hidden ? `Sends this layer to the draft of ${pickedLabel} and links it there. Until then it stays linked to ${bindingLabel(rememberedBinding()!.bind)}.` : '';
   setBusy(sendButton, state.ops.sending ? 'Sending…' : 'Send to draft', state.ops.sending);
   // A result says where the draft went; the footnote about drafts would repeat it.
   element('send-footnote').hidden = !element('result').hidden;
@@ -495,7 +531,7 @@ export function fileSaved(message: Extract<MainMessage, { type: 'file-saved' }>)
   scheduleRender();
   flushRender();
   // The form is gone: focus goes back to the action that asked for it, or to the file line.
-  if (inForm) element(next ? (next.rebind ? 'sync' : 'send') : 'file-change').focus();
+  if (inForm) element(next ? (next.rebind ? 'sync' : sendHidden() ? 'send-plain' : 'send') : 'file-change').focus();
   if (next && state.selection.node?.id === next.nodeId) beginSend(next.rebind);
 }
 
@@ -559,5 +595,7 @@ export function initSend(actions: { refused: () => void; retry: () => void; upda
   });
   placementPicker.addEventListener('change', () => updateCellPickers());
   sendButton.addEventListener('click', () => beginSend(false));
+  element('send-plain').addEventListener('click', () => beginSend(false));
+  for (const picker of [statePicker, appearancePicker, armPicker]) picker.addEventListener('change', () => scheduleRender());
   matchRatioButton.addEventListener('click', () => { const placement = sendRatioPlacement(); if (placement) matchRatio(placement); });
 }

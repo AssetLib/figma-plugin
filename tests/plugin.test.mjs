@@ -357,7 +357,7 @@ test('a placement cell inserts as a linked image component, centered and selecte
   assert.deepEqual(app.mainMessages[selectionAt].selection.remembered.insertedFrom, { environment: 'draft', assetId: armArt });
   assert.equal(app.element('selection-bar').hidden, false, 'the Sync bar shows the link on the Insert tab');
   assert.equal(app.element('sync-title').textContent, 'Linked to hero.artwork');
-  assert.equal(app.element('sync-meta').textContent, 'old · Light · b · from Draft');
+  assert.equal(app.element('sync-meta').textContent, 'old · Light · b · Draft art');
   // The hover names the cell as the meta does: the axes the placement declares, in the same order.
   assert.match(app.element('selection-bar').title, /^hero\.artwork · old · Light · b\. Sync sends this layer to that cell in Draft/);
   assert.equal(app.element('sync').hidden, false);
@@ -438,25 +438,25 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
   // Each tag is a word (never colour alone) with a sentence in its tooltip; what blocks Insert is marked blocking.
   const tagsOf = key => descendants(rowFor(app, key)).filter(item => /^tag( |$)/.test(item.className ?? ''));
   const tags = key => tagsOf(key).map(item => item.textContent);
-  assert.deepEqual(tags(placement.key), []);
+  assert.deepEqual(tags(placement.key), ['Changed in Draft']);
   assert.deepEqual(tags('travel.coast'), ['Not set']);
   assert.equal(tagsOf('travel.coast')[0].title, 'No image in Draft for this cell.');
   assert.equal(descendants(rowFor(app, 'travel.coast')).find(item => /thumb/.test(item.className ?? '')).className, 'thumb slot', 'an empty slot, not a preview');
-  assert.deepEqual(tags('travel.ridge'), ['Changed']);
-  assert.equal(tagsOf('travel.ridge')[0].title, 'Draft differs from Production.');
+  assert.deepEqual(tags('travel.ridge'), ['Changed in Draft']);
+  assert.equal(tagsOf('travel.ridge')[0].title, 'Draft differs from Production in 1 cells: Any');
   assert.deepEqual(tags('tasks.gone'), ['Unavailable'], 'the console did not return the image');
   assert.equal(tagsOf('tasks.gone')[0].className, 'tag blocking');
   assert.deepEqual(tags('tasks.legacy'), ['Needs re-upload'], 'an image without prepared versions');
   assert.equal(tagsOf('tasks.legacy')[0].title, 'Upload it again in the Assetlib console to use it in Figma.');
-  assert.deepEqual(tags('tasks.added'), ['Draft only'], 'production is published but has no art for it');
-  assert.equal(tagsOf('tasks.added')[0].title, 'Production has no image here yet.');
+  assert.deepEqual(tags('tasks.added'), ['New in Draft'], 'production is published but has no art for it');
+  assert.equal(tagsOf('tasks.added')[0].title, 'Draft has art that isn’t in Production yet. It goes out when someone publishes.');
   const legacyThumb = descendants(rowFor(app, 'tasks.legacy')).find(item => item.tag === 'img');
   assert.equal(legacyThumb.getAttribute('data-sha'), '', 'marked as having no preview');
   assert.equal(descendants(rowFor(app, placement.key)).find(item => item.className === 'size').textContent, '1000 × 1000 · 2 states · light, dark · arms b, c');
   assert.deepEqual(descendants(app.element('insert-list')).filter(item => item.className === 'group').map(item => item.textContent), ['Home', 'Tasks', 'Travel']);
   assert.equal(app.element('env-staging').disabled, true, 'nothing is published to staging');
   assert.equal(app.element('env-staging').title, 'Nothing published to Staging yet.');
-  assert.equal(app.element('env-draft').title, 'Unpublished changes. Send and Sync update Draft.');
+  assert.equal(app.element('env-draft').title, 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.');
   assert.equal(app.element('env-note').hidden, true);
 
   rowFor(app, placement.key).dispatch('click');
@@ -467,7 +467,7 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
   pick(app, 'insert-appearance', 'dark');
   pick(app, 'insert-arm', 'b');
   // The pickers say the cell; the line says what it inherits, so a 420 px footer keeps it whole.
-  assert.equal(app.element('insert-meta').textContent, 'Draft · Uses Control · Any art');
+  assert.equal(app.element('insert-meta').textContent, '→ 1000 × 1000 · Draft · inherits Control · Any art');
   assert.equal(app.element('insert-note').hidden, true, 'nothing blocks it');
   assert.equal(app.element('insert-preview').className, 'thumb');
   assert.equal(app.element('insert').textContent, 'Insert');
@@ -479,13 +479,13 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
   assert.equal(off(app, 'insert'), true);
   rowFor(app, 'tasks.solo').dispatch('click');
   assert.equal(app.element('insert-arm-label').hidden, true);
-  assert.equal(app.element('insert-meta').textContent, 'Draft · Control', 'an axis without a picker is named in the line');
+  assert.equal(app.element('insert-meta').textContent, '→ 1000 × 1000 · Draft · Control', 'an axis without a picker is named in the line');
   rowFor(app, 'travel.coast').dispatch('click');
   assert.equal(app.element('insert-state-label').hidden, true, 'a single option hides its picker');
   app.element('env-production').dispatch('click');
-  assert.equal(app.element('env-production').title, 'The latest release published to production. Release 12, Oct 9.');
+  assert.equal(app.element('env-production').title, 'Production: the release published to your app’s users. Release 12, Oct 9.');
   assert.deepEqual(tags('travel.coast'), [], 'production has art for it');
-  assert.equal(app.element('insert-meta').textContent, 'Production', 'a placement without states or variants names only the environment');
+  assert.equal(app.element('insert-meta').textContent, '→ 1200 × 900 · Production', 'a placement without states or variants names only the environment');
   assert.equal(app.element('insert-note').hidden, true);
   app.element('insert').dispatch('click');
   await settle();
@@ -672,7 +672,7 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
 
   tilesOf(app)[0].dispatch('click');
   assert.equal(app.element('insert-title').textContent, 'Coast 0');
-  assert.equal(app.element('insert-meta').textContent, '400 × 200');
+  assert.equal(app.element('insert-meta').textContent, '400 × 200 → 400 × 200');
   assert.equal(app.element('insert-note').hidden, true);
   assert.equal(tilesOf(app)[0].title, 'Coast 0 · 400 × 200 · Artwork', 'the tile names the image, its size, and its kind');
   app.element('insert').dispatch('click');
@@ -689,7 +689,7 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
   assert.deepEqual(app.notices, ['Inserted Coast 0']);
   // The first insert retires the hint bar for good.
   assert.deepEqual(app.uiMessages.filter(message => message.type === 'save-preferences').at(-1).preferences,
-    { tab: 'insert', browse: 'images', environment: 'draft', scale: 1, hintSeen: true });
+    { tab: 'insert', browse: 'images', environment: 'draft', scale: 1, hintSeen: true, introSeen: true });
 });
 
 test('a link applies only to its own node in the same app; copies, other apps, and malformed links are ignored', async () => {
@@ -714,7 +714,7 @@ test('a link applies only to its own node in the same app; copies, other apps, a
   assert.deepEqual(await rememberedFor(0), { fileKey: 'abc123', nodeId: '30:1', placementKey: placement.key, state: 'new', appearance: 'dark', arm: 'c',
     insertedFrom: { environment: 'staging', assetId: baseArt } });
   assert.equal(off(app, 'sync'), false);
-  assert.equal(app.element('sync-meta').textContent, 'new · Dark · c · from Staging');
+  assert.equal(app.element('sync-meta').textContent, 'new · Dark · c · Staging art');
   assert.equal(await rememberedFor(1), null, 'a Cmd+D copy keeps the data but not the node id');
   assert.equal(app.element('sync').hidden, true);
   assert.equal(app.element('sync-title').textContent, 'Copy of a linked frame');
@@ -822,7 +822,7 @@ test('preferences restore the tab, environment, and scale, changes are saved, an
   assert.equal(app.element('panel-send').hidden, true);
   assert.equal(app.element('scale-2').getAttribute('aria-checked'), 'true');
   assert.equal(app.element('env-staging').getAttribute('aria-checked'), 'true');
-  assert.equal(app.element('env-staging').title, 'The latest release published to staging. Release 3, Oct 8.');
+  assert.equal(app.element('env-staging').title, 'Staging: the release published for testing. Release 3, Oct 8.');
   assert.deepEqual(app.requests.filter(request => !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork'], 'Insert loads on open');
   assert.equal(app.uiMessages.filter(message => message.type === 'save-preferences').length, 0, 'restoring does not save');
   app.element('env-draft').dispatch('click');
@@ -952,7 +952,7 @@ test('the Insert footer shows only with a choice, errors sit in the fixed line a
   await settle();
   assert.equal(app.element('sync').className, 'primary', 'a remembered target makes Sync the primary action');
   assert.equal(app.element('send').className, 'secondary');
-  assert.equal(app.element('send-bar').hidden, false);
+  assert.equal(app.element('send-bar').hidden, true);
   assert.equal(app.element('insert-bar').hidden, true);
   await openInsert(app);
   assert.equal(app.element('send-bar').hidden, true);
@@ -967,7 +967,7 @@ test('the Insert footer shows only with a choice, errors sit in the fixed line a
   rowFor(app, placement.key).dispatch('click');
   assert.deepEqual(clone(rowFor(app, placement.key).scrolledIntoView), { block: 'nearest' }, 'the chosen row stays in view as the footer appears');
   assert.equal(app.element('insert-bar').hidden, false);
-  assert.deepEqual([app.element('insert-title').textContent, app.element('insert-meta').textContent], ['hero.artwork', 'Draft']);
+  assert.deepEqual([app.element('insert-title').textContent, app.element('insert-meta').textContent], ['hero.artwork', '→ 1000 × 1000 · Draft']);
   // Main fails the insert after the download; its error lands in the fixed line above the footer.
   app.figma.createImage = () => { throw new Error('decode failed'); };
   app.element('insert').dispatch('click');
@@ -1015,7 +1015,7 @@ test('send and sync are disabled whenever the ratio warning is shown', async () 
   assert.equal(app.element('aspect-warning').hidden, false);
   // No-break spaces keep each size and the ratio whole when the callout wraps.
   assert.equal(app.element('aspect-text').textContent,
-    'This frame is 390\u00a0×\u00a0844. home.banner needs 2.44\u00a0:\u00a01 (1170\u00a0×\u00a0480). Resize the frame or match the ratio.');
+    'This frame is 390\u00a0×\u00a0844. home.banner needs 2.44\u00a0:\u00a01 (1170\u00a0×\u00a0480). Match ratio makes it 390\u00a0×\u00a0160. Or choose a placement that fits.');
   assert.equal(app.element('export-note').textContent, '', 'no export size beside a ratio that blocks the export');
   assert.equal(off(app, 'send'), true);
   assert.equal(app.element('sync').hidden, false);
@@ -1026,7 +1026,7 @@ test('send and sync are disabled whenever the ratio warning is shown', async () 
   assert.equal(app.exportMessages().length, 0, 'a direct dispatch cannot export either');
   assert.equal(app.element('error').hidden, true, 'the callout already says why');
   // The callout names the banner, which is Sync's too, so the Sync bar doesn't say it again.
-  assert.equal(app.element('sync-meta').textContent, 'from Draft');
+  assert.equal(app.element('sync-meta').textContent, 'sent to Draft');
   assert.equal(app.element('sync-match').hidden, true);
 
   // A matching placement can be sent; Sync still goes to the banner, so it stays disabled and the Sync bar says why.
@@ -1037,11 +1037,11 @@ test('send and sync are disabled whenever the ratio warning is shown', async () 
   // The bar names both sizes and what Match ratio makes of the layer; Match ratio is its primary while Sync can't run.
   assert.equal(app.element('sync-meta').textContent, 'This frame is 390\u00a0×\u00a0844; home.banner is 1170\u00a0×\u00a0480. Match ratio makes it 390\u00a0×\u00a0160.');
   assert.equal(app.element('sync-match').hidden, false, 'with its own Match ratio');
-  assert.deepEqual([app.element('sync-match').className, app.element('sync').className], ['primary small', 'secondary']);
+  assert.deepEqual([app.element('sync-match').className, app.element('sync').className], ['secondary small', 'secondary']);
   // Both off: the callout names the chosen placement and the Sync bar Sync's.
   pick(app, 'placement', placement.key);
   assert.equal(app.element('aspect-text').textContent,
-    'This frame is 390\u00a0×\u00a0844. hero.artwork needs 1\u00a0:\u00a01 (1000\u00a0×\u00a01000). Resize the frame or match the ratio.');
+    'This frame is 390\u00a0×\u00a0844. hero.artwork needs 1\u00a0:\u00a01 (1000\u00a0×\u00a01000). Match ratio makes it 390\u00a0×\u00a0390. Or choose a placement that fits.');
   assert.equal(app.element('sync-meta').textContent, 'This frame is 390\u00a0×\u00a0844; home.banner is 1170\u00a0×\u00a0480. Match ratio makes it 390\u00a0×\u00a0160.');
   assert.equal(off(app, 'send'), true);
   assert.equal(off(app, 'sync'), true);
@@ -1927,7 +1927,7 @@ test('Insert uses the size shown when it was chosen, even if Insert at changes d
   const app = harness();
   await openInsert(app);
   rowFor(app, placement.key).dispatch('click');
-  assert.equal(app.element('insert-meta').textContent, 'Draft');
+  assert.equal(app.element('insert-meta').textContent, '→ 1000 × 1000 · Draft');
   app.console.gates.rendition = deferred();
   app.element('insert').dispatch('click');
   await settle();
@@ -2892,7 +2892,7 @@ async function canvas(selection, options = {}) {
 }
 // The versions downloaded to insert (previews of the rows and the footer load before Insert is chosen).
 const downloads = (app, from = app.insertStart ?? 0) => app.requests.slice(from).filter(request => request.route === 'rendition').map(request => request.url.slice(-64));
-/** Chooses the footer's primary (or Insert as new frame), noting where its requests start. */
+/** Chooses the footer's primary (or Insert as new layer), noting where its requests start. */
 async function choose(app, id = 'insert') {
   app.insertStart = app.requests.length;
   app.element(id).dispatch('click');
@@ -3074,10 +3074,10 @@ test('a frame with children receives a child, centered', async () => {
   assert.equal(app.element('insert').textContent, 'Insert into Home screen');
   assert.equal(app.element('scale-group').hidden, false, 'a new frame has a size to choose');
   assert.equal(app.element('insert-new').hidden, false);
-  assert.equal(app.element('insert-note').textContent, 'Wider than “Home screen” (800\u00a0px). Try 2×.', 'the 1200 px frame is wider than the container');
+  assert.equal(app.element('insert-note').textContent, 'Adds a new layer inside Home screen. Wider than “Home screen” (800 px).', 'the 1200 px frame is wider than the container');
   assert.equal(off(app, 'insert'), false, 'a hint, not a stop');
   app.element('scale-2').dispatch('click');
-  assert.equal(app.element('insert-note').hidden, true, '600 px fits');
+  assert.equal(app.element('insert-note').textContent, 'Adds a new layer inside Home screen.', '600 px fits');
   await choose(app);
   const child = app.frames[0];
   assert.equal(child.parent, container);
@@ -3095,12 +3095,12 @@ test('a frame with children receives a child, centered', async () => {
 
   // Too narrow even at 3×: the hint names no size.
   const narrow = await canvas([{ ...screen, width: 300 }]);
-  assert.equal(narrow.element('insert-note').textContent, 'Wider than “Home screen” (300\u00a0px).');
+  assert.equal(narrow.element('insert-note').textContent, 'Adds a new layer inside Home screen. Wider than “Home screen” (300 px).');
 
   // A container Figma refuses keeps nothing of the insert, which can still go beside it as a new frame.
   const refusing = await canvas([{ ...screen, refuseChildren: true }]);
   await choose(refusing);
-  assert.equal(refusing.element('error').textContent, 'Figma couldn’t put the image inside Home screen. Choose Insert as new frame.');
+  assert.equal(refusing.element('error').textContent, 'Figma couldn’t put the image inside Home screen. Choose Insert as new layer.');
   assert.equal(refusing.frames[0].removed, true, 'the new layer is removed');
   assert.deepEqual(refusing.undoCommits, []);
   await choose(refusing, 'insert-new');
@@ -3115,7 +3115,7 @@ test('auto layout frame appends', async () => {
   const app = await canvas([stack], { prefs: { tab: 'insert', scale: 3 } });
   const container = app.figma.currentPage.selection[0];
   assert.equal(app.element('insert').textContent, 'Insert into Stack');
-  assert.equal(app.element('insert-note').hidden, true, '400 px fits at 3×');
+  assert.equal(app.element('insert-note').textContent, 'Adds a new layer inside Stack.', '400 px fits at 3×');
   await choose(app);
   const child = app.frames[0];
   assert.deepEqual(container.children.map(layer => layer.id), ['55:2', '55:3', child.id], 'appended last');
@@ -3138,7 +3138,7 @@ test('placement art goes beside a component, or a frame inside one, where Figma 
   const cardComponent = { id: '61:1', name: 'Card', type: 'COMPONENT', width: 600, height: 400, x: 100, y: 50, layoutMode: 'NONE', description: '', documentationLinks: [],
     children: [{ id: '61:2', name: 'Body', type: 'FRAME', width: 600, height: 300, x: 0, y: 100, layoutMode: 'NONE',
       children: [{ id: '61:3', name: 'Label', type: 'TEXT', width: 200, height: 20, x: 10, y: 10 }] }] };
-  const BESIDE = 'Figma doesn’t put components inside components, so this goes beside Card.';
+  const BESIDE = 'Adds a new layer beside the selection. Figma doesn’t put components inside components, so this goes beside Card.';
   const app = await canvas([cardComponent], options);
   const component = app.figma.currentPage.selection[0];
   assert.deepEqual(lastSelection(app).insertTarget, { mode: 'into', label: 'Insert into Card', count: 1, nodeIds: ['61:1'], name: 'Card', containerWidth: 600,
@@ -3161,7 +3161,7 @@ test('placement art goes beside a component, or a frame inside one, where Figma 
   await settle();
   tilesOf(app)[0].dispatch('click');
   assert.equal(app.element('insert').textContent, 'Insert into Card');
-  assert.equal(app.element('insert-note').hidden, true);
+  assert.equal(app.element('insert-note').textContent, 'Adds a new layer inside Card.');
   await choose(app);
   assert.deepEqual([app.frames[1].type, app.frames[1].parent], ['FRAME', component]);
   assert.equal(insertedMessage(app).mode, 'into');
@@ -3178,7 +3178,7 @@ test('placement art goes beside a component, or a frame inside one, where Figma 
     await settle();
     assert.equal(lastSelection(nested).insertTarget.insideComponent, true, frame.name);
     assert.equal(nested.element('insert').textContent, 'Insert', frame.name);
-    assert.equal(nested.element('insert-note').textContent, `Figma doesn’t put components inside components, so this goes beside ${frame.name}.`);
+    assert.equal(nested.element('insert-note').textContent, `Adds a new layer beside the selection. Figma doesn’t put components inside components, so this goes beside ${frame.name}.`);
     await choose(nested);
     assert.deepEqual([nested.frames[0].type, nested.frames[0].parent.type], ['COMPONENT', 'PAGE'], frame.name);
   }
@@ -3193,7 +3193,7 @@ test('placement art goes beside a component, or a frame inside one, where Figma 
   stale.postToMain({ type: 'insert', requestId: 960, connectionGeneration: 0, bytes: pngHeader(10, 10), name: card.key, frame: { width: 1200, height: 800 }, scale: 1,
     link: { placementKey: card.key, state: null, appearance: null, arm: null, environment: 'draft', assetId: cardArt }, target: { kind: 'into', nodeId: '61:1' } });
   await settle();
-  assert.deepEqual(errorsFor(stale, 960), ['Placement art is a component, and Figma can’t put one inside Card. Choose Insert as new frame.']);
+  assert.deepEqual(errorsFor(stale, 960), ['Placement art is a component, and Figma can’t put one inside Card. Choose Insert as new layer.']);
   assert.deepEqual([stale.frames.length, stale.undoCommits.length], [0, 0]);
 });
 
@@ -3293,7 +3293,7 @@ test('linked node selected → replace relinks', async () => {
   assert.equal(component.getPluginData(LINK_KEY), before);
   assert.equal(app.notifications.at(-1).message, 'Replaced image in Spring hero');
 
-  // Insert as new frame: beside the linked layer, not in it.
+  // Insert as new layer: beside the linked layer, not in it.
   await choose(app, 'insert-new');
   assert.equal(app.frames.length, 2);
   assert.deepEqual([app.frames[1].x, app.frames[1].y], [component.x + component.width + 40, component.y]);
@@ -3430,7 +3430,7 @@ test('new frame lands right of the selection', async () => {
   const title = { id: '57:1', name: 'Title', type: 'TEXT', width: 200, height: 40, x: 100, y: 80, fills: [solid] };
   const rule = { id: '57:2', name: 'Rule', type: 'LINE', width: 400, height: 0, x: 50, y: 300 };
   const app = await canvas([title, rule]);
-  assert.deepEqual(lastSelection(app).insertTarget, { mode: 'new', label: 'Insert', count: 0, nodeIds: [] });
+  assert.deepEqual(lastSelection(app).insertTarget, { mode: 'new', label: 'Insert', count: 0, nodeIds: [], beside: true });
   assert.equal(app.element('insert').textContent, 'Insert');
   assert.equal(app.element('insert-new').hidden, true);
   assert.equal(app.element('scale-group').hidden, false);
@@ -3588,6 +3588,7 @@ test('drop creates placeholder in target frame then fills it', async () => {
   assert.deepEqual([app.element('insert').textContent === 'Inserting…', app.element('error').hidden], [false, true]);
   assert.equal(app.undoCommits.length, 1);
   assert.equal(app.uiMessages.filter(message => message.type === 'save-preferences').at(-1).preferences.hintSeen, true, 'a drop retires the hint');
+  assert.equal(app.uiMessages.filter(message => message.type === 'save-preferences').at(-1).preferences.introSeen, true, 'a drop retires the intro');
   assert.deepEqual(discards(app), []);
 
   // Into an auto layout frame a drop is added last, where the layout puts it.
@@ -3919,7 +3920,7 @@ test('a finished download is kept for a minute, and an Insert that reuses a drag
 });
 
 test('the hint bar shows how to insert until the first insert, or until it is closed', async () => {
-  const app = harness({ prefs: { tab: 'insert' }, remembered: null });
+  const app = harness({ prefs: { tab: 'insert', introSeen: true }, remembered: null });
   await openInsert(app);
   assert.equal(app.element('hint-bar').hidden, false, 'nothing chosen: the hint in place of the footer');
   const row = rowFor(app, placement.key);
@@ -3935,10 +3936,10 @@ test('the hint bar shows how to insert until the first insert, or until it is cl
   assert.equal(app.element('hint-bar').hidden, true);
   assert.equal(app.uiMessages.filter(message => message.type === 'save-preferences').at(-1).preferences.hintSeen, true, 'closed for good on this device');
 
-  const seen = harness({ prefs: { tab: 'insert', hintSeen: true }, remembered: null });
+  const seen = harness({ prefs: { tab: 'insert', introSeen: true, hintSeen: true }, remembered: null });
   await openInsert(seen);
   assert.equal(seen.element('hint-bar').hidden, true);
-  const empty = harness({ prefs: { tab: 'insert' }, remembered: null, console: { artwork: { ...artwork(), placements: [] } } });
+  const empty = harness({ prefs: { tab: 'insert', introSeen: true }, remembered: null, console: { artwork: { ...artwork(), placements: [] } } });
   await openInsert(empty);
   assert.equal(empty.element('hint-bar').hidden, true, 'nothing to drag or insert');
 });
@@ -4046,18 +4047,18 @@ test('copy of linked frame shows copy state', async () => {
   assert.deepEqual([lastSelection(app).link.kind, lastSelection(app).remembered], ['copy', null]);
   assert.equal(app.element('selection-bar').hidden, false);
   assert.equal(app.element('sync-title').textContent, 'Copy of a linked frame');
-  assert.equal(app.element('sync-meta').textContent, 'Copies aren’t linked. Send it to replace hero.artwork’s draft.');
+  assert.equal(app.element('sync-meta').textContent, 'Copies aren’t linked. Send it to a cell of hero.artwork.');
   assert.deepEqual([app.element('sync').hidden, app.element('sync-send').hidden, app.element('sync-send').textContent], [true, false, 'Send…']);
   assert.equal(app.activeElement(), app.element('sync-send'), 'the bar’s one action takes focus');
   app.element('sync-send').dispatch('click');
   assert.equal(app.element('panel-send').hidden, false, 'Send… opens the Send tab');
-  assert.deepEqual(['placement', 'state', 'appearance', 'arm'].map(id => app.element(id).value), [placement.key, 'new', 'dark', 'c'], 'its link’s cell, prefilled');
-  assert.equal(app.activeElement(), app.element('send'));
+  assert.deepEqual(['placement', 'state', 'appearance', 'arm'].map(id => app.element(id).value), [placement.key, 'old', 'light', null].map(value => value ?? ''), 'the first other cell without own Draft art');
+  assert.equal(app.activeElement(), app.element('state'));
   app.element('send').dispatch('click');
   await settle();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].body.rebind, false, 'a new send, never a rebind of the original’s art');
-  assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'new', appearance: 'dark', arm: 'c' });
+  assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: 'light', arm: null });
   assert.equal(app.drafts()[0].body.source.nodeId, copy.id);
   // Sent, the copy is linked in its own right.
   assert.equal(linkOf(app.figma.currentPage.selection[0]).nodeId, copy.id);
@@ -4098,7 +4099,7 @@ test('link written after remember', async () => {
   await settle();
   assert.deepEqual(lastSelection(teammate).remembered.insertedFrom, { environment: 'draft', assetId: sentArt });
   assert.equal(teammate.element('sync-title').textContent, 'Linked to hero.artwork');
-  assert.equal(teammate.element('sync-meta').textContent, 'new · Dark · c · from Draft');
+  assert.equal(teammate.element('sync-meta').textContent, 'new · Dark · c · Draft art');
   assert.equal(off(teammate, 'sync'), false);
   assert.equal(teammate.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${sentArt}`);
 
@@ -4406,7 +4407,7 @@ test('the environment dropdown shows the radios’ choice and makes the same cha
   assert.deepEqual([select.value, select.hidden, select.disabled], ['draft', false, false]);
   assert.deepEqual(['draft', 'staging', 'production'].map(name => app.element(`env-option-${name}`).disabled), [false, false, true]);
   assert.equal(app.element('env-option-staging').title, app.element('env-staging').title);
-  assert.equal(select.title, 'Unpublished changes. Send and Sync update Draft.');
+  assert.equal(select.title, 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.');
   pick(app, 'env-select', 'staging');
   await settle();
   assert.equal(app.element('env-staging').getAttribute('aria-checked'), 'true');
@@ -4660,7 +4661,7 @@ test('with a working connection the account panel is a menu; Update token shows 
 });
 
 test('the hint bar steps aside while the Sync bar shows, and the Send card is a dashed slot without a layer', async () => {
-  const app = harness({ prefs: { tab: 'insert' } });
+  const app = harness({ prefs: { tab: 'insert', introSeen: true } });
   await openInsert(app, { keep: true });
   assert.equal(app.element('selection-bar').hidden, false);
   assert.equal(app.element('hint-bar').hidden, true, 'the Sync bar is what the selection is about');
@@ -5679,7 +5680,7 @@ test('unreachable production and development consoles ask for no IDs; a tokenles
 test('first-run copy, role, guide, and Change explain the paths without exposing the console picker', async () => {
   const html = await readFile(`${root}/src/ui.html`, 'utf8');
   assert.ok(html.includes('<p id="browser-help" class="help">Your browser opens so you can sign in and approve. You need edit access (editor, publisher, or owner) in your team’s Assetlib workspace; a workspace owner can invite you or change your role.</p>'));
-  assert.match(html, /id="guide-link"[^>]*href="https:\/\/www\.assetlib\.dev\/guide"[^>]*>How the Figma plugin works<\/a>/);
+  assert.match(html, /id="guide-link"[^>]*href="https:\/\/www\.assetlib\.dev\/guide#figma"[^>]*>How the Figma plugin works<\/a>/);
   assert.ok(!html.includes('id="pairing-resumed"'));
   const app = harness({ saved: null }); await settle();
   assert.equal(app.element('origin-line').hidden, false);
@@ -5731,4 +5732,181 @@ test('browser recovery is the only primary beside a linked selection or a chosen
   inserting.element('settings').open = true; inserting.element('settings').dispatch('toggle');
   assert.equal(inserting.element('connect-browser').className, 'primary wide');
   assert.equal(inserting.element('insert').className, 'secondary');
+});
+
+// Batch 2: the linked cell has a distinct Sync and non-rebinding Send, and a different cell never syncs by shortcut.
+test('linked Send hides its footer, keeps a plain upload, and guards Cmd+Enter on another cell', async () => {
+  const app = harness({ console: { draft: boundDraft } });
+  await settle();
+  const linked = 'hero.artwork · old · Light · b';
+  assert.equal(app.element('send-bar').hidden, true);
+  assert.equal(app.element('sync').className, 'primary');
+  assert.equal(app.element('send-plain').hidden, false);
+  assert.equal(app.element('send-plain').title, `Uploads this layer to ${linked}’s draft without replacing your earlier sends in other cells.`);
+  app.element('send-plain').dispatch('click');
+  app.element('send-plain').dispatch('click');
+  await settle();
+  assert.equal(app.drafts().length, 1, 'busy rules prevent a second upload');
+  assert.equal(app.drafts()[0].body.rebind, false);
+  assert.equal(app.element('sync-meta').textContent, 'old · Light · b · sent to Draft');
+  pick(app, 'appearance', 'dark');
+  assert.equal(app.element('send-bar').hidden, false);
+  assert.equal(app.element('send-plain').hidden, true);
+  assert.equal(app.element('send').className, 'primary');
+  assert.equal(app.element('sync').className, 'secondary');
+  assert.equal(app.element('send-relink').textContent, `Sends this layer to the draft of hero.artwork · old · Dark · b and links it there. Until then it stays linked to ${linked}.`);
+  app.element('appearance').focus();
+  assert.equal(app.keydown({ key: 'Enter', metaKey: true }).defaultPrevented, true);
+  await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(app.exportMessages().length, 1, 'the keyboard guard changes nothing on the canvas');
+  assert.equal(app.element('status').textContent, `Cmd+Enter syncs ${linked}. Choose Send to draft to send to hero.artwork · old · Dark · b.`);
+  pick(app, 'appearance', 'light');
+  assert.equal(app.element('send-bar').hidden, true);
+  app.keydown({ key: 'Enter', metaKey: true });
+  await settle();
+  assert.equal(app.drafts().at(-1).body.rebind, true);
+  pick(app, 'placement', '');
+  assert.equal(app.element('send-bar').hidden, true, 'an empty picker does not differ');
+  assert.equal(off(app, 'send-plain'), true);
+  pick(app, 'placement', placement.key);
+  assert.doesNotThrow(() => pick(app, 'appearance', 'stale'));
+  assert.equal(app.element('send-bar').hidden, false, 'invalid bindings differ without breaking the renderer');
+});
+
+test('Insert notes describe fill, skipped layers, replace links, and the smallest fitting scale', async () => {
+  const shape = (id, type = 'RECTANGLE') => ({ id, name: `Layer ${id}`, type, width: 120, height: 80, fills: [] });
+  const app = await canvas([shape('81:1')]);
+  assert.equal(app.element('insert-note').textContent, 'Puts this image in Layer 81:1 and links it to home.card. Its size and position stay.');
+  await choose(app);
+  assert.equal(app.element('insert-note').textContent, 'Replaces the image in Layer 81:1. It stays linked to home.card.');
+  rowFor(app, placement.key).dispatch('click');
+  assert.equal(app.element('insert-note').textContent, 'Replaces the image in Layer 81:1 and relinks it from home.card to hero.artwork · old · Any · Control.');
+  pick(app, 'insert-appearance', 'dark');
+  assert.match(app.element('insert-note').textContent, /to hero.artwork · old · Dark · Control\.$/);
+  const coast = libraryAsset(8, 'Coast', 400, 200);
+  app.console.library = [coast.asset];
+  app.element('browse-images').dispatch('click');
+  await settle();
+  tilesOf(app)[0].dispatch('click');
+  assert.equal(app.element('insert-note').textContent, 'Replaces the image in Layer 81:1. It stays linked to home.card.');
+  const many = await canvas([shape('82:1'), shape('82:2'), shape('82:3'), shape('82:4', 'TEXT')]);
+  assert.equal(many.element('insert-note').textContent, 'Puts this image in 3 layers and links each to home.card. 1 other selected layer can’t show an image and stay as they are.');
+  const into = await canvas([{ ...shape('83:1', 'FRAME'), name: 'Home', width: 400, children: [shape('83:2')] }]);
+  assert.equal(into.element('insert-note').textContent, 'Adds a new layer inside Home. Wider than “Home” (400 px).');
+  assert.match(into.element('insert-meta').textContent, /^→ 1200 × 800 · Draft/);
+  assert.equal(into.element('insert-fit-scale').hidden, false);
+  assert.equal(into.element('insert-fit-scale').textContent, 'Use 3×');
+  into.element('insert-fit-scale').dispatch('click');
+  assert.equal(into.element('scale-3').getAttribute('aria-checked'), 'true');
+  assert.equal(into.uiMessages.filter(message => message.type === 'save-preferences').at(-1).preferences.scale, 3);
+  assert.equal(into.element('insert-note').textContent, 'Adds a new layer inside Home.');
+  assert.equal(into.element('insert-fit-scale').hidden, true);
+  const beside = await canvas([shape('84:1', 'TEXT')]);
+  assert.equal(beside.element('insert-note').textContent, 'Adds a new layer beside the selection.');
+});
+
+test('inherited tags count via families, exclude null and own art, and yield to own Draft changes', async () => {
+  const single = { ...placement, states: null, defaultState: null, variants: { appearance: ['dark'] },
+    cells: [
+      { state: null, arm: null, appearance: null, draft: cellArt(baseArt, null, null), staging: null, production: cellArt(baseArt, null, null) },
+      { state: null, arm: null, appearance: 'dark', draft: cellArt(baseArt, null, null), staging: null, production: cellArt(armArt, null, 'dark') },
+    ] };
+  const art = { ...artwork(), environments: { staging: null, production: { sequence: 12, createdAt: '2026-10-09T08:00:00.000Z' } }, placements: [single] };
+  const app = harness({ remembered: null, console: { placements: [single], artwork: art } });
+  await openInsert(app);
+  const tag = () => descendants(rowFor(app, placement.key)).find(item => /^tag( |$)/.test(item.className ?? ''));
+  assert.equal(tag().textContent, '1 of 2 inherit');
+  assert.equal(tag().title, 'These cells show other cells’ art: dark → Any');
+  assert.equal(app.element('env-production').title, 'Production: the release published to your app’s users. Release 12, Oct 9.');
+  single.cells[1].draft = null;
+  app.element('insert-refresh').dispatch('click'); await settle();
+  assert.equal(tag(), undefined, 'a null cell shows nothing; it does not inherit');
+  single.cells[1].draft = cellArt(baseArt, null, 'dark');
+  app.element('insert-refresh').dispatch('click'); await settle();
+  assert.equal(tag().textContent, 'Changed in Draft');
+  assert.equal(tag().title, 'Draft differs from Production in 1 cells: dark');
+  single.cells[1].production = null;
+  app.element('insert-refresh').dispatch('click'); await settle();
+  assert.equal(tag().textContent, 'New in Draft');
+  single.cells[0].draft = null;
+  app.element('insert-refresh').dispatch('click'); await settle();
+  assert.equal(tag().textContent, 'Not set', 'base null wins over new own art');
+});
+
+test('Send ratio names the resulting size and suggests a different placement only above half-height change', async () => {
+  for (const height of [844, 170]) {
+    const banner = { ...placement, key: 'home.banner', width: 1170, height: 480, states: null, defaultState: null, variants: null };
+    const app = harness({ remembered: null, selection: [{ ...node, width: 390, height }], console: { placements: [banner] } });
+    await settle(); pick(app, 'placement', banner.key);
+    assert.equal(app.element('aspect-text').textContent.replaceAll('\u00a0', ' '), `This frame is 390 × ${height}. home.banner needs 2.44 : 1 (1170 × 480). Match ratio makes it 390 × 160.${height === 844 ? ' Or choose a placement that fits.' : ''}`);
+  }
+});
+
+test('copy Send chooses an inherited or null Draft cell and focuses its first picker; a single cell stays', async () => {
+  for (const inherited of [false, true, 'single']) {
+    const p = { ...placement, states: null, defaultState: null, variants: inherited === 'single' ? null : { appearance: ['light', 'dark'] } };
+    const original = { state: null, appearance: inherited === 'single' ? null : 'light', arm: null };
+    const link = { v: 1, origin: connection.origin, orgId: connection.orgId, appId: connection.appId, placementKey: p.key,
+      ...original, environment: 'draft', assetId: baseArt, nodeId: '90:1', insertedAt: '2026-10-09T00:00:00.000Z' };
+    const cells = [{ ...original, draft: cellArt(baseArt, null, original.appearance), staging: null, production: null },
+      ...(inherited === 'single' ? [] : [{ state: null, appearance: 'dark', arm: null, draft: inherited ? cellArt(baseArt, null, null) : null, staging: null, production: null }])];
+    const app = harness({ remembered: null, prefs: { tab: 'insert' }, selection: [{ ...node, id: '90:2', pluginData: { [LINK_KEY]: JSON.stringify(link) } }],
+      console: { placements: [p], artwork: { ...artwork(), placements: [{ ...p, cells }] } } });
+    await settle(); app.element('sync-send').dispatch('click');
+    assert.equal(app.element('appearance').value, inherited === 'single' ? '' : 'dark');
+    assert.equal(app.activeElement(), app.element(inherited === 'single' ? 'send' : 'appearance'));
+  }
+});
+
+test('intro explains the first Placements view, hides the hint, persists dismissal, and search matches screens', async () => {
+  const app = harness({ remembered: null, prefs: { tab: 'insert' } });
+  await settle();
+  assert.equal(app.element('intro').hidden, false);
+  const inheritedTag = descendants(rowFor(app, placement.key)).find(item => item.className === 'tag');
+  assert.equal(inheritedTag.textContent, '14 of 18 inherit');
+  assert.match(inheritedTag.title, /and 8 more$/);
+  assert.equal(app.element('hint-bar').hidden, true);
+  app.element('browse-images').dispatch('click'); await settle();
+  assert.equal(app.element('intro').hidden, true);
+  app.element('browse-placements').dispatch('click'); await settle();
+  assert.equal(app.element('intro').hidden, false);
+  app.element('intro-close').dispatch('click'); await settle();
+  assert.equal(app.activeElement(), app.element('insert-search'));
+  const prefs = app.uiMessages.filter(message => message.type === 'save-preferences').at(-1).preferences;
+  assert.equal(prefs.introSeen, true);
+  assert.equal(app.element('intro').hidden, true);
+  const reopened = harness({ prefs, remembered: null }); await settle();
+  assert.equal(reopened.element('intro').hidden, true);
+  const firstInsert = harness({ remembered: null, prefs: { tab: 'insert' } });
+  await openInsert(firstInsert); rowFor(firstInsert, placement.key).dispatch('click'); await choose(firstInsert);
+  assert.equal(firstInsert.element('intro').hidden, true);
+  assert.equal(firstInsert.uiMessages.filter(message => message.type === 'save-preferences').at(-1).preferences.introSeen, true);
+  const screen = harness({ remembered: null, prefs: { tab: 'insert' }, console: { artwork: { ...artwork(), placements: [{ ...placement, screen: 'Onboarding', cells: heroCells() }] } } });
+  await settle(); screen.element('insert-search').value = 'Onboarding'; screen.element('insert-search').dispatch('input'); await settle();
+  assert.ok(rowFor(screen, placement.key), 'matches the screen even though the key has no match');
+  assert.equal(screen.element('insert-search').getAttribute('aria-label'), 'Search placements or screens');
+  screen.element('insert-search').value = 'no match'; screen.element('insert-search').dispatch('input'); await settle();
+  assert.equal(screen.element('intro').hidden, true, 'empty search hides the intro');
+});
+
+test('inherited tooltip names an arm’s Any art, and never mistakes it for missing art', async () => {
+  const cell = (arm, appearance, viaArm, viaAppearance) => ({ state: null, arm, appearance, draft: cellArt(baseArt, viaArm, viaAppearance), staging: null, production: null });
+  const p = { ...placement, states: null, defaultState: null, variants: { arm: ['b'], appearance: ['dark'] },
+    cells: [cell(null, null, null, null), cell('b', null, 'b', null), cell(null, 'dark', null, null), cell('b', 'dark', 'b', null)] };
+  const app = harness({ remembered: null, prefs: { tab: 'insert' }, console: { placements: [p], artwork: { ...artwork(), placements: [p] } } });
+  await settle();
+  const tag = descendants(rowFor(app, p.key)).find(item => item.className === 'tag');
+  assert.equal(tag.textContent, '2 of 4 inherit');
+  assert.equal(tag.title, 'These cells show other cells’ art: dark → Any, b · dark → b · Any');
+});
+
+test('library fill notes omit placement links for one and several layers', async () => {
+  const coast = libraryAsset(8, 'Coast', 400, 200);
+  const shape = id => ({ id, name: `Shape ${id}`, type: 'RECTANGLE', width: 100, height: 50, fills: [] });
+  for (const count of [1, 3]) {
+    const app = harness({ remembered: null, prefs: { tab: 'insert', browse: 'images' }, console: library([coast]), selection: Array.from({ length: count }, (_, i) => shape(`91:${i}`)) });
+    await settle(); tilesOf(app)[0].dispatch('click');
+    assert.equal(app.element('insert-note').textContent, count === 1 ? 'Puts this image in Shape 91:0. Its size and position stay.' : 'Puts this image in 3 layers.');
+  }
 });

@@ -292,10 +292,10 @@
     #insert { display: block; flex: 0 1 auto; min-width: 104px; max-width: 40%; line-height: 32px; }
     /* A block, so its spinner sits inline before the label. */
     #insert[aria-busy="true"]::before { display: inline-block; margin-right: 6px; vertical-align: -2px; }
-    .footer-note { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; margin-top: -4px; }
+    .footer-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 8px; margin-top: -4px; }
     .footer-note:not(:has(> :not([hidden]))) { display: none; }
-    .footer-note p { flex: 1; color: var(--al-text-meta); }
-    /* Insert as new frame, the one secondary action, sits under the primary. */
+    .footer-note p { flex: 1 1 100%; min-width: 0; color: var(--al-text-meta); }
+    /* Insert as new layer stays under the primary; the fitting scale action sits beside it. */
     #insert-new { flex: none; margin-left: auto; }
     .footer-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0; }
     .footer-actions > button { flex: 1 1 0; max-width: 220px; }
@@ -332,14 +332,17 @@
       .hint-wide { display: none; }
       .hint-narrow { display: inline; }
     }
-    /* Wide windows: a row's meta moves to a right-aligned column before its tag, whose column fits "Needs re-upload". */
+    /* Wide windows: a row's meta moves to a right-aligned column before its tag, whose column fits the Draft and inheritance tags. */
     @media (min-width: 560px) {
       /* The key keeps most of the room: a long meta line stops at 40% and shortens. */
-      .placement { grid-template-columns: 32px minmax(96px, 1fr) fit-content(40%) minmax(max-content, 104px); }
+      .placement { grid-template-columns: 32px minmax(96px, 1fr) fit-content(40%) minmax(max-content, 120px); }
       .placement .row-text { display: contents; }
       .placement .size { text-align: right; }
       .placement .tag { justify-self: end; }
     }
+    .intro { margin-bottom: 8px; }
+    .intro p { margin-bottom: 8px; }
+    .intro > a { margin-right: 8px; }
   </style>
 </head>
 <body>
@@ -410,7 +413,7 @@
           </div>
           <button id="connect" class="secondary wide" type="submit">Connect with token</button>
         </form>
-        <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a>
+        <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a>
       </div>
     </details>
 
@@ -418,7 +421,7 @@
       <div class="toolbar">
         <div class="search">
           <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/></svg>
-          <input id="insert-search" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Search placements" aria-label="Search placements">
+          <input id="insert-search" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Search placements or screens" aria-label="Search placements or screens">
           <button id="search-clear" class="icon-button" type="button" aria-label="Clear search" title="Clear search" hidden><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg></button>
         </div>
         <button id="insert-refresh" class="icon-button" type="button" aria-label="Refresh" title="Refresh"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.75 8A4.75 4.75 0 1 1 11.3 4.6"/><path d="M11.75 2.25v2.75H9"/></svg></button>
@@ -441,6 +444,7 @@
       </div>
       <p id="env-note" class="note" hidden></p>
       <div id="list-region" class="list-region">
+        <div id="intro" class="info intro" hidden><p>Placements are the image slots your app’s code declares. Each has cells for its states, appearances, and A/B arms. Draft holds unpublished art, and Send and Sync change it. Staging and Production show what someone published, and stay unavailable until a release exists.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
         <div id="insert-list"></div>
         <div id="image-grid" class="grid" hidden></div>
         <button id="images-more" class="secondary" type="button" hidden>Load more</button>
@@ -480,7 +484,9 @@
           <label id="appearance-label" class="picker" hidden>Appearance<select id="appearance"></select></label>
           <label id="arm-label" class="picker" hidden>A/B arm<select id="arm"></select></label>
         </div>
+        <button id="send-plain" class="text-action" type="button" hidden>Send as a new image instead</button>
         <p id="export-note" class="meta"></p>
+        <p id="send-relink" class="meta" hidden></p>
         <div id="aspect-warning" class="notice" hidden><p id="aspect-text"></p><button id="match-ratio" class="secondary small" type="button">Match ratio</button></div>
         <div id="result" class="result" hidden></div>
         <p id="send-footnote" class="meta">Drafts don’t go live until someone publishes in the Assetlib console.</p>
@@ -516,13 +522,13 @@
         <span id="insert-preview" class="thumb"><img id="insert-thumb" alt=""></span>
         <div class="footer-text"><p id="insert-title" class="title"></p><p id="insert-meta" class="meta"></p></div>
         <div id="scale-group" class="segmented" role="radiogroup" aria-label="Insert at">
-          <button id="scale-1" type="button" role="radio" aria-checked="true" title="The image’s size in pixels">1×</button>
-          <button id="scale-2" type="button" role="radio" aria-checked="false" title="Half the size, for @2x frames drawn in points">2×</button>
-          <button id="scale-3" type="button" role="radio" aria-checked="false" title="A third of the size, for @3x frames drawn in points">3×</button>
+          <button id="scale-1" type="button" role="radio" aria-checked="true" title="1 image pixel per Figma point">1×</button>
+          <button id="scale-2" type="button" role="radio" aria-checked="false" title="Half size, for @2x art in frames drawn in points">2×</button>
+          <button id="scale-3" type="button" role="radio" aria-checked="false" title="A third of the size, for @3x art in frames drawn in points">3×</button>
         </div>
         <button id="insert" class="primary" type="button" aria-disabled="true">Insert</button>
       </div>
-      <div class="footer-note"><p id="insert-note" hidden></p><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new frame</button></div>
+      <div class="footer-note"><p id="insert-note" hidden></p><button id="insert-fit-scale" class="text-action" type="button" hidden></button><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new layer</button></div>
     </footer>
     <footer id="send-bar" class="footer" hidden>
       <div class="footer-actions"><button id="send" class="primary" type="button" aria-disabled="true">Send to draft</button></div>
