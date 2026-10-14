@@ -561,7 +561,6 @@ export function failConnection(requestId: number, message: string): boolean {
  * main refuses it, connect.ts says why.
  */
 export function saveConnection(next: Connection, typed = ''): number {
-  state.connectionChanging = true;
   const quiet = next.method === 'browser';
   if (quiet) { namesAsked = namesKey(next); namesPosted = null; }
   token.value = '';
@@ -584,7 +583,8 @@ export function saveConnection(next: Connection, typed = ''): number {
  */
 async function identifyToken(chosen: string, value: string): Promise<Connection | null> {
   const ticket = ++identifyTicket;
-  let identified = false;
+  // Settled here unless it returned a connection to save, or a newer identification or a connection change took over.
+  let identified = false, superseded = false;
   state.connectionChanging = true;
   state.ops.connecting = true;
   setStatus('Connecting…');
@@ -592,7 +592,7 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
   try {
     const result = await identify(chosen, value);
     // Whoever replaced this request owns the busy state.
-    if (ticket !== identifyTicket || result.kind === 'aborted') return null;
+    if (ticket !== identifyTicket || result.kind === 'aborted') { superseded = true; return null; }
     state.ops.connecting = false;
     scheduleRender();
     if (result.status === 200) {
@@ -628,8 +628,8 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
     showConnectionError(errorText(error), connectionErrorField(error), 'form');
     return null;
   } finally {
-    // A newer identification or applyConnection owns the state after a stale answer.
-    if (ticket === identifyTicket && !identified) {
+    // A newer identification or applyConnection owns the state after a stale or aborted answer.
+    if (!superseded && !identified) {
       state.connectionChanging = false;
       state.ops.connecting = false;
       scheduleRender();

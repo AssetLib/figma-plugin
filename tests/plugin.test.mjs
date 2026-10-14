@@ -5952,8 +5952,9 @@ test('refused pasted token form errors keep both views quiet after a selection c
   }
 });
 
-test('Connect again from either view focuses Check now for pasted and browser connections', async () => {
-  for (const saved of [connection, browserConnection]) for (const tab of ['insert', 'send']) {
+test('Connect again from either view focuses Check now for a pasted connection', async () => {
+  // A browser connection's Connect again stays visible with the settings open, so focus stays on it (never taken).
+  for (const saved of [connection]) for (const tab of ['insert', 'send']) {
     const app = harness({ saved, prefs: { tab }, console: { statuses: { placements: 401 } } });
     await settle();
     // Browser views also offer recovery with the account panel already open.
