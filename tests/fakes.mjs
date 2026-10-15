@@ -471,8 +471,9 @@ export function createHarness({
     return item;
   };
   // A page: its selection, and its children (the given nodes plus created frames).
+  let pages = 0;
   const makePage = nodes => {
-    const page = { type: 'PAGE', selection: nodes, children: [...nodes],
+    const page = { type: 'PAGE', id: `0:${++pages}`, selection: nodes, children: [...nodes],
       // As PageNode.findAllWithCriteria: by types, and by plugin data keys that are set.
       findAllWithCriteria({ types, pluginData } = {}) {
         const found = [];

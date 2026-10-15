@@ -1,7 +1,7 @@
 // Insert: a new frame, a child of the selected container, or the selected layers filled; a fill of one linked layer
 // replaces its image and relinks it to the chosen cell. A row or tile dropped on the canvas makes a placeholder where it
 // landed (or replaces the image of the image frame it landed on), which its insert then fills. Each ends with one
-// figma.commitUndo(), so it is one undo step, a drop's placeholder included.
+// figma.commitUndo(), so it is one undo step, a drop's placeholder included. A toast's Undo restores the fill as its own step.
 import {
   MAX_INSERT_PIXELS, environmentLabel, insideInstance, isPlacementMarker, isUint8Array, placementMarker, pngSize, sanitizeName, validateInsertLink,
 } from '../shared/index.js';
@@ -28,6 +28,7 @@ export function notLinked(count: number): string {
   return `Filled. Figma didn’t let ${count === 1 ? 'one layer' : `${count} layers`} be linked, so Sync isn’t available for ${count === 1 ? 'it' : 'them'}.`;
 }
 export const NOT_UNDONE = 'Not undone. These layers changed after the fill.';
+export const UNDO_REFUSED = 'Not undone. Figma didn’t let the plugin change these layers back.';
 
 type InsertMessage = Extract<UiMessage, { type: 'insert' }>;
 type Frame = { width: number; height: number };
@@ -35,10 +36,13 @@ type Marker = NonNullable<ReturnType<typeof placementMarker>>;
 // A drop main answered: the layer its insert fills, and whether main made it (a placeholder, removed if the image never comes).
 type PendingDrop = { node: SceneNode; placeholder: boolean; generation: number };
 type Paintable = SceneNode & MinimalFillsMixin;
+type Before = { fills: Paintable['fills']; link: string; relaunch: Record<string, string>; name: string;
+  component: Pick<ComponentNode, 'description' | 'documentationLinks'> | null };
+type Fill = { node: Paintable; before: Before };
 // relinked: existing layers whose link now names the chosen cell.
-type Inserted = { node: SceneNode; mode: InsertMode; linked: boolean; notice: string; undo: SceneNode[] | null; relinked: string[] };
+type Inserted = { node: SceneNode; mode: InsertMode; linked: boolean; notice: string; undo: Fill[] | null; relinked: string[] };
 // A filled layer, and what the fill left on it (`snapshot`).
-type Filled = { node: SceneNode; state: string };
+type Filled = Fill & { state: string };
 
 // The toast whose Undo can still take back the last fill or replace. A selection change, a page change, another plugin
 // edit, or a change main's canvas check finds on the one selected layer retires it.
@@ -47,17 +51,19 @@ export function retireUndo(): void {
   undoToast?.cancel();
   undoToast = null;
 }
-// What a person may change on a filled layer after the fill, besides its parent, its children, and a component's
-// description. Undo would take that change back instead of the fill, so it runs only while every filled layer matches.
-// Figma tells a plugin of no edit that keeps the selection, so another layer's edit, or one not listed, is not seen.
+// The paints and properties that must still show what the fill left, so restoring it never overwrites a later change.
 const KEPT = ['fills', 'name', 'x', 'y', 'rotation', 'relativeTransform', 'width', 'height', 'visible', 'locked', 'opacity', 'blendMode', 'isMask',
   'strokes', 'strokeWeight', 'strokeTopWeight', 'strokeRightWeight', 'strokeBottomWeight', 'strokeLeftWeight', 'effects',
   'cornerRadius', 'topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius',
   'constraints', 'clipsContent', 'layoutSizingHorizontal', 'layoutSizingVertical'];
+// A layer's link as stored, and its relaunch data; a layer Figma keeps no data on reads as none.
+function rawLink(node: SceneNode): string { try { return node.getPluginData(LINK_KEY); } catch { return ''; } }
+function relaunchOf(node: SceneNode): Record<string, string> { try { return node.getRelaunchData(); } catch { return {}; } }
+// The guard also covers the layer's parent, child count, raw link, relaunch data, and a component's marker.
 function snapshot(node: SceneNode): string {
   const read = (key: string): unknown => { try { return key in node ? (node as unknown as Record<string, unknown>)[key] : null; } catch { return null; } };
   return JSON.stringify([node.parent?.id ?? null, 'children' in node ? node.children.length : 0, node.type === 'COMPONENT' ? node.description : null,
-    (() => { try { return node.getPluginData(LINK_KEY); } catch { return null; } })(), ...KEPT.map(read)]);
+    rawLink(node), relaunchOf(node), node.type === 'COMPONENT' ? node.documentationLinks : null, ...KEPT.map(read)]);
 }
 
 /**
@@ -185,13 +191,18 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
   frame: Frame, link: InsertLink | null, name: string, update = false): Inserted {
   const layers = target.nodeIds.map(id => selection.find(node => node.id === id)).filter((node): node is Paintable => Boolean(node && 'fills' in node));
   const replacing = layers.length === 1 && nodeLink(layers[0]!, config) !== null && hasImagePaint(layers[0]!);
-  const filled: Paintable[] = [];
+  const filled: Fill[] = [];
   const relinked: string[] = [];
   const unlinked: SceneNode[] = [];
   for (const node of layers) {
     const previous = link ? nodeLink(node, config) : null;
-    try { node.fills = withImage(node.fills, hash); } catch { continue; }
-    filled.push(node);
+    let before: Before;
+    try {
+      before = { fills: node.fills, link: rawLink(node), relaunch: relaunchOf(node), name: node.name,
+        component: node.type === 'COMPONENT' ? { description: node.description, documentationLinks: node.documentationLinks } : null };
+      node.fills = withImage(before.fills, hash);
+    } catch { continue; }
+    filled.push({ node, before });
     if (!link) continue;
     if (writeLink(node, config, link)) {
       relinked.push(node.id);
@@ -199,7 +210,7 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
       renameRelinked(node, previous, name);
     } else unlinked.push(node);
   }
-  const first = filled[0];
+  const first = filled[0]?.node;
   if (!first) throw new Error('Figma couldn’t fill this layer. Choose Insert as new layer.');
   const skipped = layers.length - filled.length;
   // Placement art is named by its key; a library image by its name.
@@ -216,16 +227,46 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
   return { node: first, mode: replacing ? 'replace' : 'fill', linked: relinked.length > 0, notice, undo: filled, relinked };
 }
 
-/** A fill's toast takes it back with Undo, but only while the fill is still the last change to its layers. */
+/** A fill's toast restores only what it overwrote, while the page, selection, and filled layers still match. */
 function notifyUndo(notice: string, filled: Filled[]): void {
+  const page = figma.currentPage.id;
+  const selected = new Set(figma.currentPage.selection.map(node => node.id));
   const toast = figma.notify(toastText(notice), { timeout: 6000, button: { text: 'Undo', action: () => {
     // A retired toast is gone; a click that raced its removal takes nothing back.
     if (undoToast !== toast) return;
     undoToast = null;
-    // After another edit to these layers, Undo would take back that edit instead.
+    // The selection event may not have retired the toast yet.
+    const selection = figma.currentPage.selection;
+    if (figma.currentPage.id !== page || selection.length !== selected.size || !selection.every(node => selected.has(node.id))) {
+      figma.notify(NOT_UNDONE); return;
+    }
     const unchanged = (layer: Filled) => { try { return !layer.node.removed && snapshot(layer.node) === layer.state; } catch { return false; } };
     if (!filled.every(unchanged)) { figma.notify(NOT_UNDONE); return; }
-    figma.triggerUndo();
+    const written: (() => void)[] = [];
+    const put = <T>(current: T, before: T, write: (value: T) => void, json = false): void => {
+      if (json ? JSON.stringify(current) === JSON.stringify(before) : current === before) return;
+      write(before);
+      written.push(() => write(current));
+    };
+    let refused = false;
+    try {
+      for (const { node, before } of filled) {
+        put(node.fills, before.fills, value => { node.fills = value; }, true);
+        put(node.name, before.name, value => { node.name = value; });
+        if (node.type === 'COMPONENT' && before.component) {
+          put(node.description, before.component.description, value => { node.description = value; });
+          put(node.documentationLinks, before.component.documentationLinks, value => { node.documentationLinks = value; }, true);
+        }
+        put(relaunchOf(node), before.relaunch, value => node.setRelaunchData(value), true);
+        put(rawLink(node), before.link, value => node.setPluginData(LINK_KEY, value));
+      }
+    } catch {
+      for (const restore of written.reverse()) try { restore(); } catch { /* Figma may refuse a rollback too. */ }
+      figma.notify(UNDO_REFUSED);
+      refused = true;
+    }
+    if (written.length) figma.commitUndo();
+    if (refused) return;
     // Undo puts back the layers' earlier link too, which no selection change reports.
     void reportSelection();
   } } });
@@ -257,11 +298,12 @@ async function apply(message: InsertMessage, config: Connection, edit: (hash: st
     let image: Image;
     try { image = figma.createImage(message.bytes); } catch { throw new Error('Figma could not read this image. Refresh and try again.'); }
     const result = edit(image.hash);
-    const filled = result.undo ? result.undo.map(node => ({ node, state: snapshot(node) })) : null;
+    const filled = result.undo ? result.undo.map(layer => ({ ...layer, state: snapshot(layer.node) })) : null;
     // One undo step for the whole insert (and a drop's placeholder, made without a commit of its own).
     figma.commitUndo();
     await dropStoredTargets(config, result.relinked);
-    if (filled) notifyUndo(result.notice, filled);
+    const selected = figma.currentPage.selection;
+    if (filled && filled.every(({ node, before }) => Array.isArray(before.fills) && selected.some(item => item.id === node.id))) notifyUndo(result.notice, filled);
     else figma.notify(toastText(result.notice));
     post({ type: 'inserted', requestId: message.requestId, connectionGeneration: main.connectionGeneration, node: describeNode(result.node),
       linked: result.linked, mode: result.mode, notice: result.notice });
@@ -396,7 +438,6 @@ export function drop(event: DropEvent): false | undefined {
     checkFrame(meta.frame, meta.scale);
     const link = meta.link ? validateInsertLink(meta.link) : null;
     const name = sanitizeName(meta.name);
-    // Another plugin edit starts: a fill's Undo would take back the wrong thing.
     retireUndo();
     const target = event.node;
     let pending: PendingDrop;

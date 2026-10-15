@@ -2989,7 +2989,9 @@ test('Replace image changes the topmost visible image below a hidden paint', asy
   assert.equal(insertedMessage(app).mode, 'replace');
   assert.equal(app.undoCommits.length, 2, 'one step for each image write');
   app.notifications.at(-1).options.button.action();
-  assert.deepEqual(app.undoTriggers, [2], 'the complete paint snapshot permits Undo while unchanged');
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 3, 'restoring the unchanged fill is one more undo step');
+  assert.deepEqual(clone(layer.fills), [solid, photo, hidden]);
 });
 
 test('Fill appends a visible image above hidden images and its Undo checks every paint', async () => {
@@ -3003,8 +3005,11 @@ test('Fill appends a visible image above hidden images and its Undo checks every
     assert.deepEqual(clone(layer.fills), [solid, hidden, { type: 'IMAGE', imageHash: 'hash-1', scaleMode: 'FILL' }]);
     assert.equal(app.undoCommits.length, 1);
     if (editAfter) layer.fills = layer.fills.map(paint => paint.imageHash === 'hidden' ? { ...paint, opacity: 0.8 } : paint);
+    const filled = clone(layer.fills);
     app.notifications.at(-1).options.button.action();
-    assert.deepEqual(app.undoTriggers, editAfter ? [] : [1], 'a later edit to even the hidden paint prevents Undo');
+    assert.deepEqual(app.undoTriggers, []);
+    assert.equal(app.undoCommits.length, editAfter ? 1 : 2, 'a later edit to even the hidden paint prevents Undo');
+    assert.deepEqual(clone(layer.fills), editAfter ? filled : [solid, hidden]);
     if (editAfter) assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.');
   }
 });
@@ -3077,11 +3082,14 @@ test('three shapes fill and link each with its own id', async () => {
   assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text, app.notifications.at(-1).options.timeout],
     ['Filled 3 layers with home.card', 'Undo', 6000]);
   assert.equal(app.element('status').textContent, 'Filled 3 layers with home.card.');
-  // Undo takes the fill back while it is still the last change to these layers, and the selection is reported again,
-  // since the link it put back changes no selection.
+  // Undo restores the fill's values and reports the selection again: restoring the link changes no selection.
   const reports = app.mainMessages.filter(message => message.type === 'selection').length;
   app.notifications.at(-1).options.button.action();
-  assert.deepEqual(app.undoTriggers, [1]);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+  assert.deepEqual(layers.map(layer => clone(layer.fills)), [[], [], [solid]]);
+  assert.deepEqual(layers.map(layer => layer.getPluginData(LINK_KEY)), ['', '', '']);
+  assert.deepEqual(layers.map(layer => layer.getRelaunchData()), [{}, {}, {}]);
   await settle();
   assert.equal(app.mainMessages.filter(message => message.type === 'selection').length, reports + 1);
 
@@ -3089,7 +3097,8 @@ test('three shapes fill and link each with its own id', async () => {
   await choose(changed);
   changed.figma.currentPage.selection[1].fills = [solid];
   changed.notifications.at(-1).options.button.action();
-  assert.deepEqual(changed.undoTriggers, [], 'after another edit to these layers, Undo would take back that edit instead');
+  assert.deepEqual(changed.undoTriggers, []);
+  assert.equal(changed.undoCommits.length, 1, 'Undo never overwrites a later change to these layers');
   assert.equal(changed.notices.at(-1), 'Not undone. These layers changed after the fill.');
 
   // A selection change retires the toast, so its Undo never reaches whatever the person does next.
@@ -3120,6 +3129,7 @@ test('three shapes fill and link each with its own id', async () => {
     edit(edited.figma.currentPage.selection);
     edited.notifications.at(-1).options.button.action();
     assert.deepEqual(edited.undoTriggers, [], name);
+    assert.equal(edited.undoCommits.length, 1, name);
     assert.equal(edited.notices.at(-1), 'Not undone. These layers changed after the fill.', name);
   }
 
@@ -3137,13 +3147,14 @@ test('three shapes fill and link each with its own id', async () => {
   assert.equal(soloToast.cancelled, true);
   assert.equal(lastSelection(solo).node.width, 200);
 
-  // An edit to another paint keeps the image, but Undo would take back that edit, so Undo doesn't run.
+  // An edit to another paint keeps the image, but restoring fills would overwrite that edit, so Undo refuses.
   const repainted = await canvas(shapes);
   await choose(repainted);
   const third = repainted.figma.currentPage.selection[2];
   third.fills = third.fills.map(paint => paint.type === 'SOLID' ? { ...paint, opacity: 0.5 } : paint);
   repainted.notifications.at(-1).options.button.action();
   assert.deepEqual(repainted.undoTriggers, []);
+  assert.equal(repainted.undoCommits.length, 1);
   assert.equal(repainted.notices.at(-1), 'Not undone. These layers changed after the fill.');
 
   // Placement art is named by its key, not by the cell's layer name.
@@ -3178,6 +3189,7 @@ test('a relinked layer refuses fill Undo when only its previous link is restored
   assert.deepEqual(clone(layer.fills), fills, 'restoring only the link leaves every paint unchanged');
   toast.options.button.action();
   assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
   assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.');
 });
 
@@ -3204,7 +3216,255 @@ test('an edit while a relinked fill waits for stored-target deletion makes its U
   assert.equal(toast.options.button.text, 'Undo');
   toast.options.button.action();
   assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
   assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.');
+});
+
+// Fill Undo restores only the fields the fill may write; it never asks Figma to undo the last edit.
+const fillState = layer => ({ fills: clone(layer.fills), link: layer.getPluginData(LINK_KEY), relaunch: layer.getRelaunchData(), name: layer.name,
+  ...(layer.type === 'COMPONENT' ? { description: layer.description, documentationLinks: clone(layer.documentationLinks) } : {}) });
+
+test('fill Undo restores a relinked component’s exact paints, raw link, relaunch, name, and marker', async () => {
+  const app = harness({ remembered: null, console: canvasConsole() });
+  const layer = await insertHeroCell(app);
+  layer.documentationLinks = [{ uri: `${layer.documentationLinks[0].uri}#${placement.key}` }];
+  const before = fillState(layer);
+  assert.equal(linkOf(layer).placementKey, placement.key);
+  assert.ok(before.name.startsWith(placement.key));
+  assert.match(before.description, /hero\.artwork/);
+  assert.equal(before.documentationLinks.length, 1);
+  assert.ok(before.relaunch.sync);
+  rowFor(app, card.key).dispatch('click');
+  await choose(app);
+  const filled = fillState(layer);
+  for (const key of Object.keys(before)) assert.notDeepEqual(filled[key], before[key], `${key} changed in the relink`);
+  const reports = app.mainMessages.filter(message => message.type === 'selection').length;
+  app.notifications.at(-1).options.button.action();
+  await settle();
+  assert.deepEqual(fillState(layer), before);
+  assert.equal(layer.getPluginData(LINK_KEY), before.link, 'the old insertedAt is restored verbatim');
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 3);
+  assert.equal(app.mainMessages.filter(message => message.type === 'selection').length, reports + 1);
+  assert.equal(lastSelection(app).link.placementKey, placement.key);
+});
+
+test('fill Undo restores an unlinked layer and keeps the document identity and Open Assetlib button', async () => {
+  const app = await canvas([{ id: '52:10', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
+  const layer = app.figma.currentPage.selection[0];
+  const before = fillState(layer);
+  assert.equal(app.figma.root.getPluginData('assetlib.file.v1'), '');
+  await choose(app);
+  const identity = app.figma.root.getPluginData('assetlib.file.v1');
+  const relaunch = app.figma.root.getRelaunchData();
+  assert.ok(identity);
+  assert.ok(relaunch.open);
+  app.notifications.at(-1).options.button.action();
+  await settle();
+  assert.deepEqual(fillState(layer), before);
+  assert.equal(layer.getPluginData(LINK_KEY), '');
+  assert.deepEqual(layer.getRelaunchData(), {});
+  assert.equal(app.figma.root.getPluginData('assetlib.file.v1'), identity);
+  assert.deepEqual(app.figma.root.getRelaunchData(), relaunch);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('fill Undo keeps a later reorder among siblings', async () => {
+  const app = await canvas([{ id: '52:11', name: 'Container', type: 'FRAME', width: 400, height: 200, children: [
+    { id: '52:12', name: 'First', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] },
+    { id: '52:13', name: 'Second', type: 'RECTANGLE', width: 100, height: 60, fills: [] },
+  ] }]);
+  const parent = app.figma.currentPage.selection[0];
+  const [first, second] = parent.children;
+  app.select([first]); await settle();
+  await choose(app);
+  parent.children.splice(0, 1);
+  parent.children.push(first);
+  app.notifications.at(-1).options.button.action();
+  assert.deepEqual(clone(first.fills), [solid]);
+  assert.deepEqual(parent.children.map(layer => layer.id), [second.id, first.id]);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('fill Undo keeps later changes to properties outside its guard', async () => {
+  const app = await canvas([{ id: '52:14', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
+  const layer = app.figma.currentPage.selection[0];
+  await choose(app);
+  const edits = { strokeAlign: 'OUTSIDE', dashPattern: [4, 2], exportSettings: [{ format: 'PNG' }], minWidth: 50, layoutMode: 'HORIZONTAL' };
+  Object.assign(layer, edits);
+  app.notifications.at(-1).options.button.action();
+  assert.deepEqual(clone(layer.fills), [solid]);
+  for (const [key, value] of Object.entries(edits)) assert.deepEqual(layer[key], value, key);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('fill Undo keeps later edits to another layer', async () => {
+  const app = await canvas([
+    { id: '52:15', name: 'Filled', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] },
+    { id: '52:16', name: 'Other', type: 'RECTANGLE', width: 100, height: 60, fills: [] },
+  ]);
+  const [first, second] = app.figma.currentPage.selection;
+  app.select([first]); await settle();
+  await choose(app);
+  second.visible = false; second.locked = true; second.name = 'Edited';
+  app.notifications.at(-1).options.button.action();
+  assert.deepEqual(clone(first.fills), [solid]);
+  assert.deepEqual([second.visible, second.locked, second.name], [false, true, 'Edited']);
+  assert.deepEqual(clone(second.fills), []);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('a fill whose selection moved during stored-target deletion has no Undo button', async () => {
+  const app = harness({ remembered: null, console: canvasConsole() });
+  const layer = await insertHeroCell(app);
+  const deleting = deferred();
+  const remove = app.figma.clientStorage.deleteAsync.bind(app.figma.clientStorage);
+  const removed = [];
+  app.figma.clientStorage.deleteAsync = async key => { removed.push(key); await deleting.promise; await remove(key); };
+  rowFor(app, card.key).dispatch('click');
+  await choose(app);
+  assert.deepEqual(removed, [storageKey(connection, layer.id)]);
+  app.select([]); await settle();
+  deleting.resolve(); await settle();
+  assert.equal(linkOf(layer).placementKey, card.key);
+  assert.equal(app.notifications.at(-1).message, `Replaced image in ${layer.name}`);
+  assert.equal(app.notifications.at(-1).options?.button, undefined);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('fill Undo refuses a changed selection or page before its event arrives', async () => {
+  for (const change of ['empty selection', 'extra selected layer', 'different page']) {
+    const app = await canvas([{ id: '52:17', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
+    const layer = app.figma.currentPage.selection[0];
+    await choose(app);
+    const filled = fillState(layer);
+    const toast = app.notifications.at(-1);
+    if (change === 'different page') app.figma.currentPage = { ...app.figma.currentPage, id: '0:99' };
+    else app.figma.currentPage.selection = change === 'empty selection' ? [] : [layer, { id: '52:18' }];
+    toast.options.button.action();
+    assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.', change);
+    assert.deepEqual(fillState(layer), filled, change);
+    assert.deepEqual(app.undoTriggers, [], change);
+    assert.equal(app.undoCommits.length, 1, change);
+  }
+});
+
+test('a refused fill Undo write rolls earlier writes back and commits once', async () => {
+  const app = await canvas([{ id: '52:19', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
+  const layer = app.figma.currentPage.selection[0];
+  await choose(app);
+  const filled = fillState(layer);
+  layer.refusePluginData = true;
+  app.notifications.at(-1).options.button.action();
+  assert.deepEqual(fillState(layer), filled);
+  assert.equal(app.notices.at(-1), 'Not undone. Figma didn’t let the plugin change these layers back.');
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('a refused fill Undo restores completed writes across layers in reverse order', async () => {
+  const app = harness({ remembered: null, console: canvasConsole() });
+  const first = await insertHeroCell(app);
+  const second = await insertHeroCell(app);
+  for (const layer of [first, second]) layer.documentationLinks = [{ uri: `${layer.documentationLinks[0].uri}#${layer.id}` }];
+  app.select([first, second]); await settle();
+  rowFor(app, card.key).dispatch('click');
+  await choose(app);
+  const layers = [first, second];
+  const filled = layers.map(fillState);
+  const writes = [];
+  for (const layer of layers) {
+    for (const field of ['fills', 'name', 'description', 'documentationLinks']) {
+      let value = layer[field];
+      Object.defineProperty(layer, field, { get: () => value, set(next) { value = next; writes.push(`${layer.id}:${field}`); } });
+    }
+    const relaunch = layer.setRelaunchData.bind(layer);
+    layer.setRelaunchData = value => { relaunch(value); writes.push(`${layer.id}:relaunch`); };
+    const link = layer.setPluginData.bind(layer);
+    layer.setPluginData = (key, value) => { link(key, value); writes.push(`${layer.id}:link`); };
+  }
+  second.refusePluginData = true;
+  app.notifications.at(-1).options.button.action();
+  const forward = [
+    ...['fills', 'name', 'description', 'documentationLinks', 'relaunch', 'link'].map(field => `${first.id}:${field}`),
+    ...['fills', 'name', 'description', 'documentationLinks', 'relaunch'].map(field => `${second.id}:${field}`),
+  ];
+  assert.deepEqual(writes, [...forward, ...forward.toReversed()]);
+  assert.deepEqual(layers.map(fillState), filled);
+  assert.equal(app.notices.at(-1), 'Not undone. Figma didn’t let the plugin change these layers back.');
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 4);
+});
+
+test('fill Undo restores an instance sublayer without writing its unchanged link', async () => {
+  const app = await canvas([{ id: 'I52:20;53:1', name: 'Inside', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
+  const layer = app.figma.currentPage.selection[0];
+  const before = fillState(layer);
+  await choose(app);
+  app.notifications.at(-1).options.button.action();
+  assert.deepEqual(fillState(layer), before);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('fill Undo keeps the skipped text in its selection and ignores selection order', async () => {
+  const app = await canvas([
+    { id: '52:21', name: 'Text', type: 'TEXT', width: 100, height: 30, fills: [solid] },
+    { id: '52:22', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [] },
+  ]);
+  const [text, shape] = app.figma.currentPage.selection;
+  const beforeText = fillState(text);
+  await choose(app);
+  const toast = app.notifications.at(-1);
+  assert.equal(toast.options.button.text, 'Undo');
+  app.figma.currentPage.selection = [shape, text];
+  toast.options.button.action();
+  assert.deepEqual(clone(shape.fills), []);
+  assert.equal(shape.getPluginData(LINK_KEY), '');
+  assert.deepEqual(fillState(text), beforeText);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 2);
+});
+
+test('a fill with mixed paints has no Undo button', async () => {
+  const app = await canvas([
+    { id: '52:23', name: 'Plain', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] },
+    { id: '52:24', name: 'Mixed', type: 'RECTANGLE', width: 100, height: 60, fills: Symbol('mixed') },
+  ]);
+  await choose(app);
+  assert.deepEqual(app.figma.currentPage.selection.map(topImage), ['hash-1', 'hash-1']);
+  assert.equal(app.notifications.at(-1).message, 'Filled 2 layers with home.card');
+  assert.equal(app.notifications.at(-1).options?.button, undefined);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 1);
+});
+
+test('fill Undo guards a component’s relaunch data and documentation links', async () => {
+  for (const field of ['relaunch', 'documentationLinks']) {
+    const app = harness({ remembered: null, console: canvasConsole() });
+    const layer = await insertHeroCell(app);
+    rowFor(app, card.key).dispatch('click');
+    await choose(app);
+    if (field === 'relaunch') layer.setRelaunchData({ open: 'Edited' });
+    else layer.documentationLinks = [{ uri: 'https://example.com/design-notes' }];
+    const edited = fillState(layer);
+    app.notifications.at(-1).options.button.action();
+    assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.', field);
+    assert.deepEqual(fillState(layer), edited, field);
+    assert.deepEqual(app.undoTriggers, [], field);
+    assert.equal(app.undoCommits.length, 2, field);
+  }
+});
+
+test('no source file calls Figma’s global Undo', async () => {
+  const directory = new URL('../src/', import.meta.url);
+  const paths = (await readdir(directory, { recursive: true })).filter(path => /\.(?:ts|html)$/.test(path));
+  for (const path of paths) assert.doesNotMatch(await readFile(new URL(path, directory), 'utf8'), /triggerUndo\s*\(/, path);
 });
 
 test('text nodes are skipped', async () => {
@@ -3759,6 +4019,29 @@ test('drop creates placeholder in target frame then fills it', async () => {
   await settle();
   assert.deepEqual(stackNode.children.map(layer => layer.id), ['62:2', flow.frames[0].id]);
   assert.deepEqual([flow.frames[0].x, flow.frames[0].y, flow.frames[0].name], [0, 0, card.key], 'not moved: the layout places it');
+});
+
+test('a drop onto an image frame whose selection moved during download has no Undo button', async () => {
+  const photo = { type: 'IMAGE', imageHash: 'old', scaleMode: 'FILL' };
+  const app = await canvas([
+    { id: '61:10', name: 'Banner', type: 'FRAME', width: 300, height: 200, fills: [photo], children: [] },
+    { id: '61:11', name: 'Other', type: 'RECTANGLE', width: 100, height: 60, fills: [] },
+  ]);
+  const [banner, other] = app.figma.currentPage.selection;
+  app.console.gates.rendition = deferred();
+  drag(rowFor(app, card.key));
+  app.dropOnCanvas({ node: banner, absoluteX: 150, absoluteY: 100 });
+  await settle();
+  assert.equal(topImage(banner), 'old');
+  app.select([other]); await settle();
+  app.console.gates.rendition.resolve(); await settle();
+  assert.equal(topImage(banner), 'hash-1');
+  assert.equal(linkOf(banner).placementKey, card.key);
+  assert.deepEqual(app.figma.currentPage.selection.map(layer => layer.id), [other.id]);
+  assert.equal(app.notifications.at(-1).message, 'Filled Banner with home.card');
+  assert.equal(app.notifications.at(-1).options?.button, undefined);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 1);
 });
 
 test('drop onto image frame replaces', async () => {
@@ -6380,6 +6663,7 @@ test('Batch 3: Update replaces Production art in place, keeps crop and link envi
   const crop = [[0.8, 0, 0.1], [0, 0.8, 0.1]];
   app.layer.fills = [solid, { type: 'IMAGE', imageHash: 'original', scaleMode: 'CROP', imageTransform: crop }, { type: 'IMAGE', imageHash: 'hidden', scaleMode: 'FIT', visible: false }];
   const beforeGeometry = [app.layer.width, app.layer.height, app.layer.x, app.layer.y];
+  const before = { fills: clone(app.layer.fills), link: app.layer.getPluginData(LINK_KEY) };
   for (const cell of app.console.artwork.placements[0].cells) cell.production = cellArt(armArt, null, null);
   app.advance(60000); app.focusWindow(); await settle();
   assert.equal(app.element('sync-meta').textContent, 'Production has different art now');
@@ -6407,7 +6691,12 @@ test('Batch 3: Update replaces Production art in place, keeps crop and link envi
   assert.equal(app.notifications.at(-1).message, 'Updated Hero artwork with the latest Production art');
   assert.equal(app.notifications.at(-1).options.button.text, 'Undo');
   app.notifications.at(-1).options.button.action(); await settle();
-  assert.equal(app.undoTriggers.length, 1);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, commits + 2);
+  assert.deepEqual(clone(app.layer.fills), before.fills);
+  assert.equal(app.layer.getPluginData(LINK_KEY), before.link);
+  assert.equal(linkOf(app.layer).assetId, baseArt);
+  assert.equal(lastSelection(app).link.assetId, baseArt);
 });
 
 test('Batch 3: a canvas Cmd+Z of an Update offers Update again without a new selection, and retires its toast', async () => {
@@ -6431,6 +6720,7 @@ test('Batch 3: a canvas Cmd+Z of an Update offers Update again without a new sel
   assert.equal(toast.cancelled, true);
   toast.options.button.action();
   assert.equal(app.undoTriggers.length, 0);
+  assert.equal(app.undoCommits.length, 1);
 });
 
 test('Batch 3: Update alone says Updating while every conflicting action waits and the Insert footer keeps its label', async () => {

@@ -86,7 +86,6 @@ function linkSent(pending: Exported, assetId: string | null): void {
   const { placementKey, state, appearance, arm } = pending.target;
   let link: InsertLink;
   try { link = validateInsertLink({ placementKey, state, appearance, arm, environment: 'draft', assetId }); } catch { return; }
-  // A fill's Undo would take back the link instead of the fill.
   retireUndo();
   const previous = nodeLink(pending.node, pending.config);
   if (!writeLink(pending.node, pending.config, link)) return;
@@ -135,7 +134,6 @@ async function handleMessage(message: UiMessage): Promise<void> {
         post({ type: 'file-mismatch', requestId: message.requestId, slug, name: figma.root.name });
         break;
       }
-      // A fill's Undo would take back the file link instead of the fill.
       retireUndo();
       const where = linkFile(fileKey);
       // Saved in the document: an edit of its own, so a later plugin edit's undo step never takes it back.
@@ -298,7 +296,6 @@ async function handleMessage(message: UiMessage): Promise<void> {
       const width = node.width;
       const height = matchedHeight(width, placement);
       const sizing = 'layoutSizingVertical' in node ? node.layoutSizingVertical : null;
-      // A fill's Undo would now take back the resize instead.
       retireUndo();
       try {
         // A hug or fill height would undo the resize; matching the ratio needs a fixed height.
@@ -424,7 +421,7 @@ setInterval(() => {
   // An insert or an export reports the selection itself when it ends.
   if (main.importing || main.exporting) return;
   try { if (!selectionStale()) return; } catch { return; /* a page going away: its own event reports */ }
-  // The one selected layer changed on the canvas. With a fill's toast up, it is the filled layer, and Undo would take this back.
+  // The one selected layer no longer shows what the fill left.
   retireUndo();
   void initialized.then(reportSelection);
 }, 250);
