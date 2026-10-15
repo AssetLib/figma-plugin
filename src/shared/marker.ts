@@ -1,7 +1,8 @@
 // The description and documentation link on a component inserted from a placement. Figma's MCP server passes both to
 // coding agents as instructions to follow. Figma's design-to-code skill tells agents to download every image except
 // data-supplied imagery and exact codebase matches, so the description claims both: an agent building the screen
-// renders the placement through its accessor and downloads the art only as a new key's bundled fallback. Anyone with the file can read them: they never hold the token. The key is the only text
+// renders the placement through its accessor and downloads the art only as a new key's bundled fallback. Anyone
+// with the file can read them: they never hold the token. The key is the only text
 // from the console, so it must match the catalog's key grammar; anything else gets no marker, so a console response
 // can never put its own words into instructions an agent follows.
 import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN } from './connection.js';
