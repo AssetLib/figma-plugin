@@ -6,6 +6,7 @@ export async function rasterDensity(root: SceneNode): Promise<number | null> {
   while (pending.length && count++ < 2000) {
     const node = pending.pop()!;
     try {
+      if (node !== root && node.visible === false) continue;
       if ('children' in node) for (let i = node.children.length - 1; i >= 0 && pending.length + count < 2000; i--) pending.push(node.children[i]!);
       if (!('fills' in node) || !Array.isArray(node.fills) || node.width <= 0 || node.height <= 0) continue;
       for (const paint of node.fills as Paint[]) {

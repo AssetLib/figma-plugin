@@ -1,6 +1,6 @@
 // The selection as Send, Sync, and Insert see it, reported to the UI on every change, and the links that tie layers to cells.
 import {
-  LEGACY_PRODUCTION_ORIGIN, NO_AREA, PRODUCTION_ORIGIN, classifyInsertTarget, insideInstance, linkInApp, parseStoredLink, syncDescription,
+  LEGACY_PRODUCTION_ORIGIN, NO_AREA, PRODUCTION_ORIGIN, classifyInsertTarget, insideInstance, isPlacementMarker, linkInApp, parseStoredLink, syncDescription,
 } from '../shared/index.js';
 import type { CanvasTarget, Connection, InsertCandidate, InsertLink, NodeSelection, StoredLink } from '../shared/index.js';
 import type { RememberedTarget, SelectedLink, SelectionState } from '../shared/protocol.js';
@@ -130,9 +130,13 @@ export async function insertTarget(nodes: readonly SceneNode[], config: Connecti
       if (nodes.length > 200) candidate.skipInstance = true;
       else try {
         const component = await node.getMainComponentAsync();
-        const link = component ? nodeLink(component, config) : null;
-        if (component && link) candidate.placementMain = { id: component.id, name: component.name, width: component.width, height: component.height,
-          image: hasImagePaint(component), remote: component.remote, link: { placementKey: link.placementKey, state: link.state, appearance: link.appearance, arm: link.arm } };
+        // A library component, or a copied main, keeps the link with another node's id (or none, if Figma drops it on
+        // publish); its marker still says it is placement art, whose instances must keep following it.
+        const stored = component && config ? storedLink(component) : null;
+        const link = stored && config && linkInApp(stored, config) ? stored : null;
+        if (component && (link || isPlacementMarker(component.description))) candidate.placementMain = { id: component.id, name: component.name,
+          width: component.width, height: component.height, image: hasImagePaint(component), remote: component.remote,
+          ...(link ? { link: { placementKey: link.placementKey, state: link.state, appearance: link.appearance, arm: link.arm } } : {}) };
       } catch { /* An unavailable main is not an Assetlib main we can change. */ }
     }
     candidates.push(candidate);

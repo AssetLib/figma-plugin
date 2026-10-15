@@ -170,8 +170,9 @@ async function handleMessage(message: UiMessage): Promise<void> {
       const placement = parsePlacements({ placements: [message.placement] })[0]!;
       const bind = validateBinding(placement, message.bind);
       const snapshot = describeNode(node);
-      main.exporting = true;
+      // Checked before the guard is set: a node or placement without a size throws here.
       let settings = chooseExportSettings(snapshot, placement);
+      main.exporting = true;
       let bytes: Uint8Array;
       try {
         const density = await rasterDensity(node);

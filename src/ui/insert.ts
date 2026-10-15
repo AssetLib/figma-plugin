@@ -192,12 +192,12 @@ function modeNote(canvas: CanvasTarget, target: InsertTarget): string {
   const cell = target.link ? label(target.link) : null;
   const old = state.selection.link?.kind === 'linked' ? state.selection.link : null;
   let note = '';
-  if (canvas.mainOf && canvas.mainLink) {
+  if (canvas.mainOf) {
     const previous = canvas.mainLink;
-    const placement = state.placements.find(item => item.key === previous.placementKey);
-    const same = !target.link || (target.link.placementKey === previous.placementKey && placement && sameCoordinate(placement, target.link, previous));
-    note = `Changes the main component “${canvas.name}”, so every instance follows. Filling only this instance would stop it following. `
-      + (same ? `It stays linked to ${label(previous)}.` : `It relinks from ${label(previous)} to ${cell}.`);
+    const placement = previous && state.placements.find(item => item.key === previous.placementKey);
+    const same = !target.link || (previous && target.link.placementKey === previous.placementKey && placement && sameCoordinate(placement, target.link, previous));
+    note = `Changes the main component “${canvas.name}”, so every instance follows. Filling only this instance would stop it following.`
+      + (previous ? (same ? ` It stays linked to ${label(previous)}.` : ` It relinks from ${label(previous)} to ${cell}.`) : cell ? ` It links to ${cell}.` : '');
   } else if (canvas.lockedMain) note = `This is an instance of “${canvas.lockedMain}” from a library. Change its image in the library file, or insert a new layer beside it.`;
   else if (canvas.mode === 'replace' && old) {
     const placement = state.placements.find(item => item.key === old.placementKey);

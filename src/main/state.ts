@@ -13,8 +13,9 @@ export const main = {
   connectionGeneration: 0,
   // A one-click Connect request waiting for approval (assetlib.pairing.v1), until it ends.
   pairing: null as PairingRecord | null,
-  // Mutually exclusive: main refuses an insert during an export and an export during an insert.
+  // In this file covers every page once the person asks for it, and from the start in a one-page document.
   scanAllPages: figma.root.children.length === 1,
+  // Mutually exclusive: main refuses an insert during an export and an export during an insert.
   exporting: false,
   importing: false,
 };

@@ -7731,3 +7731,44 @@ test('phase 1 a reference smaller than its container stays its own size regardle
   assert.deepEqual([app.frames[0].width, app.frames[0].height], [1000, 1000]);
   assert.equal(app.element('scale-group').hidden, true);
 });
+test('phase 1 a library main known only by its marker, or a copied main, keeps its instances following it', async () => {
+  const marker = 'Assetlib placement hero.artwork (1000 × 1000). This image can change after the app is released.';
+  const library = { ...linkedSpec('53:1', { remote: true, description: marker }), pluginData: {} };
+  const copied = linkedSpec('54:1'); copied.pluginData = linkedSpec('54:9').pluginData;
+  const instance = id => ({ ...node, id, type: 'INSTANCE', main: id.replace(':2', ':1'), fills: [{ type: 'IMAGE', imageHash: 'instance', scaleMode: 'FILL' }] });
+  const app = harness({ remembered: null, selection: [library, instance('53:2'), copied, instance('54:2')] }); await settle();
+  const [, fromLibrary, copiedMain, ofCopy] = app.figma.currentPage.children;
+  app.select([fromLibrary]); await openInsert(app, { keep: true }); rowFor(app, placement.key).click();
+  assert.equal(app.element('insert').textContent, 'Insert'); assert.match(app.element('insert-note').textContent, /from a library/);
+  app.select([ofCopy]); await settle(); rowFor(app, placement.key).click();
+  assert.equal(app.element('insert').textContent, 'Replace in component');
+  await choose(app);
+  assert.equal(topImage(ofCopy), 'instance', 'no override on the instance'); assert.equal(linkOf(copiedMain).nodeId, '54:1', 'the main is linked under its own id');
+});
+test('phase 1 a truncated index claims no absence, and Send ignores a hidden raster', async () => {
+  const elsewhere = id => { const spec = linkedSpec(id); spec.pluginData[LINK_KEY] = spec.pluginData[LINK_KEY].replace(placement.key, 'other.key'); return spec; };
+  const many = harness({ remembered: null, prefs: { tab: 'insert' }, selection: Array.from({ length: 2001 }, (_, i) => elsewhere(`91:${i}`)) }); await settle();
+  assert.equal(fileIndex(many).truncated, true);
+  assert.equal(descendants(rowFor(many, placement.key)).some(item => /^tag/.test(item.className)), false, 'no “Not on this page” past the limit');
+  many.element('browse-file').click(); await settle(); assert.equal(many.element('file-limit').hidden, false);
+  const p = { ...placement, width: 1200, height: 900, states: null, defaultState: null, variants: null };
+  const app = harness({ remembered: null, imageSizes: { native: { width: 100, height: 75 } }, exportBytes: () => 33, console: { placements: [p] },
+    selection: [{ ...node, width: 400, height: 300, fills: [], children: [{ ...node, id: '1:9', width: 400, height: 300, visible: false, fills: [{ type: 'IMAGE', imageHash: 'native', scaleMode: 'FILL' }] }] }] });
+  await settle();
+  pick(app, 'placement', p.key); app.element('send').click(); await settle();
+  assert.deepEqual(app.exports.map(settings => settings.constraint.value), [1200], 'a hidden low-resolution image does not lower the export');
+});
+test('phase 1 a scan reply from an older connection ends its request, so Refresh asks again', async () => {
+  const app = harness({ remembered: null, prefs: { tab: 'insert', browse: 'file' }, selection: [linkedSpec('10:1')] }); await openInsert(app, { keep: true });
+  const scans = () => app.uiMessages.filter(message => message.type === 'scan-file');
+  const held = [];
+  const deliver = app.figma.ui.postMessage;
+  app.figma.ui.postMessage = message => { if (message.type === 'file-links' && message.requestId !== undefined) held.push(clone(message)); else deliver(message); };
+  app.element('insert-refresh').click(); await settle();
+  assert.equal(held.length, 1);
+  app.figma.ui.postMessage = deliver;
+  deliver({ ...held[0], connectionGeneration: held[0].connectionGeneration - 1 }); await settle();
+  const before = scans().length;
+  app.element('insert-refresh').click(); await settle();
+  assert.equal(scans().length, before + 1, 'the dropped reply no longer blocks a new scan');
+});

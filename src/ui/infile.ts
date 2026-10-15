@@ -18,6 +18,8 @@ export function fileTag(key: string, artwork: ArtworkResponse | null): FileTag |
   const where = index.scope === 'page' ? 'on this page' : 'in this file';
   const presence = index.scope === 'page' ? 'On this page' : 'In this file';
   const entries = index.entries.filter(entry => entry.placementKey === key);
+  // Past 2000 links the scan stopped, so a placement it didn't reach may still be in the file.
+  if (!entries.length && index.truncated) return null;
   if (!entries.length) return { word: `Not ${where}`, title: `No layer ${where} uses this placement yet.`, style: 'quiet' };
   const linked = entries.filter(entry => entry.kind === 'linked');
   const behind = artwork ? linked.filter(entry => changedArt(artwork, entry)) : [];
@@ -33,7 +35,11 @@ export function requestFileScan(allPages = false): void {
   scheduleRender();
 }
 export function acceptFileLinks(message: FileLinks): void {
-  if (message.connectionGeneration !== state.connectionGeneration) return;
+  if (message.connectionGeneration !== state.connectionGeneration) {
+    // Its request is over either way, so a later Refresh or focus can ask again.
+    if (message.requestId === scan) { scan = null; all = false; scheduleRender(); }
+    return;
+  }
   state.fileLinks = message;
   if (message.requestId === scan) { scan = null; all = false; }
   scheduleRender(true);
@@ -56,6 +62,7 @@ export function focusFile(): void {
 export function renderFileScope(): void {
   const index = state.fileLinks;
   element('file-scope').hidden = state.prefs.browse !== 'file' || index?.scope !== 'page' || index.pageCount <= 1;
+  element('file-limit').hidden = state.prefs.browse !== 'file' || !index?.truncated;
   const button = element('file-all');
   button.textContent = all ? 'Loading pages…' : 'Include all pages';
   if (all) button.setAttribute('aria-busy', 'true'); else button.removeAttribute('aria-busy');

@@ -179,7 +179,7 @@ export interface InsertCandidate {
   inComponent?: boolean;
   skipInstance?: boolean;
   placementMain?: { id: string; name: string; width: number; height: number; image: boolean; remote: boolean;
-    link: NonNullable<CanvasTarget['mainLink']> };
+    link?: NonNullable<CanvasTarget['mainLink']> };
 }
 
 // Layers a fill paints: shapes, and frames, components, and instances without children (an inserted image, say).
@@ -208,7 +208,7 @@ export function classifyInsertTarget(nodes: InsertCandidate[]): CanvasTarget {
       if (main.remote) return { mode: 'new', label: 'Insert', count: 0, nodeIds: [], beside: true, lockedMain: main.name };
       return { mode: main.image ? 'replace' : 'fill', label: main.image ? 'Replace in component' : 'Fill component',
         count: 1, nodeIds: [main.id], name: main.name, containerWidth: main.width, containerHeight: main.height,
-        mainOf: { instanceId: node.id, instanceName: node.name }, mainLink: main.link };
+        mainOf: { instanceId: node.id, instanceName: node.name }, ...(main.link ? { mainLink: main.link } : {}) };
     }
     // A linked layer whose image can be swapped. A sent text, group, or line carries a link too, but takes no image.
     if (!node.skipInstance && node.linked && node.image && (SHAPES.includes(node.type) || FRAMES.includes(node.type))) {

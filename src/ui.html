@@ -303,7 +303,7 @@
     .cell-header { color: var(--al-text-meta); font-size: 11px; white-space: pre-line; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; }
     .cell-state { white-space: nowrap; max-width: 64px; text-align: left; }
     .thumb.inherits { outline: 1px dashed var(--al-text-meta); outline-offset: -1px; }
-    #file-scope { padding: 4px 12px; }
+    #file-scope, #file-limit { padding: 4px 12px; }
 
     .footer-row { display: flex; align-items: center; gap: 8px; height: 48px; min-width: 0; }
     /* The item's name keeps room to be read: the primary shortens first. */
@@ -468,6 +468,7 @@
       </div>
       <p id="env-note" class="note" hidden></p>
       <div id="file-scope" class="meta" hidden>This page only. <button id="file-all" class="text-action" type="button">Include all pages</button></div>
+      <p id="file-limit" class="meta" hidden>Showing the first 2,000 linked layers.</p>
       <div id="list-region" class="list-region">
         <div id="intro" class="info intro" hidden><p>Placements are the image slots your app’s code declares. Each has cells for its states, appearances, and A/B arms. Draft holds unpublished art, and Send and Sync change it. Staging and Production show what someone published, and stay unavailable until a release exists.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
         <div id="insert-list"></div>
