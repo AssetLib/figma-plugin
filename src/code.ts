@@ -145,6 +145,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       break;
     }
     case 'export': {
+      retireUndo();
       if (main.exporting || main.importing || dropPending()) throw new Error('An export is already in progress.');
       const config = main.connection;
       if (!config) throw new Error('Connect to Assetlib first.');

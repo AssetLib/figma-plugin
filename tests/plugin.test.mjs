@@ -3354,7 +3354,7 @@ test('fill Undo refuses a changed selection or page before its event arrives', a
   }
 });
 
-test('a refused fill Undo write rolls earlier writes back and commits once', async () => {
+test('a refused fill Undo write rolls earlier writes back without a commit', async () => {
   const app = await canvas([{ id: '52:19', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
   const layer = app.figma.currentPage.selection[0];
   await choose(app);
@@ -3364,10 +3364,10 @@ test('a refused fill Undo write rolls earlier writes back and commits once', asy
   assert.deepEqual(fillState(layer), filled);
   assert.equal(app.notices.at(-1), 'Not undone. Figma didn’t let the plugin change these layers back.');
   assert.deepEqual(app.undoTriggers, []);
-  assert.equal(app.undoCommits.length, 2);
+  assert.equal(app.undoCommits.length, 1);
 });
 
-test('a refused fill Undo restores completed writes across layers in reverse order', async () => {
+test('a refused fill Undo restores completed writes across layers in reverse order without a commit', async () => {
   const app = harness({ remembered: null, console: canvasConsole() });
   const first = await insertHeroCell(app);
   const second = await insertHeroCell(app);
@@ -3398,18 +3398,95 @@ test('a refused fill Undo restores completed writes across layers in reverse ord
   assert.deepEqual(layers.map(fillState), filled);
   assert.equal(app.notices.at(-1), 'Not undone. Figma didn’t let the plugin change these layers back.');
   assert.deepEqual(app.undoTriggers, []);
-  assert.equal(app.undoCommits.length, 4);
+  assert.equal(app.undoCommits.length, 3);
 });
 
-test('fill Undo restores an instance sublayer without writing its unchanged link', async () => {
-  const app = await canvas([{ id: 'I52:20;53:1', name: 'Inside', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
+test('a refused fill Undo commits once when a rollback write also fails', async () => {
+  const app = await canvas([{ id: '52:25', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [solid] }]);
   const layer = app.figma.currentPage.selection[0];
-  const before = fillState(layer);
   await choose(app);
+  const filled = fillState(layer);
+  let paints = layer.fills;
+  let writes = 0;
+  Object.defineProperty(layer, 'fills', { get: () => paints, set(value) {
+    if (++writes === 2) throw new Error('Cannot roll fills back');
+    paints = value;
+  } });
+  layer.refusePluginData = true;
   app.notifications.at(-1).options.button.action();
-  assert.deepEqual(fillState(layer), before);
+  assert.equal(writes, 2);
+  assert.deepEqual(fillState(layer), { ...filled, fills: [solid] }, 'only the paints could not be rolled back');
+  assert.equal(app.notices.at(-1), 'Not undone. Figma didn’t let the plugin change these layers back.');
   assert.deepEqual(app.undoTriggers, []);
   assert.equal(app.undoCommits.length, 2);
+});
+
+test('a fill inside an instance or on a childless instance has no Undo button', async () => {
+  for (const spec of [{ id: 'I52:20;53:1', type: 'RECTANGLE' }, { id: '52:20', type: 'INSTANCE', children: [] }]) {
+    const app = await canvas([{ ...spec, name: 'Shape', width: 100, height: 60, fills: [solid] }]);
+    const layer = app.figma.currentPage.selection[0];
+    await choose(app);
+    assert.deepEqual(clone(layer.fills), [solid, { type: 'IMAGE', imageHash: 'hash-1', scaleMode: 'FILL' }]);
+    assert.equal(app.notifications.at(-1).message, spec.type === 'INSTANCE' ? 'Filled Shape with home.card' : INSTANCE_LAYERS);
+    assert.equal(app.notifications.at(-1).options?.button, undefined);
+    assert.deepEqual(app.undoTriggers, []);
+    assert.equal(app.undoCommits.length, 1);
+  }
+});
+
+test('a fill whose layer had a fill style has no Undo button', async () => {
+  for (const fillStyleId of ['S:abc', Symbol('mixed')]) {
+    const app = await canvas([{ id: '52:26', name: 'Styled', type: 'RECTANGLE', width: 100, height: 60, fills: [solid], fillStyleId }]);
+    await choose(app);
+    assert.equal(topImage(app.figma.currentPage.selection[0]), 'hash-1');
+    assert.equal(app.notifications.at(-1).message, 'Filled Styled with home.card');
+    assert.equal(app.notifications.at(-1).options?.button, undefined);
+    assert.deepEqual(app.undoTriggers, []);
+    assert.equal(app.undoCommits.length, 1);
+  }
+});
+
+test('fill Undo refuses a fill style applied after the fill without changing its paints', async () => {
+  const app = await canvas([{ id: '52:27', name: 'Shape', type: 'RECTANGLE', width: 100, height: 60, fills: [solid], fillStyleId: '' }]);
+  const layer = app.figma.currentPage.selection[0];
+  await choose(app);
+  const filled = fillState(layer);
+  let paints = layer.fills;
+  let writes = 0;
+  Object.defineProperty(layer, 'fills', { get: () => paints, set(value) { paints = value; writes++; } });
+  layer.fillStyleId = 'S:new';
+  app.notifications.at(-1).options.button.action();
+  assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.');
+  assert.equal(writes, 0);
+  assert.equal(layer.fillStyleId, 'S:new');
+  assert.deepEqual(fillState(layer), filled);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 1);
+});
+
+for (const action of ['sync', 'send-plain']) test(`starting ${action} retires a fill’s Undo while its export waits`, async () => {
+  const app = await canvas([{ id: '52:28', name: 'Shape', type: 'RECTANGLE', width: 300, height: 200, fills: [solid] }], { bytes: pngHeader(1200, 800) });
+  const layer = app.figma.currentPage.selection[0];
+  await choose(app);
+  const filled = fillState(layer);
+  const toast = app.notifications.at(-1);
+  assert.equal(toast.options.button.text, 'Undo');
+  let paints = layer.fills;
+  let writes = 0;
+  Object.defineProperty(layer, 'fills', { get: () => paints, set(value) { paints = value; writes++; } });
+  const exporting = app.delayExport();
+  if (action === 'send-plain') { app.element('tab-send').dispatch('click'); await settle(); }
+  app.element(action).dispatch('click'); await settle();
+  assert.equal(app.exports.length, 1, 'the export started and is still held');
+  assert.equal(app.drafts().length, 0);
+  assert.equal(toast.cancelled, true);
+  toast.options.button.action();
+  assert.equal(writes, 0);
+  assert.deepEqual(fillState(layer), filled);
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.undoCommits.length, 1);
+  exporting.resolve(); await settle();
+  assert.equal(app.drafts().length, 1);
 });
 
 test('fill Undo keeps the skipped text in its selection and ignores selection order', async () => {
@@ -3624,7 +3701,8 @@ test('instance sublayer is filled but not linked', async () => {
   assert.deepEqual(clone(layer.fills), [solid, { type: 'IMAGE', imageHash: 'hash-1', scaleMode: 'FILL' }], 'instances take fill overrides');
   assert.equal(layer.getPluginData(LINK_KEY), '', 'Figma keeps no plugin data inside an instance');
   assert.equal(app.element('error').hidden, true, 'the refused link costs nothing');
-  assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text], [INSTANCE_LAYERS, 'Undo']);
+  assert.equal(app.notifications.at(-1).message, INSTANCE_LAYERS);
+  assert.equal(app.notifications.at(-1).options?.button, undefined);
   assert.equal(app.element('status').textContent, INSTANCE_LAYERS);
   assert.equal(insertedMessage(app).linked, false);
   assert.equal(lastSelection(app).remembered, null, 'nothing to Sync');
@@ -3638,6 +3716,7 @@ test('instance sublayer is filled but not linked', async () => {
   assert.deepEqual([topImage(inside), topImage(badge)], ['hash-1', 'hash-1']);
   assert.deepEqual([inside.getPluginData(LINK_KEY), linkOf(badge).nodeId], ['', '60:3']);
   assert.equal(mixed.notifications.at(-1).message, INSTANCE_LAYERS);
+  assert.equal(mixed.notifications.at(-1).options?.button, undefined);
   assert.equal(insertedMessage(mixed).linked, true);
 
   // Any layer whose plugin data Figma refuses is filled without a link, and the insert still succeeds.
@@ -4042,6 +4121,30 @@ test('a drop onto an image frame whose selection moved during download has no Un
   assert.equal(app.notifications.at(-1).options?.button, undefined);
   assert.deepEqual(app.undoTriggers, []);
   assert.equal(app.undoCommits.length, 1);
+});
+
+test('fill Undo restores an image frame after a drop', async () => {
+  const photo = { type: 'IMAGE', imageHash: 'old', scaleMode: 'CROP', imageTransform: [[0.5, 0, 0.25], [0, 0.5, 0.1]], opacity: 0.8, visible: true };
+  const link = { v: 1, origin: connection.origin, orgId: connection.orgId, appId: connection.appId, placementKey: placement.key,
+    state: 'old', appearance: 'light', arm: 'b', environment: 'draft', assetId: armArt, nodeId: '61:12', insertedAt: '2026-10-14T00:00:00.000Z' };
+  const app = await canvas([{ id: link.nodeId, name: placement.key, type: 'FRAME', width: 300, height: 200, fills: [solid, photo], children: [],
+    pluginData: { [LINK_KEY]: JSON.stringify(link, null, 2) }, relaunchData: { sync: 'Earlier placement', open: 'Open Assetlib' } }]);
+  const layer = app.figma.currentPage.selection[0];
+  const before = fillState(layer);
+  app.select([]); await settle();
+  drag(rowFor(app, card.key));
+  app.dropOnCanvas({ node: layer, absoluteX: 150, absoluteY: 100 });
+  await settle();
+  assert.equal(app.frames.length, 0, 'the image frame takes the drop without a placeholder');
+  assert.deepEqual([...app.figma.currentPage.selection].map(node => node.id), [layer.id]);
+  const filled = fillState(layer);
+  for (const key of Object.keys(before)) assert.notDeepEqual(filled[key], before[key], `${key} changed in the drop`);
+  assert.equal(app.undoCommits.length, 1);
+  app.notifications.at(-1).options.button.action();
+  await settle();
+  assert.deepEqual(fillState(layer), before);
+  assert.equal(app.undoCommits.length, 2);
+  assert.deepEqual(app.undoTriggers, []);
 });
 
 test('drop onto image frame replaces', async () => {

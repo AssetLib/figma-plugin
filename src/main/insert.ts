@@ -36,8 +36,8 @@ type Marker = NonNullable<ReturnType<typeof placementMarker>>;
 // A drop main answered: the layer its insert fills, and whether main made it (a placeholder, removed if the image never comes).
 type PendingDrop = { node: SceneNode; placeholder: boolean; generation: number };
 type Paintable = SceneNode & MinimalFillsMixin;
-type Before = { fills: Paintable['fills']; link: string; relaunch: Record<string, string>; name: string;
-  component: Pick<ComponentNode, 'description' | 'documentationLinks'> | null };
+type Before = { fills: Paintable['fills']; fillStyleId: Paintable['fillStyleId']; link: string; relaunch: Record<string, string>;
+  name: string; component: Pick<ComponentNode, 'description' | 'documentationLinks'> | null };
 type Fill = { node: Paintable; before: Before };
 // relinked: existing layers whose link now names the chosen cell.
 type Inserted = { node: SceneNode; mode: InsertMode; linked: boolean; notice: string; undo: Fill[] | null; relinked: string[] };
@@ -59,11 +59,12 @@ const KEPT = ['fills', 'name', 'x', 'y', 'rotation', 'relativeTransform', 'width
 // A layer's link as stored, and its relaunch data; a layer Figma keeps no data on reads as none.
 function rawLink(node: SceneNode): string { try { return node.getPluginData(LINK_KEY); } catch { return ''; } }
 function relaunchOf(node: SceneNode): Record<string, string> { try { return node.getRelaunchData(); } catch { return {}; } }
-// The guard also covers the layer's parent, child count, raw link, relaunch data, and a component's marker.
+// The guard also covers the layer's parent, child count, raw link, relaunch data, fill style, and a component's marker.
 function snapshot(node: SceneNode): string {
   const read = (key: string): unknown => { try { return key in node ? (node as unknown as Record<string, unknown>)[key] : null; } catch { return null; } };
   return JSON.stringify([node.parent?.id ?? null, 'children' in node ? node.children.length : 0, node.type === 'COMPONENT' ? node.description : null,
-    rawLink(node), relaunchOf(node), node.type === 'COMPONENT' ? node.documentationLinks : null, ...KEPT.map(read)]);
+    rawLink(node), relaunchOf(node), node.type === 'COMPONENT' ? node.documentationLinks : null,
+    'fillStyleId' in node ? node.fillStyleId : '', ...KEPT.map(read)]);
 }
 
 /**
@@ -198,7 +199,7 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
     const previous = link ? nodeLink(node, config) : null;
     let before: Before;
     try {
-      before = { fills: node.fills, link: rawLink(node), relaunch: relaunchOf(node), name: node.name,
+      before = { fills: node.fills, fillStyleId: 'fillStyleId' in node ? node.fillStyleId : '', link: rawLink(node), relaunch: relaunchOf(node), name: node.name,
         component: node.type === 'COMPONENT' ? { description: node.description, documentationLinks: node.documentationLinks } : null };
       node.fills = withImage(before.fills, hash);
     } catch { continue; }
@@ -249,6 +250,7 @@ function notifyUndo(notice: string, filled: Filled[]): void {
       written.push(() => write(current));
     };
     let refused = false;
+    let rollbackFailed = false;
     try {
       for (const { node, before } of filled) {
         put(node.fills, before.fills, value => { node.fills = value; }, true);
@@ -261,11 +263,11 @@ function notifyUndo(notice: string, filled: Filled[]): void {
         put(rawLink(node), before.link, value => node.setPluginData(LINK_KEY, value));
       }
     } catch {
-      for (const restore of written.reverse()) try { restore(); } catch { /* Figma may refuse a rollback too. */ }
+      for (const restore of written.reverse()) try { restore(); } catch { rollbackFailed = true; }
       figma.notify(UNDO_REFUSED);
       refused = true;
     }
-    if (written.length) figma.commitUndo();
+    if (written.length && (!refused || rollbackFailed)) figma.commitUndo();
     if (refused) return;
     // Undo puts back the layers' earlier link too, which no selection change reports.
     void reportSelection();
@@ -303,7 +305,8 @@ async function apply(message: InsertMessage, config: Connection, edit: (hash: st
     figma.commitUndo();
     await dropStoredTargets(config, result.relinked);
     const selected = figma.currentPage.selection;
-    if (filled && filled.every(({ node, before }) => Array.isArray(before.fills) && selected.some(item => item.id === node.id))) notifyUndo(result.notice, filled);
+    if (filled && filled.every(({ node, before }) => Array.isArray(before.fills) && before.fillStyleId === ''
+      && node.type !== 'INSTANCE' && !insideInstance(node.id) && selected.some(item => item.id === node.id))) notifyUndo(result.notice, filled);
     else figma.notify(toastText(result.notice));
     post({ type: 'inserted', requestId: message.requestId, connectionGeneration: main.connectionGeneration, node: describeNode(result.node),
       linked: result.linked, mode: result.mode, notice: result.notice });
