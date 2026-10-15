@@ -2,7 +2,7 @@ import type {
   CanvasTarget, CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, InsertMode, NodeSelection, PairingHint, PairingRecord, Placement,
   Preferences,
 } from './index.js';
-import { isRecord, validUuid } from './validation.js';
+import { isRecord, validNodeId, validUuid } from './validation.js';
 
 /**
  * Where an insert goes: a new frame (centered in the view, or right of the selection), a child of the container
@@ -31,6 +31,13 @@ export type RememberedTarget = {
 export type SelectedLink = InsertLink & { kind: 'linked' | 'copy' | 'other'; image: boolean; children: number;
   origin?: string; orgId?: string; appId?: string };
 
+export type FileLink = InsertLink & {
+  nodeId: string; name: string; pageId: string; pageName: string; frameId: string | null; frameName: string | null;
+  kind: 'linked' | 'copy'; image: boolean; children: number;
+};
+export type FileLinks = { type: 'file-links'; connectionGeneration: number; scope: 'page' | 'file'; pageCount: number;
+  currentPageId: string; entries: FileLink[]; truncated: boolean; requestId?: number };
+
 /**
  * Where `fileKey` came from: Figma itself (`figma`), the identity saved in this document (`document`), or a link pasted
  * this session that the document couldn't keep (`session`, a view-only file). `name` is the file name the identity was
@@ -53,6 +60,8 @@ export type SelectionState = {
 // Every message that main can refuse carries a requestId, and main's error names it, so an error ends only that operation.
 export type UiMessage =
   | { type: 'init' }
+  | { type: 'scan-file'; requestId: number; allPages: boolean }
+  | { type: 'select-node'; requestId: number; nodeId: string }
   | { type: 'save-connection'; requestId: number; connection: Connection }
   // `force`: Use anyway, after main said the link names another file (`file-mismatch`).
   | { type: 'save-file-url'; requestId: number; url: string; force?: boolean }
@@ -100,6 +109,7 @@ export type UiMessage =
 export type NotifyButton = { text: string; url: string };
 
 export type MainMessage =
+  | FileLinks
   // `pairing`: a Connect request waiting for approval (resumed by the UI); `hints`: workspaces linked on this page, while
   // there is no connection. `replaced`: after this window's save, the browser connection the device held before it,
   // which another window may have saved, so the UI ends its token too.
@@ -186,6 +196,8 @@ export function parseUiMessage(value: unknown): UiMessage {
       case 'init': return true;
       case 'save-connection': return requestId(m.requestId) && isRecord(m.connection)
         && text(m.connection.origin) && text(m.connection.orgId) && text(m.connection.appId) && text(m.connection.token);
+      case 'scan-file': return requestId(m.requestId) && typeof m.allPages === 'boolean';
+      case 'select-node': return requestId(m.requestId) && validNodeId(m.nodeId);
       case 'save-file-url': return requestId(m.requestId) && text(m.url) && (m.force === undefined || typeof m.force === 'boolean');
       case 'export': return requestId(m.requestId) && isRecord(m.node) && text(m.node.id) && text(m.node.name) && text(m.node.type)
         && size(m.node.width) && size(m.node.height) && text(m.fileKey) && isRecord(m.placement) && isRecord(m.bind) && typeof m.rebind === 'boolean';

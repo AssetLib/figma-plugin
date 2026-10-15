@@ -2,7 +2,7 @@
 import {
   LEGACY_PRODUCTION_ORIGIN, NO_AREA, PRODUCTION_ORIGIN, classifyInsertTarget, insideInstance, linkInApp, parseStoredLink, syncDescription,
 } from '../shared/index.js';
-import type { CanvasTarget, Connection, InsertLink, NodeSelection, StoredLink } from '../shared/index.js';
+import type { CanvasTarget, Connection, InsertCandidate, InsertLink, NodeSelection, StoredLink } from '../shared/index.js';
 import type { RememberedTarget, SelectedLink, SelectionState } from '../shared/protocol.js';
 import { currentFileKey, fileIdentity, markDocument } from './identity.js';
 import { LINK_KEY, main, post } from './state.js';
@@ -120,13 +120,27 @@ export function inComponent(node: BaseNode): boolean {
 }
 
 /** What Insert does with these layers. A link, and a component around the layer, are read only when one layer is selected. */
-export function insertTarget(nodes: readonly SceneNode[], config: Connection | null): CanvasTarget {
+export async function insertTarget(nodes: readonly SceneNode[], config: Connection | null): Promise<CanvasTarget> {
   const one = nodes.length === 1;
-  return classifyInsertTarget(nodes.map(node => ({ id: node.id, name: node.name, type: node.type, width: node.width, height: node.height,
-    children: 'children' in node ? node.children.length : 0, image: hasImagePaint(node), linked: one && nodeLink(node, config) !== null, inComponent: one && inComponent(node) })));
+  const candidates: InsertCandidate[] = [];
+  for (const node of nodes) {
+    const candidate: InsertCandidate = { id: node.id, name: node.name, type: node.type, width: node.width, height: node.height,
+      children: 'children' in node ? node.children.length : 0, image: hasImagePaint(node), linked: one && nodeLink(node, config) !== null, inComponent: one && inComponent(node) };
+    if (node.type === 'INSTANCE') {
+      if (nodes.length > 200) candidate.skipInstance = true;
+      else try {
+        const component = await node.getMainComponentAsync();
+        const link = component ? nodeLink(component, config) : null;
+        if (component && link) candidate.placementMain = { id: component.id, name: component.name, width: component.width, height: component.height,
+          image: hasImagePaint(component), remote: component.remote, link: { placementKey: link.placementKey, state: link.state, appearance: link.appearance, arm: link.arm } };
+      } catch { /* An unavailable main is not an Assetlib main we can change. */ }
+    }
+    candidates.push(candidate);
+  }
+  return classifyInsertTarget(candidates);
 }
 
-type CanvasView = Omit<SelectionState, 'remembered'>;
+type CanvasView = Omit<SelectionState, 'remembered' | 'insertTarget'>;
 /** What a selection report shows of the canvas, read at once: everything but the target client storage remembers. */
 function canvasView(config: Connection | null): { node: SceneNode | null; view: CanvasView } {
   const selection = figma.currentPage.selection;
@@ -134,7 +148,7 @@ function canvasView(config: Connection | null): { node: SceneNode | null; view: 
   const { fileKey, source, name } = fileIdentity();
   const reason = !node ? (selection.length === 0 ? 'Select a frame or layer to send.' : 'Select one layer. Sending several at once isn’t supported yet.')
     : node.width <= 0 || node.height <= 0 ? NO_AREA : null;
-  return { node, view: { node: node ? describeNode(node) : null, reason, fileKey, insertTarget: insertTarget(selection, config),
+  return { node, view: { node: node ? describeNode(node) : null, reason, fileKey,
     link: node ? selectedLink(node, config) : null, file: { source, name } } };
 }
 
@@ -151,6 +165,7 @@ export async function reportSelection(): Promise<void> {
   const config = main.connection;
   const { node, view } = canvasView(config);
   reported = node ? JSON.stringify([generation, view, imageHashes(node)]) : null;
+  const target = await insertTarget(figma.currentPage.selection, config);
   const { fileKey } = view;
   let remembered: RememberedTarget | null = null;
   if (node && fileKey && config && staleTargets.has(staleKey(config, node.id))) await deleteTargets(config, fileKey, node.id);
@@ -169,7 +184,7 @@ export async function reportSelection(): Promise<void> {
       state: link.state, appearance: link.appearance, arm: link.arm, insertedFrom: { environment: link.environment, assetId: link.assetId } };
   }
   if (revision !== selectionRevision || generation !== main.connectionGeneration) return;
-  post({ type: 'selection', connectionGeneration: generation, selection: { ...view, remembered } });
+  post({ type: 'selection', connectionGeneration: generation, selection: { ...view, remembered, insertTarget: target } });
 }
 
 /** True when the one selected layer no longer shows what the last report did: a canvas edit Figma sent the plugin no event for. */

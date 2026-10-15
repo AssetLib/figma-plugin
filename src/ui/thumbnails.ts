@@ -177,16 +177,20 @@ function failThumbnail(sha256: string): void { thumbnailFailed.add(sha256); thum
 export function retryFailedThumbnails(): void { thumbnailFailed.clear(); thumbnailRetries.clear(); }
 
 /** A row or tile's thumbnail; `slot` draws an empty slot for a cell with nothing in this environment. */
-export function thumbnailFrame(asset: LibraryAsset | null, slot = false): HTMLElement {
+export function thumbnailFrame(asset: LibraryAsset | null, slot = false, ratio?: { width: number; height: number }, observed = true): HTMLElement {
   const frame = document.createElement('span');
   frame.className = slot ? 'thumb slot' : 'thumb';
+  if (ratio) {
+    frame.style.width = `${Math.max(8, Math.round(Math.min(56, 40 * ratio.width / ratio.height)))}px`;
+    frame.style.height = `${Math.max(8, Math.round(Math.min(40, 56 * ratio.height / ratio.width)))}px`;
+  }
   const img = document.createElement('img');
   img.alt = '';
   // The row or tile is what drags onto the canvas, never its preview's data: URL.
   img.draggable = false;
   frame.append(img);
-  listImages.push(img);
-  showThumbnail(img, asset, true);
+  if (observed) listImages.push(img);
+  showThumbnail(img, asset, observed);
   return frame;
 }
 

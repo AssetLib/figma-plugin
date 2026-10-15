@@ -115,6 +115,7 @@ function encodePng(width, height, [red, green, blue]) {
 // A colour unique to this run, so each Sync uploads new bytes.
 const stamp = Date.now();
 const colour = [stamp & 255, (stamp >> 8) & 255, (stamp >> 16) & 255];
+// Main may lower this constraint for native density, the 2048 edge cap, or the PNG byte budget.
 function exportPng(node, settings) {
   const { type, value } = settings.constraint;
   const width = type === 'WIDTH' ? value : Math.round((value * node.width) / node.height);

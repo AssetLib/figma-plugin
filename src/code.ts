@@ -1,13 +1,15 @@
 // The main thread in Figma's sandbox: routes the UI's messages, keeps the connection, exports for Send, and watches the
 // selection. Selection reporting is in main/selection.ts, and Insert and drops on the canvas in main/insert.ts.
 import {
-  CONNECT_PAGE_REFUSED, DEVICE_STORAGE, MAX_IMAGE_BYTES, SELECTION_CHANGED, chooseExportSettings, clampWindow, connectPageUrl, defaultPreferences, defaultWindowSize,
+  CONNECT_PAGE_REFUSED, DEVICE_STORAGE, MAX_EXPORT_BYTES, SELECTION_CHANGED, chooseExportSettings, clampWindow, connectPageUrl, defaultPreferences, defaultWindowSize,
   isConnectPageUrl, isConsoleLink, layerName, linkNamesFile, loadSavedConnection, mapHttpError, matchedHeight, parseFileLink, parsePlacements, parsePreferences,
   validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
 import type { Connection, InsertLink, Preferences } from './shared/index.js';
 import { DISCONNECTED, DISCONNECTED_REFUSED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { UiMessage } from './shared/protocol.js';
+import { rasterDensity } from './main/export.js';
+import { scanLinks, scheduleScan, selectNode } from './main/inventory.js';
 import { currentFileKey, linkFile } from './main/identity.js';
 import { discardDrops, discardPlaceholder, drop, dropPending, insert, renameRelinked, retireUndo, writeMarker } from './main/insert.js';
 import { clearPairing, loadPairing, pageHints, parsePairing, savePairing, takeTurn } from './main/pairing.js';
@@ -68,6 +70,7 @@ function fileUrlForThisFile(): string {
 function postConnection(replaced?: { origin: string; token: string }): void {
   post({ type: 'connection', connectionGeneration: main.connectionGeneration, connection: main.connection, savedFileUrl: fileUrlForThisFile(), preferences,
     pairing: main.pairing, hints: main.connection ? [] : pageHints(), ...(replaced ? { replaced } : {}) });
+  void scanLinks();
 }
 
 /** The one way main opens a page in the browser: a console link (a toast's button) or the connect page, checked first. */
@@ -92,6 +95,7 @@ function linkSent(pending: Exported, assetId: string | null): void {
   writeMarker(pending.node, pending.config, placementKey, pending.frame);
   renameRelinked(pending.node, previous, pending.name);
   commitOwnStep();
+  void scanLinks();
 }
 
 /** Ends a plugin edit as an undo step of its own, unless a drop's placeholder waits: that drop's insert commits both. */
@@ -107,6 +111,13 @@ async function handleMessage(message: UiMessage): Promise<void> {
       if (figma.command === 'sync' || figma.command === 'insert' || figma.command === 'send') post({ type: 'launch', command: figma.command });
       postConnection();
       await reportSelection();
+      break;
+    case 'scan-file':
+      if (message.allPages) main.scanAllPages = true;
+      await scanLinks(message.requestId);
+      break;
+    case 'select-node':
+      await selectNode(message.nodeId);
       break;
     case 'save-connection': {
       const next = validateConnection(message.connection);
@@ -159,17 +170,28 @@ async function handleMessage(message: UiMessage): Promise<void> {
       const placement = parsePlacements({ placements: [message.placement] })[0]!;
       const bind = validateBinding(placement, message.bind);
       const snapshot = describeNode(node);
-      const settings = chooseExportSettings(snapshot, placement);
       main.exporting = true;
+      let settings = chooseExportSettings(snapshot, placement);
       let bytes: Uint8Array;
-      try { bytes = await node.exportAsync(settings); }
+      try {
+        const density = await rasterDensity(node);
+        settings = chooseExportSettings(snapshot, placement, { density });
+        bytes = await node.exportAsync(settings);
+        for (const scale of [2, 1]) {
+          if (bytes.byteLength <= MAX_EXPORT_BYTES) break;
+          const next = chooseExportSettings(snapshot, placement, { density, scale });
+          if (next.constraint.value >= settings.constraint.value) continue;
+          settings = next;
+          bytes = await node.exportAsync(settings);
+        }
+      }
       catch { throw new Error('Figma couldn’t export this layer. Try again, or flatten it first.'); }
       finally { main.exporting = false; }
       if (node.removed || node.width !== snapshot.width || node.height !== snapshot.height || node.name !== snapshot.name) {
         await reportSelection();
         throw new Error(SELECTION_CHANGED);
       }
-      if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error(mapHttpError(413, null));
+      if (bytes.byteLength > MAX_EXPORT_BYTES) throw new Error(mapHttpError(413, null));
       exported.clear();
       exported.set(message.requestId, {
         config, node, frame: { width: placement.width, height: placement.height }, name: layerName(placement, bind),
@@ -411,6 +433,7 @@ figma.on('drop', drop as (event: DropEvent) => boolean);
 // A placeholder whose image is still downloading would stay grey and named "· loading".
 figma.on('close', discardDrops);
 figma.on('selectionchange', () => {
+  void initialized.then(scheduleScan);
   // A fill's Undo is for the layers it filled, while they are what the person is looking at.
   retireUndo();
   void initialized.then(reportSelection);
@@ -427,6 +450,7 @@ setInterval(() => {
   void initialized.then(reportSelection);
 }, 250);
 figma.on('currentpagechange', () => {
+  void initialized.then(() => scanLinks());
   // The filled layers are out of sight.
   retireUndo();
   void initialized.then(reportSelection);

@@ -1,14 +1,16 @@
-// The Insert tab: placements by screen and the image library, the cell pickers, Insert, and dragging rows and tiles onto the canvas.
+// The Insert tab: placements by screen and the image library, the cell strip and file inventory, Insert, and dragging rows and tiles onto the canvas.
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, changedArt, consoleLink,
-  environmentLabel, fillRendition, findCell, insideInstance, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
+  environmentLabel, fillRendition, findCell, insideInstance, insertSize, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
   placementMeta, pngSize, reconnectText, refusalCode, renditionPath, sameCoordinate, tokenRefused,
 } from '../shared/index.js';
 import type {
-  Appearance, ArtworkResponse, CanvasTarget, CellArtwork, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
+  ArtworkResponse, CanvasTarget, CellArtwork, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
 } from '../shared/index.js';
 import type { InsertDestination, MainMessage, SelectedLink, UiMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
+import { renderCells } from './cells.js';
+import { cellAxes, fileRows, fileTag, renderFileScope, requestFileScan, resetFile, selectFileNode } from './infile.js';
 import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
 import {
@@ -24,9 +26,6 @@ import { releaseListImages, resetThumbnails, retryFailedThumbnails, showThumbnai
 
 const searchInput = element<HTMLInputElement>('insert-search');
 const searchClear = element<HTMLButtonElement>('search-clear');
-const insertStatePicker = element<HTMLSelectElement>('insert-state');
-const insertAppearancePicker = element<HTMLSelectElement>('insert-appearance');
-const insertArmPicker = element<HTMLSelectElement>('insert-arm');
 const insertButton = element<HTMLButtonElement>('insert');
 const insertNewButton = element<HTMLButtonElement>('insert-new');
 const insertThumb = element<HTMLImageElement>('insert-thumb');
@@ -34,7 +33,7 @@ const insertBar = element('insert-bar');
 const hintBar = element('hint-bar');
 const emptyState = element('insert-empty');
 const scaleButtons = [element<HTMLButtonElement>('scale-1'), element<HTMLButtonElement>('scale-2'), element<HTMLButtonElement>('scale-3')] as const;
-const browseButtons = [element<HTMLButtonElement>('browse-placements'), element<HTMLButtonElement>('browse-images')] as const;
+const browseButtons = [element<HTMLButtonElement>('browse-placements'), element<HTMLButtonElement>('browse-images'), element<HTMLButtonElement>('browse-file')] as const;
 const environmentButtons = ENVIRONMENTS.map(name => element<HTMLButtonElement>(`env-${name}`));
 // Below 400 px wide (ui.html) the radios give way to this dropdown; both show the same choice.
 const environmentSelect = element<HTMLSelectElement>('env-select');
@@ -76,8 +75,8 @@ let artworkRefreshPending = false;
 // A focus or visibility refresh waits a minute after the last artwork request finished, even when it failed.
 let artworkFinishedAt: number | null = null;
 let images: { items: LibraryAsset[]; nextCursor: string | null; q: string } | null = null;
-// A row's placement and the cell its pickers show, or a tile's image.
-type Choice = { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string };
+// A row's placement and the cell its strip shows, or a tile's image.
+type Choice = { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string } | { kind: 'file'; nodeId: string };
 let selected: Choice | null = null;
 let pendingInsert: { id: number; generation: number; kind: 'insert' | 'update' } | null = null;
 let pendingReveal: { key: string; cell: CellCoordinate; environment: EnvironmentName } | null = null;
@@ -124,7 +123,10 @@ export function applyPreferences(preferences: Preferences): void {
 }
 function published(name: EnvironmentName): boolean { return name === 'draft' || Boolean(artwork?.environments[name]); }
 // A remembered environment with nothing published shows draft, without forgetting the choice.
-function shownEnvironment(): EnvironmentName { return artwork && !published(state.prefs.environment) ? 'draft' : state.prefs.environment; }
+function shownEnvironment(): EnvironmentName {
+  const preferred = state.prefs.environmentChosen ? state.prefs.environment : 'production';
+  return artwork && !published(preferred) ? 'draft' : preferred;
+}
 const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function shortDate(value: string): string {
   const date = new Date(value);
@@ -141,7 +143,7 @@ function environmentTitle(name: EnvironmentName): string {
 }
 function environmentNote(): string {
   if (state.previewNote) return state.previewNote;
-  if (state.prefs.browse !== 'placements' || !artwork) return '';
+  if (state.prefs.browse !== 'placements' || !artwork || !state.prefs.environmentChosen) return '';
   const shown = shownEnvironment();
   return shown === state.prefs.environment ? '' : `Nothing is published to ${environmentLabel(state.prefs.environment)} yet, so Draft is shown.`;
 }
@@ -175,30 +177,29 @@ function canvasTarget(target: InsertTarget | null): CanvasTarget {
 }
 /** A fill or a replace keeps the layer's size, so Insert at does not apply. */
 function filling(canvas: CanvasTarget): boolean { return canvas.mode === 'fill' || canvas.mode === 'replace'; }
-/** A side in Figma when Insert at divides it, rounded as main rounds it. */
-function side(value: number, scale: number): number { return Math.round((value / scale) * 100) / 100; }
-/** The frame size in Figma when Insert at divides it, or nothing for a fill. */
-function scaledSize(frame: { width: number; height: number }): string {
-  const { scale } = state.prefs;
-  return filling(reportedTarget()) ? '' : `→ ${side(frame.width, scale)} × ${side(frame.height, scale)}`;
-}
-/** A layer's name quoted in a note, cut to 24 characters so the note stays short in a narrow window. */
-function quoted(name: string): string { return `“${name.length > 24 ? `${name.slice(0, 23)}…` : name}”`; }
-/** Into a container narrower than the new frame: a hint naming an Insert at that fits. Insert stays available. */
-function widthHint(frame: { width: number }, canvas: CanvasTarget): { text: string; fits?: 2 | 3 } {
-  const width = canvas.containerWidth;
-  const { scale } = state.prefs;
-  if (canvas.mode !== 'into' || !width || side(frame.width, scale) <= width) return { text: '' };
-  const fits = ([2, 3] as const).find(next => next > scale && side(frame.width, next) <= width);
-  return { text: `Wider than ${canvas.name ? quoted(canvas.name) : 'this frame'} (${Number(width.toFixed(2))} px).`, fits };
+/** The actual new or fitted size; fill and replace keep the layer's dimensions. */
+function scaledSize(frame: { width: number; height: number }, component = false): string {
+  const reported = reportedTarget();
+  const canvas = reported.mode === 'into' && reported.insideComponent && component ? NEW_FRAME : reported;
+  if (filling(canvas)) return '';
+  const container = canvas.mode === 'into' ? { width: canvas.containerWidth ?? 0, height: canvas.containerHeight ?? 0 } : null;
+  const size = insertSize(frame, state.prefs.scale, container);
+  return `→ ${size.width} × ${size.height}`;
 }
 /** The destination and link effects, before any width or component limitation. */
 function modeNote(canvas: CanvasTarget, target: InsertTarget): string {
-  const label = (link: InsertLink) => bindingLabel({ ...link, slotKey: link.placementKey });
+  const label = (link: Pick<InsertLink, 'placementKey' | 'state' | 'appearance' | 'arm'>) => bindingLabel({ ...link, slotKey: link.placementKey });
   const cell = target.link ? label(target.link) : null;
   const old = state.selection.link?.kind === 'linked' ? state.selection.link : null;
   let note = '';
-  if (canvas.mode === 'replace' && old) {
+  if (canvas.mainOf && canvas.mainLink) {
+    const previous = canvas.mainLink;
+    const placement = state.placements.find(item => item.key === previous.placementKey);
+    const same = !target.link || (target.link.placementKey === previous.placementKey && placement && sameCoordinate(placement, target.link, previous));
+    note = `Changes the main component “${canvas.name}”, so every instance follows. Filling only this instance would stop it following. `
+      + (same ? `It stays linked to ${label(previous)}.` : `It relinks from ${label(previous)} to ${cell}.`);
+  } else if (canvas.lockedMain) note = `This is an instance of “${canvas.lockedMain}” from a library. Change its image in the library file, or insert a new layer beside it.`;
+  else if (canvas.mode === 'replace' && old) {
     const placement = state.placements.find(item => item.key === old.placementKey);
     const same = !target.link || (target.link.placementKey === old.placementKey && placement && sameCoordinate(placement, target.link, old));
     note = same ? `Replaces the image in ${canvas.name}. It stays linked to ${label(old)}.`
@@ -211,6 +212,7 @@ function modeNote(canvas: CanvasTarget, target: InsertTarget): string {
       : ` ${canvas.skipped} other selected layers can’t show an image and stay as they are.`;
   } else if (canvas.mode === 'into') note = `Adds a new layer inside ${canvas.name}.`;
   else if (canvas.beside) note = 'Adds a new layer beside the selection.';
+  if (canvas.skippedInstances) note += ` ${canvas.skippedInstances} instance${canvas.skippedInstances === 1 ? '' : 's'} of Assetlib placements stay as they are, so they keep following their main component.`;
   return note;
 }
 
@@ -231,18 +233,13 @@ function insertTarget(choice = selected): InsertTarget | null {
     const art = findCell(placement, cell)?.[shown] ?? null;
     const asset = artworkAsset(artwork, art);
     const frame = { width: placement.width, height: placement.height };
-    // Only the axes the placement declares are named, and only those without a picker above: a picker already says it.
-    const picked = pickerAxes(placement);
-    // The size in Figma comes first, so a narrow window that shortens the line keeps it.
-    const size = scaledSize(frame);
-    const parts = size ? [size, label] : [label];
-    if (placement.states?.length && picked.states.length <= 1) parts.push(cell.state ?? placement.defaultState ?? 'default');
-    if (placement.variants?.appearance?.length && picked.appearances.length <= 1) parts.push(appearanceLabel(cell.appearance));
-    if (placement.variants?.arm?.length && picked.arms.length <= 1) parts.push(cell.arm ?? 'Control');
+    const component = Boolean(state.connection && placementMarker(state.connection, placement.key, frame));
+    const size = scaledSize(frame, component);
+    const parts = [size, label, cellAxes(placement, cell)].filter(Boolean);
     const target: InsertTarget = { title: placement.key, meta: parts.join(' · '), note: shown === 'draft' ? 'No image in Draft for this cell yet.'
       : `No image in ${label} for this cell. Sending puts it in Draft.`,
       noteLink: null, name: layerName(placement, cell), asset, ready: false, frame, link: null, empty: !art,
-      component: Boolean(state.connection && placementMarker(state.connection, placement.key, frame)) };
+      component };
     if (!art) return target;
     if (!asset) return { ...target, note: 'The console didn’t return this image. Refresh to try again.' };
     // The link names the picked cell, never the family it inherits from, so a Sync never touches the base art.
@@ -260,33 +257,8 @@ function insertTarget(choice = selected): InsertTarget | null {
     ready: !stop, note: stop?.note ?? '', noteLink: stop?.link ?? null, name: asset.name || 'Assetlib image', frame, link: null, empty: false, component: false };
 }
 function distinct<T>(values: T[]): T[] { return values.filter((value, index) => values.indexOf(value) === index); }
-/** Each axis's values among the placement's cells; the footer shows a picker for an axis with more than one. */
-function pickerAxes(placement: PlacementArtwork): { states: (string | null)[]; appearances: (Appearance | null)[]; arms: (string | null)[] } {
-  return {
-    // The default state comes first.
-    states: distinct(placement.cells.map(item => item.state)).sort((a, b) => Number(b === placement.defaultState) - Number(a === placement.defaultState)),
-    appearances: distinct(placement.cells.map(item => item.appearance)),
-    arms: distinct(placement.cells.map(item => item.arm)),
-  };
-}
-function buildInsertPickers(placement: PlacementArtwork, cell: CellCoordinate): void {
-  const { states, appearances, arms } = pickerAxes(placement);
-  // The default state comes first; a label short enough that the three pickers share one row at 420 px.
-  insertStatePicker.replaceChildren(...states.map(value => new Option(value ?? 'Default', value ?? '')));
-  insertAppearancePicker.replaceChildren(...appearances.map(value => new Option(appearanceLabel(value), value ?? '')));
-  insertArmPicker.replaceChildren(...arms.map(value => new Option(value ?? 'Control', value ?? '')));
-  insertStatePicker.value = cell.state ?? '';
-  insertAppearancePicker.value = cell.appearance ?? '';
-  insertArmPicker.value = cell.arm ?? '';
-  element('insert-state-label').hidden = states.length <= 1;
-  element('insert-appearance-label').hidden = appearances.length <= 1;
-  element('insert-arm-label').hidden = arms.length <= 1;
-}
-function pickedCell(): CellCoordinate {
-  return { state: insertStatePicker.value || null, appearance: (insertAppearancePicker.value || null) as Appearance | null, arm: insertArmPicker.value || null };
-}
-function selectedKey(): string | null { return selected?.kind === 'placement' ? selected.key : selected?.kind === 'image' ? selected.assetId : null; }
-/** A row's or tile's choice: the chosen one with the cell its pickers show, else its base cell. */
+function selectedKey(): string | null { return selected?.kind === 'placement' ? selected.key : selected?.kind === 'image' ? selected.assetId : selected?.kind === 'file' ? selected.nodeId : null; }
+/** A row's or tile's choice: the chosen one with the cell its strip shows, else its base cell. */
 function choiceFor(key: string): Choice | null {
   if (selectedKey() === key) return selected;
   if (state.prefs.browse === 'images') return { kind: 'image', assetId: key };
@@ -307,14 +279,17 @@ function updateSelected(): void {
     row.setAttribute('tabindex', id === stop ? '0' : '-1');
   }
 }
+function firstCell(placement: PlacementArtwork): CellCoordinate {
+  const base = baseCoordinate(placement), cell = findCell(placement, base) ?? placement.cells[0];
+  return cell ? { state: cell.state, appearance: cell.appearance, arm: cell.arm } : base;
+}
 function selectPlacement(key: string): void {
   const placement = artwork?.placements.find(item => item.key === key);
   if (!placement) return;
   activeKey = key;
   // Choosing the chosen row again keeps the cell picked in the footer, so Enter and double-click insert what it shows.
   if (selected?.kind !== 'placement' || selected.key !== key) {
-    selected = { kind: 'placement', key, cell: baseCoordinate(placement) };
-    buildInsertPickers(placement, selected.cell);
+    selected = { kind: 'placement', key, cell: firstCell(placement) };
   }
   selectionChanged(key);
 }
@@ -324,7 +299,11 @@ function selectImage(assetId: string): void {
   selected = { kind: 'image', assetId };
   selectionChanged(assetId);
 }
-function choose(key: string): void { if (state.prefs.browse === 'placements') selectPlacement(key); else selectImage(key); }
+function choose(key: string): void {
+  if (state.prefs.browse === 'placements') selectPlacement(key);
+  else if (state.prefs.browse === 'images') selectImage(key);
+  else { selected = { kind: 'file', nodeId: key }; activeKey = key; selectionChanged(key); }
+}
 function selectionChanged(id: string): void {
   updateSelected();
   // Messages about the previous choice no longer apply; a running operation keeps its status.
@@ -417,19 +396,25 @@ function wireItem(item: HTMLElement, key: string, name: string, choose: (key: st
   rowNames.set(key, name.toLowerCase());
   return item;
 }
+/** The declared size, as people read it: a reference that fixes the ratio, not the pixels to draw. */
+function referenceSize(placement: Pick<PlacementArtwork, 'width' | 'height'>): string { return `reference ${placement.width} × ${placement.height}`; }
 function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HTMLElement {
   const row = makeNode('div', 'placement');
   row.setAttribute('data-key', placement.key);
   const text = makeNode('span', 'row-text');
-  const key = makeNode('span', 'key', placement.key);
-  const size = makeNode('span', 'size', placementMeta(placement));
-  text.append(key, size);
+  const name = placement.key.slice(placement.key.lastIndexOf('.') + 1);
+  const key = makeNode('span', 'name', name);
+  const meta = placementMeta(placement);
+  text.append(key, makeNode('span', 'meta compact-meta', [name !== placement.key ? placement.key : '', meta].filter(Boolean).join(' · ')),
+    makeNode('span', 'meta wide-key', name !== placement.key ? placement.key : ''));
   const art = findCell(placement, baseCoordinate(placement))?.[shownEnvironment()] ?? null;
-  // A cell with nothing in this environment shows an empty slot.
-  row.append(thumbnailFrame(artworkAsset(current, art), !art), text);
-  const tag = rowTag(placement);
+  const box = makeNode('span', 'thumb-box'); box.append(thumbnailFrame(artworkAsset(current, art), !art, placement));
+  row.append(box, text, makeNode('span', 'meta wide-meta', meta));
+  const draft = rowTag(placement);
+  row.title = [placement.key, meta, referenceSize(placement), draft?.title].filter(Boolean).join(' · ');
+  const tag = draft?.blocking ? { ...draft, style: 'blocking' } : fileTag(placement.key, artwork);
   if (tag) {
-    const chip = makeNode('span', tag.blocking ? 'tag blocking' : 'tag', tag.word);
+    const chip = makeNode('span', `tag ${tag.style ?? ''}`, tag.word);
     chip.title = tag.title;
     row.append(chip);
   }
@@ -564,10 +549,9 @@ export function revealPlacement(key: string, cell: CellCoordinate, environment: 
   if (!placement) return;
   const query = currentQuery().toLowerCase();
   if (query && !key.toLowerCase().includes(query) && !placement.screen.toLowerCase().includes(query)) clearSearch();
-  if (published(environment)) setEnvironment(environment);
-  const shownCell = findCell(placement, cell) ? { ...cell, state: cell.state ?? placement.defaultState } : baseCoordinate(placement);
+  setEnvironment(environment, true);
+  const shownCell = findCell(placement, cell) ? { ...cell, state: cell.state ?? placement.defaultState } : firstCell(placement);
   selected = { kind: 'placement', key, cell: shownCell };
-  buildInsertPickers(placement, shownCell);
   activeKey = key;
   scheduleRender(true);
   flushRender();
@@ -609,7 +593,7 @@ export function renderList(): void {
   const { browse } = state.prefs;
   const list = element('insert-list');
   const grid = element('image-grid');
-  list.hidden = browse !== 'placements';
+  list.hidden = browse === 'images';
   grid.hidden = browse !== 'images';
   const query = currentQuery();
   const lower = query.toLowerCase();
@@ -645,6 +629,15 @@ export function renderList(): void {
         listChildren.push(group);
       });
     }
+  } else if (browse === 'file') {
+    listChildren.push(...fileRows(query, artwork, (row, entry) => {
+      row.setAttribute('role', 'option');
+      row.addEventListener('click', () => { choose(entry.nodeId); selectFileNode(entry.nodeId); });
+      row.addEventListener('dblclick', () => { choose(entry.nodeId); selectFileNode(entry.nodeId); });
+      rows.set(entry.nodeId, row); rowNames.set(entry.nodeId, entry.name.toLowerCase());
+    }));
+    if (!rows.size) empty = query ? { text: `No layers match “${query}”.`, action: 'clear' }
+      : { title: `Nothing from Assetlib ${state.fileLinks?.scope === 'file' ? 'in this file' : 'on this page'} yet.`, text: 'Insert a placement from Placements, or drag one onto the canvas.', action: null };
   } else if (!images) {
     if (loading('images')) gridChildren.push(...skeletons('images'));
     else empty = listError;
@@ -656,7 +649,7 @@ export function renderList(): void {
   list.replaceChildren(...listChildren);
   grid.replaceChildren(...gridChildren);
   // A listbox only while it holds options; loading, it holds skeletons and the words a screen reader finds there.
-  for (const [box, label, shows] of [[list, 'Placements', browse === 'placements'], [grid, 'Images', browse === 'images']] as const) {
+  for (const [box, label, shows] of [[list, browse === 'file' ? 'In this file' : 'Placements', browse !== 'images'], [grid, 'Images', browse === 'images']] as const) {
     if (shows && rows.size) { box.setAttribute('role', 'listbox'); box.setAttribute('aria-label', label); }
     else { box.removeAttribute('role'); box.removeAttribute('aria-label'); }
   }
@@ -676,10 +669,12 @@ export function renderInsertControls(): void {
   const { browse } = state.prefs;
   element('browse-placements').setAttribute('aria-checked', String(browse === 'placements'));
   element('browse-images').setAttribute('aria-checked', String(browse === 'images'));
+  element('browse-file').setAttribute('aria-checked', String(browse === 'file'));
+  renderFileScope();
   rovingStops(browseButtons);
   // Typing stays possible while a list loads; a new search replaces the load.
   searchInput.disabled = !state.connection;
-  const label = browse === 'placements' ? 'Search placements or screens' : 'Search images';
+  const label = browse === 'placements' ? 'Search placements or screens' : browse === 'file' ? 'Search layers or placements' : 'Search images';
   searchInput.placeholder = label;
   searchInput.setAttribute('aria-label', label);
   searchClear.hidden = !searchInput.value;
@@ -724,17 +719,16 @@ export function renderInsertBar(): void {
   // A cell with nothing in this environment is the row's empty slot here too.
   element('insert-preview').className = target?.empty ? 'thumb slot' : 'thumb';
   element('insert-title').textContent = target?.title ?? '';
+  // Placement art: the reference size, secondary to the ratio a row shows.
+  const chosen = selectedPlacement();
+  element('insert-title').title = chosen ? `${chosen.key} · ${referenceSize(chosen)}` : '';
   element('insert-meta').textContent = target?.meta ?? '';
   // The whole line on hover, for a narrow window that shortens it.
   element('insert-meta').title = target?.meta ?? '';
   const canvas = canvasTarget(target);
   const reported = reportedTarget();
   const beside = besideComponent(reported, target) ? `Figma doesn’t put components inside components, so this goes beside ${reported.name ?? 'the selection'}.` : '';
-  const width = target?.ready ? widthHint(target.frame, canvas) : { text: '' };
-  const note = target?.note || (target?.ready ? [modeNote(canvas, target), beside || width.text].filter(Boolean).join(' ') : '');
-  const fit = element('insert-fit-scale');
-  fit.hidden = !width.fits || Boolean(target?.note);
-  fit.textContent = width.fits ? `Use ${width.fits}×` : '';
+  const note = target?.note || (target?.ready ? [modeNote(canvas, target), beside].filter(Boolean).join(' ') : '');
   element('insert-note').textContent = note;
   element('insert-note').hidden = !note;
   element('insert-send-here').hidden = !target?.empty || !hasCurrentSelection() || !state.selection.node || Boolean(state.selection.reason);
@@ -742,14 +736,14 @@ export function renderInsertBar(): void {
   const noteLink = element<HTMLAnchorElement>('insert-note-link');
   noteLink.hidden = !target?.noteLink;
   if (target?.noteLink) noteLink.href = target.noteLink;
-  if (selected?.kind !== 'placement') {
-    for (const id of ['insert-state-label', 'insert-appearance-label', 'insert-arm-label']) element(id).hidden = true;
-  }
+  renderCells(selectedPlacement(), selected?.kind === 'placement' ? selected.cell : null, shownEnvironment(), artwork,
+    cell => { if (selected?.kind === 'placement') { selected = { ...selected, cell }; scheduleRender(); flushRender(); } },
+    () => { if (selected?.kind === 'placement') insertFrom(selected.key); });
   scaleButtons.forEach((button, index) => button.setAttribute('aria-checked', String(state.prefs.scale === index + 1)));
   rovingStops(scaleButtons);
   // The selection decides the action: Insert, Insert into, Fill, or Replace image; a fill keeps the layer's size, and
   // what can't be inserted has no size to choose.
-  element('scale-group').hidden = filling(canvas) || !target?.ready;
+  element('scale-group').hidden = canvas.mode !== 'new' || !target?.ready;
   insertButton.className = state.tokenRefused && element<HTMLDetailsElement>('settings').open && !state.pairingActive ? 'secondary' : 'primary';
   const inserting = state.ops.inserting && !isUpdating();
   setBusy(insertButton, inserting ? 'Inserting…' : canvas.label, inserting);
@@ -759,7 +753,7 @@ export function renderInsertBar(): void {
   const unavailable = actionsBlocked() || !state.connection || !target?.ready || pendingInsert !== null;
   setUnavailable(insertButton, unavailable);
   setUnavailable(insertNewButton, unavailable);
-  // The chosen row drags the cell its pickers show; the row chosen before drags its base cell again.
+  // The chosen row drags the cell its strip shows; the row chosen before drags its base cell again.
   const key = selectedKey();
   if (dragFollows !== null && dragFollows !== key) {
     const before = rows.get(dragFollows);
@@ -770,7 +764,7 @@ export function renderInsertBar(): void {
   if (row) row.draggable = canDrag(target);
   // How to insert, until the first insert or until closed; the footer takes its place while something is chosen.
   // The Sync bar, when it shows, is what the selection is about.
-  hintBar.hidden = !state.connection || state.prefs.tab !== 'insert' || !insertBar.hidden || state.prefs.hintSeen === true || rows.size === 0
+  hintBar.hidden = state.prefs.browse === 'file' || !state.connection || state.prefs.tab !== 'insert' || !insertBar.hidden || state.prefs.hintSeen === true || rows.size === 0
     || syncBar() !== null || !element('intro').hidden;
 }
 
@@ -779,7 +773,8 @@ export function enterInsert(): void {
   if (state.prefs.tab !== 'insert' || !state.connection || state.connectionGeneration === null || state.ops.connecting) return;
   if (state.prefs.browse === 'placements') {
     if ((artworkGeneration !== state.connectionGeneration || artworkListStale) && !quietLoading && state.ops.loadingList !== 'placements') void loadArtwork();
-  } else if (state.ops.loadingList !== 'images' && (!images || images.q !== currentQuery())) void loadImages(true);
+  } else if (state.prefs.browse === 'file') requestFileScan();
+  else if (state.ops.loadingList !== 'images' && (!images || images.q !== currentQuery())) void loadImages(true);
   ensureArtwork();
 }
 
@@ -805,9 +800,8 @@ function acceptArtwork(payload: unknown, generation: number, from: number, atten
   if (selected?.kind === 'placement') {
     if (!placement) selected = null;
     else {
-      const cell = findCell(placement, selected.cell) ? { ...selected.cell, state: selected.cell.state ?? placement.defaultState } : baseCoordinate(placement);
+      const cell = findCell(placement, selected.cell) ? { ...selected.cell, state: selected.cell.state ?? placement.defaultState } : firstCell(placement);
       selected = { ...selected, cell };
-      buildInsertPickers(placement, cell);
     }
   }
   if (attention === state.attentionCount) markConnected();
@@ -918,7 +912,8 @@ export function connectionKept(): void {
     scheduleRender(true);
   }
   if (refresh && state.prefs.tab === 'insert') {
-    if (state.prefs.browse === 'placements') void loadArtwork(); else void loadImages(true);
+    if (state.prefs.browse === 'file') requestFileScan();
+    else if (state.prefs.browse === 'placements') void loadArtwork(); else void loadImages(true);
   } else enterInsert();
   ensureArtwork(artworkRefreshPending);
 }
@@ -1260,6 +1255,7 @@ export function failInsert(requestId: number, message: string): boolean {
 }
 
 export function resetInsert(): void {
+  resetFile();
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
   artworkFrom = null; quietFrom = null; seenLinks.clear(); checkedLinks.clear();
   quietTicket += 1; quietLoading = false; artworkRefreshPending = false; artworkFinishedAt = null; artworkListStale = false; pendingReveal = null;
@@ -1275,7 +1271,7 @@ export function resetInsert(): void {
 
 function setBrowse(next: Preferences['browse']): void {
   if (state.prefs.browse === next) return;
-  if (next === 'images') pendingReveal = null;
+  if (next !== 'placements') pendingReveal = null;
   state.prefs.browse = next;
   selected = null;
   activeKey = null;
@@ -1284,10 +1280,10 @@ function setBrowse(next: Preferences['browse']): void {
   scheduleRender(true);
   enterInsert();
 }
-function setEnvironment(next: EnvironmentName): void {
-  // Before the artwork loads, the choice is kept for when it does.
-  if (artwork ? !published(next) || shownEnvironment() === next : state.prefs.environment === next) return;
+function setEnvironment(next: EnvironmentName, reveal = false): void {
+  if (!reveal && artwork && !published(next)) return;
   state.prefs.environment = next;
+  state.prefs.environmentChosen = true;
   savePreferences();
   scheduleRender(true);
 }
@@ -1301,17 +1297,19 @@ function setScale(next: 1 | 2 | 3): void {
 function refreshList(): void {
   if (!state.connection) return;
   retryFailedThumbnails();
-  if (state.prefs.browse === 'placements') void loadArtwork(); else void loadImages(true);
+  if (state.prefs.browse === 'file') requestFileScan();
+    else if (state.prefs.browse === 'placements') void loadArtwork(); else void loadImages(true);
 }
 function clearSearch(): void {
   searchInput.value = '';
-  if (state.prefs.browse === 'placements') scheduleRender(true); else searchImages();
+  if (state.prefs.browse !== 'images') scheduleRender(true); else searchImages();
   scheduleRender();
 }
 
 /** Enter or a double-click on a row or tile: choose it, then Insert; when Insert can't use it, say why (the footer shows it). */
 function insertFrom(key: string): void {
   choose(key);
+  if (state.prefs.browse === 'file') { selectFileNode(key); return; }
   const target = insertTarget();
   if (target && !target.ready && !actionsBlocked() && !pendingInsert) { setStatus(target.note); return; }
   void beginInsert();
@@ -1355,7 +1353,7 @@ function typeAhead(char: string, index: number, keys: string[]): string | undefi
   const start = repeated ? index + 1 : index;
   for (let step = 0; step < keys.length; step += 1) {
     const key = keys[(start + step) % keys.length]!;
-    if (rowNames.get(key)?.startsWith(prefix)) return key;
+    if (rowNames.get(key)?.startsWith(prefix) || (state.prefs.browse === 'placements' && key.slice(key.lastIndexOf('.') + 1).toLowerCase().startsWith(prefix))) return key;
   }
   return undefined;
 }
@@ -1412,11 +1410,6 @@ export function initInsert(goToSend: () => void): void {
     scheduleRender();
     searchInput.focus();
   });
-  element('insert-fit-scale').addEventListener('click', () => {
-    const target = insertTarget();
-    const fits = target?.ready ? widthHint(target.frame, canvasTarget(target)).fits : undefined;
-    if (fits) { setScale(fits); flushRender(); element(`scale-${fits}`).focus(); }
-  });
   element('insert-send-here').addEventListener('click', () => {
     if (actionsBlocked() || selected?.kind !== 'placement' || !insertTarget()?.empty || !hasCurrentSelection() || !state.selection.node || state.selection.reason) return;
     const choice = { placementKey: selected.key, ...selected.cell };
@@ -1427,6 +1420,8 @@ export function initInsert(goToSend: () => void): void {
   });
   element('browse-placements').addEventListener('click', () => setBrowse('placements'));
   element('browse-images').addEventListener('click', () => setBrowse('images'));
+  element('browse-file').addEventListener('click', () => setBrowse('file'));
+  element('file-all').addEventListener('click', () => requestFileScan(true));
   for (const name of ENVIRONMENTS) element(`env-${name}`).addEventListener('click', () => setEnvironment(name));
   scaleButtons.forEach((button, index) => button.addEventListener('click', () => setScale((index + 1) as 1 | 2 | 3)));
   // Each segmented control is a radio group with one tab stop; the arrow keys choose within it.
@@ -1458,7 +1453,7 @@ export function initInsert(goToSend: () => void): void {
   searchInput.addEventListener('keydown', escape);
   searchInput.addEventListener('input', () => {
     scheduleRender();
-    if (state.prefs.browse === 'placements') { scheduleRender(true); return; }
+    if (state.prefs.browse !== 'images') { scheduleRender(true); return; }
     if (searchTimer !== null) window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(searchImages, 300);
   });
@@ -1469,13 +1464,6 @@ export function initInsert(goToSend: () => void): void {
   element('insert-token').addEventListener('click', () => { if (listError?.action === 'reconnect') void startConnect(hintOfCurrent()); else openSettings(); });
   element('insert-go-send').addEventListener('click', goToSend);
   element('images-more').addEventListener('click', () => { void loadImages(false); });
-  for (const picker of [insertStatePicker, insertAppearancePicker, insertArmPicker]) {
-    picker.addEventListener('change', () => {
-      if (selected?.kind !== 'placement') return;
-      selected = { ...selected, cell: pickedCell() };
-      scheduleRender();
-    });
-  }
   insertButton.addEventListener('click', () => { void beginInsert(); });
   insertNewButton.addEventListener('click', () => { void beginInsert(true); });
   // A held Enter or Space clicks a button once per repeat: Insert runs once.

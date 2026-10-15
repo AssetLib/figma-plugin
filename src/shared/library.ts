@@ -3,6 +3,7 @@ import type {
   LibraryAsset, Placement, PlacementArtwork, Preferences, RenditionInfo, StoredLink,
 } from './types.js';
 import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN } from './connection.js';
+import { ratioName } from './export.js';
 import { parsePlacements } from './placements.js';
 import { boundedString, isRecord, validArm, validNodeId, validPlacementKey, validSha256, validState, validUuid } from './validation.js';
 
@@ -30,12 +31,12 @@ export function appearanceLabel(appearance: Appearance | null): string {
   return appearance === 'light' ? 'Light' : appearance === 'dark' ? 'Dark' : 'Any';
 }
 
-/** A placement row's meta line: "1170 × 1560 · 2 states · light, dark · arm b", naming only what it declares. */
+/** A placement row's meta line: "3:4 · 2 states · light/dark · arm b", naming only what it declares. */
 export function placementMeta(placement: Pick<Placement, 'width' | 'height' | 'states' | 'variants'>): string {
-  const parts = [`${placement.width} × ${placement.height}`];
+  const parts = [ratioName(placement.width, placement.height)];
   if (placement.states?.length) parts.push(`${placement.states.length} state${placement.states.length === 1 ? '' : 's'}`);
   const appearances = placement.variants?.appearance ?? [];
-  if (appearances.length) parts.push(appearances.join(', '));
+  if (appearances.length) parts.push(appearances.join('/'));
   const arms = placement.variants?.arm ?? [];
   if (arms.length) parts.push(`arm${arms.length === 1 ? '' : 's'} ${arms.join(', ')}`);
   return parts.join(' · ');
@@ -176,6 +177,9 @@ export interface InsertCandidate {
   image: boolean;
   /** It is a component or sits inside a component, a component set, or an instance (read for a single layer only). */
   inComponent?: boolean;
+  skipInstance?: boolean;
+  placementMain?: { id: string; name: string; width: number; height: number; image: boolean; remote: boolean;
+    link: NonNullable<CanvasTarget['mainLink']> };
 }
 
 // Layers a fill paints: shapes, and frames, components, and instances without children (an inserted image, say).
@@ -199,20 +203,30 @@ export function classifyInsertTarget(nodes: InsertCandidate[]): CanvasTarget {
   const named = (node: InsertCandidate) => node.name.trim() || 'this layer';
   if (nodes.length === 1) {
     const node = nodes[0]!;
+    if (node.placementMain) {
+      const main = node.placementMain;
+      if (main.remote) return { mode: 'new', label: 'Insert', count: 0, nodeIds: [], beside: true, lockedMain: main.name };
+      return { mode: main.image ? 'replace' : 'fill', label: main.image ? 'Replace in component' : 'Fill component',
+        count: 1, nodeIds: [main.id], name: main.name, containerWidth: main.width, containerHeight: main.height,
+        mainOf: { instanceId: node.id, instanceName: node.name }, mainLink: main.link };
+    }
     // A linked layer whose image can be swapped. A sent text, group, or line carries a link too, but takes no image.
-    if (node.linked && node.image && (SHAPES.includes(node.type) || FRAMES.includes(node.type))) {
+    if (!node.skipInstance && node.linked && node.image && (SHAPES.includes(node.type) || FRAMES.includes(node.type))) {
       return { mode: 'replace', label: 'Replace image', count: 1, nodeIds: [node.id], name: named(node), containerWidth: node.width, containerHeight: node.height };
     }
     if ((node.type === 'FRAME' || node.type === 'COMPONENT') && node.children > 0 && !insideInstance(node.id)) {
-      return { mode: 'into', label: `Insert into ${named(node)}`, count: 1, nodeIds: [node.id], name: named(node), containerWidth: node.width,
+      return { mode: 'into', label: `Insert into ${named(node)}`, count: 1, nodeIds: [node.id], name: named(node), containerWidth: node.width, containerHeight: node.height,
         ...(node.inComponent ? { insideComponent: true as const } : {}) };
     }
   }
-  const layers = nodes.filter(fillable);
-  if (!layers.length) return { mode: 'new', label: 'Insert', count: 0, nodeIds: [], ...(nodes.length ? { beside: true as const } : {}) };
+  const skippedInstances = nodes.filter(node => node.placementMain || node.skipInstance).length;
+  const layers = nodes.filter(node => !node.placementMain && !node.skipInstance && fillable(node));
+  const skipped = nodes.length - layers.length - skippedInstances;
+  const skips = { ...(skippedInstances ? { skippedInstances } : {}), ...(skipped ? { skipped } : {}) };
+  if (!layers.length) return { mode: 'new', label: 'Insert', count: 0, nodeIds: [], ...(skippedInstances ? { skippedInstances } : {}), ...(nodes.length ? { beside: true as const } : {}) };
   const one = layers.length === 1 ? layers[0]! : null;
   return { mode: 'fill', label: one ? `Fill ${named(one)}` : `Fill ${layers.length} layers`, count: layers.length, nodeIds: layers.map(node => node.id),
-    ...(one ? { name: named(one) } : {}), ...(nodes.length > layers.length ? { skipped: nodes.length - layers.length } : {}), containerWidth: Math.max(...layers.map(node => node.width)), containerHeight: Math.max(...layers.map(node => node.height)) };
+    ...(one ? { name: named(one) } : {}), ...skips, containerWidth: Math.max(...layers.map(node => node.width)), containerHeight: Math.max(...layers.map(node => node.height)) };
 }
 
 /** The smallest WebP by area, else the smallest PNG, within the preview byte cap. */
@@ -309,7 +323,7 @@ export function syncDescription(link: Pick<InsertLink, 'placementKey' | 'state' 
 
 /** The plugin opens on Insert: its library is the first thing people look for. */
 export function defaultPreferences(): Preferences {
-  return { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1 };
+  return { tab: 'insert', browse: 'placements', environment: 'production', scale: 1 };
 }
 
 // The window sizes the grip can drag the plugin to; a saved size outside them is ignored.
@@ -335,8 +349,9 @@ export function parsePreferences(value: unknown): Preferences {
   const result = defaultPreferences();
   if (!isRecord(value)) return result;
   if (value.tab === 'send' || value.tab === 'insert') result.tab = value.tab;
-  if (value.browse === 'placements' || value.browse === 'images') result.browse = value.browse;
+  if (value.browse === 'placements' || value.browse === 'images' || value.browse === 'file') result.browse = value.browse;
   if (typeof value.environment === 'string' && ENVIRONMENTS.includes(value.environment as EnvironmentName)) result.environment = value.environment as EnvironmentName;
+  if (value.environmentChosen === true) result.environmentChosen = true;
   if (value.scale === 1 || value.scale === 2 || value.scale === 3) result.scale = value.scale;
   const size = value.window;
   if (isRecord(size) && Number.isInteger(size.width) && Number.isInteger(size.height)) {
@@ -349,4 +364,11 @@ export function parsePreferences(value: unknown): Preferences {
   if (typeof value.hintSeen === 'boolean') result.hintSeen = value.hintSeen;
   if (typeof value.introSeen === 'boolean') result.introSeen = value.introSeen;
   return result;
+}
+
+/** Insert fits both container dimensions without enlarging the reference; a bare canvas uses Insert at. */
+export function insertSize(frame: { width: number; height: number }, scale: number, container?: { width: number; height: number } | null): { width: number; height: number } {
+  const s = container && container.width > 0 && container.height > 0
+    ? Math.min(1, container.width / frame.width, container.height / frame.height) : 1 / scale;
+  return { width: Math.round(frame.width * s * 100) / 100, height: Math.round(frame.height * s * 100) / 100 };
 }

@@ -50,7 +50,7 @@ export function pngSizeOf(bytes) {
   return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
-const selects = ['placement', 'state', 'appearance', 'arm', 'insert-state', 'insert-appearance', 'insert-arm'];
+const selects = ['placement', 'state', 'appearance', 'arm'];
 // Tags of ui.html elements the UI tells apart: text fields and selects (focus there is never taken), and the settings.
 const staticTags = {
   input: ['org-id', 'app-id', 'token', 'file-url', 'insert-search'], select: [...selects, 'origin'],
@@ -71,9 +71,8 @@ const staticParents = {
   'file-form': 'file-fallback', 'file-url': 'file-form', 'file-mismatch-box': 'file-fallback', 'file-anyway': 'file-mismatch-box',
 };
 export const controls = ['origin', 'org-id', 'app-id', 'token', 'connect', 'update-token', 'disconnect', 'placement', 'state', 'appearance', 'arm', 'send', 'sync', 'match-ratio',
-  'file-url', 'tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'search-clear', 'scale-1', 'scale-2', 'scale-3', 'env-draft',
-  'env-staging', 'env-production', 'insert-refresh', 'images-more', 'insert-clear', 'insert-retry', 'insert-token', 'insert-go-send', 'insert-state',
-  'insert-appearance', 'insert-arm', 'insert', 'insert-new', 'hint-close', 'sync-match', 'sync-send', 'file-anyway', 'file-change', 'connect-browser', 'use-token',
+  'file-url', 'tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'browse-file', 'file-all', 'insert-search', 'search-clear', 'scale-1', 'scale-2', 'scale-3', 'env-draft',
+  'env-staging', 'env-production', 'insert-refresh', 'images-more', 'insert-clear', 'insert-retry', 'insert-token', 'insert-go-send', 'insert', 'insert-new', 'hint-close', 'sync-match', 'sync-send', 'file-anyway', 'file-change', 'connect-browser', 'use-token',
   'switch-workspace', 'pairing-open', 'pairing-check', 'pairing-cancel', 'sync-switch'];
 
 export class Element {
@@ -344,7 +343,7 @@ function abortError() { return Object.assign(new Error('The operation was aborte
 export function createHarness({
   mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', selection = [], exportBytes = () => new Uint8Array(0),
   createImageBitmap, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, zoom: 1 },
-  command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false, now, store: sharedStore,
+  pages = [], imageSizes = {}, command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false, now, store: sharedStore,
 }) {
   // `now`: a clock for Date.now() (and new Date()) on both sides, so a test can move time; the real clock otherwise.
   const clock = now ? { Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now()])); } static now() { return now(); } } } : {};
@@ -429,10 +428,10 @@ export function createHarness({
   // data, an instance or a layer inside one refuses children, and a component refuses to go inside a component, a
   // component set, or an instance, or any layer inside one; `refusePluginData` and `refuseChildren` make any other node
   // refuse them too.
-  const makeNode = ({ pluginData = {}, children, ...spec }, parent = null) => {
+  const makeNode = ({ pluginData = {}, children, main: component, ...spec }, parent = null) => {
     const data = new Map(Object.entries(pluginData));
     const item = {
-      removed: false,
+      removed: false, ...(spec.type === 'COMPONENT' ? { remote: false, description: '', documentationLinks: [] } : {}),
       parent,
       resize(width, height) { resizes.push({ id: this.id, width, height, layoutSizingVertical: this.layoutSizingVertical }); this.width = width; this.height = height; },
       ...spec,
@@ -440,10 +439,15 @@ export function createHarness({
         const base = this.parent && this.parent.type !== 'PAGE' ? this.parent.absoluteBoundingBox : { x: 0, y: 0 };
         return { x: base.x + (this.x ?? 0), y: base.y + (this.y ?? 0), width: this.width, height: this.height };
       },
+      async getMainComponentAsync() { return typeof component === 'string' ? figma.getNodeByIdAsync(component) : component ? (this.resolvedMain ??= makeNode(component, this.parent)) : null; },
       async exportAsync(settings) {
         exports.push(clone(settings));
         if (exportGate) await exportGate.promise;
-        return exportBytes(this, settings);
+        const result = exportBytes(this, settings, exports.length);
+        if (typeof result !== 'number') return result;
+        const width = settings.constraint.type === 'WIDTH' ? settings.constraint.value : Math.round(settings.constraint.value * this.width / this.height);
+        const height = settings.constraint.type === 'HEIGHT' ? settings.constraint.value : Math.round(settings.constraint.value * this.height / this.width);
+        const bytes = new Uint8Array(Math.max(33, result)); bytes.set(pngHeader(width, height)); return bytes;
       },
       getPluginData(key) { return data.get(key) ?? ''; },
       setPluginData(key, value) {
@@ -471,9 +475,12 @@ export function createHarness({
     return item;
   };
   // A page: its selection, and its children (the given nodes plus created frames).
-  let pages = 0;
-  const makePage = nodes => {
-    const page = { type: 'PAGE', id: `0:${++pages}`, selection: nodes, children: [...nodes],
+  let pageSequence = 0;
+  const loadedPages = [];
+  const makePage = (nodes, spec = {}) => {
+    pageSequence++;
+    const page = { type: 'PAGE', id: `0:${pageSequence}`, name: `Page ${pageSequence}`, parent: null, removed: false, ...spec, selection: nodes, children: [...nodes],
+      async loadAsync() { loadedPages.push(this.id); if (this.failLoad) throw new Error('Cannot load page'); },
       // As PageNode.findAllWithCriteria: by types, and by plugin data keys that are set.
       findAllWithCriteria({ types, pluginData } = {}) {
         const found = [];
@@ -537,6 +544,15 @@ export function createHarness({
       images.push(bytes);
       return { hash: `hash-${images.length}`, async getSizeAsync() { return size; } };
     },
+    getImageByHash(hash) {
+      const size = imageSizes[hash] ?? pngSizeOf(images[Number(hash.replace('hash-', '')) - 1]);
+      return size ? { async getSizeAsync() { if (size instanceof Error) throw size; return clone(size); } } : null;
+    },
+    async getNodeByIdAsync(id) {
+      const all = figma.root.children.flatMap(page => [page, ...page.findAllWithCriteria()]);
+      return all.find(node => node.id === id && !node.removed) ?? all.map(node => node.resolvedMain).find(node => node?.id === id && !node.removed) ?? null;
+    },
+    async setCurrentPageAsync(page) { figma.currentPage = page; events.get('currentpagechange')?.(); },
     createFrame() { return insertable('FRAME', {}); },
     createComponent() { return insertable('COMPONENT', { description: '', documentationLinks: [] }); },
     // notices keeps the text of each toast; notifications keeps its options (a button, a timeout) too.
@@ -568,6 +584,8 @@ export function createHarness({
       show() { uiShown.shows.push(uiResizes.length); },
     },
   };
+  figma.root.children = [figma.currentPage, ...pages.map(spec => makePage((spec.children ?? []).map(node => makeNode(node)), spec))];
+  for (const page of figma.root.children) page.parent = figma.root;
   // Main and the UI share the fake timeouts. Main's intervals are kept apart, so timer assertions and fireTimers/fireDue never run them.
   vm.runInNewContext(mainSource, { figma, __html__: '', setTimeout: window.setTimeout, clearTimeout: window.clearTimeout,
     setInterval(callback, delay) { timerId += 1; intervals.set(timerId, { callback, delay }); return timerId; },
@@ -626,7 +644,7 @@ export function createHarness({
     },
   }, { filename: 'ui.bundle.js' });
   return {
-    figma, document, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers, intervals,
+    figma, loadedPages, document, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers, intervals,
     canvases, resizes, undoCommits, notifications, undoTriggers, externalUrls, uiResizes, uiShown, relaunches, pluginDrops, window,
     observers: intersections.observers, setVisible: intersections.setVisible,
     activeElement: () => focusState.active,
@@ -661,7 +679,7 @@ export function createHarness({
     /** The page is shown or hidden (document.visibilityState), with its visibilitychange event. */
     setVisibility(value) { document.visibilityState = value; documentListeners.get('visibilitychange')?.({ type: 'visibilitychange' }); },
     /** Switches to a new page holding `nodes` (plain specs), as Figma's currentpagechange. */
-    changePage(nodes = []) { figma.currentPage = makePage(nodes.map(spec => makeNode(spec))); events.get('currentpagechange')(); return figma.currentPage; },
+    changePage(nodes = []) { figma.currentPage = makePage(nodes.map(spec => makeNode(spec))); figma.currentPage.parent = figma.root; figma.root.children.push(figma.currentPage); events.get('currentpagechange')(); return figma.currentPage; },
     drafts: () => requests.filter(request => request.method === 'POST'),
     exportMessages: () => uiMessages.filter(message => message.type === 'export'),
     insertMessages: () => uiMessages.filter(message => message.type === 'insert'),

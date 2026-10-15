@@ -70,7 +70,7 @@ export function buildDraftBody(input: {
   if (typeof node.name !== 'string') throw new Error('This layer can’t be sent. Select another layer.');
   const expected = chooseExportSettings(node, placement);
   if (settings.format !== 'PNG' || settings.useAbsoluteBounds !== true
-    || settings.constraint.type !== expected.constraint.type || settings.constraint.value !== expected.constraint.value) {
+    || settings.constraint.type !== expected.constraint.type || !Number.isInteger(settings.constraint.value) || settings.constraint.value < 1 || settings.constraint.value > expected.constraint.value) {
     throw new Error(SELECTION_CHANGED);
   }
   if (decodedBase64Length(bytesBase64) > MAX_IMAGE_BYTES) throw new Error(EXPORT_TOO_LARGE);

@@ -169,7 +169,7 @@ function installFakes(config) {
         { sha256: sha(2 * n + 1), mime: 'image/png', bytes: preview.byteLength, width: 64, height: previewHeight }] };
   };
   // Seven placements on three screens, or a generated list when config.placements asks for more. With config.declared,
-  // the first declares two states, both appearances, and an A/B arm, so the footer shows all three pickers.
+  // the first declares two states, both appearances, and an A/B arm, so the footer shows the cell strip.
   const named = [['onboarding.hero', 'Onboarding', 1170, 1560], ['onboarding.footer', 'Onboarding', 1170, 300], ['home.banner', 'Home', 1170, 480],
     ['home.promo', 'Home', 1170, 600], ['home.tile', 'Home', 540, 540], ['settings.header', 'Settings', 1170, 400], ['settings.empty', 'Settings', 800, 800]];
   const count = config.placements ?? 7;
@@ -197,7 +197,7 @@ function installFakes(config) {
     }
     if (config.declared && i === 0) {
       const cells = [];
-      for (const state of ['welcome', 'return']) for (const appearance of [null, 'light', 'dark']) for (const arm of [null, 'b']) {
+      for (const state of ['welcome', 'return']) for (const appearance of (config.noAny ? ['light', 'dark'] : [null, 'light', 'dark'])) for (const arm of [null, 'b']) {
         // Named cells may be null while the other variants inherit Control · Any, as the console reports them.
         const empty = config.unsetCells?.some(cell => cell.key === key && cell.state === state && cell.appearance === appearance && cell.arm === arm);
         cells.push({ state, appearance, arm, draft: empty ? null : draft, staging: null, production: draft });
@@ -315,6 +315,10 @@ function installFakes(config) {
   let generation = 0;
   let frames = 0;
   const received = [];
+  const selectedNodes = [];
+  const fileEntries = config.fileEntries ?? [];
+  let allPages = Boolean(config.fileAll);
+  const inventory = requestId => ({ type: 'file-links', connectionGeneration: generation, scope: allPages || !config.multiPage ? 'file' : 'page', pageCount: config.multiPage ? 2 : 1, currentPageId: '0:1', entries: config.connection ? fileEntries.filter(entry => allPages || !config.multiPage || entry.pageId === '0:1') : [], truncated: false, ...(requestId ? { requestId } : {}) });
   const notices = [];
   const reply = message => window.postMessage({ pluginMessage: message }, '*');
   // config.selection may leave out insertTarget: nothing selected for Insert, so a new frame.
@@ -342,12 +346,17 @@ function installFakes(config) {
         // delays.connection: main's client storage reads take that long before the connection message.
         const connected = () => {
           reply(connection());
+          reply(inventory());
           reply(selection());
         };
         if (config.hold?.includes('connection')) { held.set('connection', new Set([connected])); }
         else setTimeout(connected, delays.connection ?? 0);
         break;
       }
+      case 'scan-file':
+        if (message.allPages) allPages = true;
+        setTimeout(() => reply(inventory(message.requestId)), config.scanDelay ?? 10); break;
+      case 'select-node': selectedNodes.push(message.nodeId); break;
       case 'save-connection':
         // As code.ts does when client storage refuses the write: the error, then the selection again.
         if (config.refuseSave) {
@@ -358,6 +367,7 @@ function installFakes(config) {
         generation += 1;
         config.connection = message.connection;
         reply(connection());
+        reply(inventory());
         if (message.connection.pairing && config.pairing?.userCode === message.connection.pairing) config.pairing = null;
         reply(selection());
         break;
@@ -373,9 +383,16 @@ function installFakes(config) {
         reply(selection());
         break;
       case 'export': {
-        const { width, height } = message.placement;
-        reply({ type: 'exported', requestId: message.requestId, node: message.node, fileKey: message.fileKey,
-          settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: width } }, bytes: pngHeader(width, height) });
+        const node = message.node, placement = message.placement;
+        const type = node.height / node.width > placement.height / placement.width ? 'HEIGHT' : 'WIDTH';
+        let a = placement.width, b = placement.height; while (b) [a, b] = [b, a % b];
+        const target = (type === 'WIDTH' ? node.width : node.height) * Math.min(3, 2047 / Math.max(node.width, node.height));
+        const unit = (type === 'WIDTH' ? placement.width : placement.height) / a;
+        const value = unit <= target ? Math.floor(target / unit) * unit : Math.max(1, Math.round(target));
+        const width = type === 'WIDTH' ? value : Math.round(value * node.width / node.height);
+        const height = type === 'HEIGHT' ? value : Math.round(value * node.height / node.width);
+        reply({ type: 'exported' , requestId: message.requestId, node: message.node, fileKey: message.fileKey,
+          settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type, value } }, bytes: pngHeader(width, height) });
         break;
       }
       case 'remember':
@@ -396,6 +413,7 @@ function installFakes(config) {
         generation += 1;
         config.connection = null;
         reply(connection());
+        reply(inventory());
         reply(selection());
         break;
       // As code.ts does: the connect page opens in the browser, and the request's record is kept and forgotten.
@@ -447,6 +465,7 @@ function installFakes(config) {
   window.__harness = { log, received, notices, uuid, delays, targets, inserts, drops, insertDrops, resizes, saved, opened, artwork, inserted: () => frames,
     hold: route => { config.hold = [...new Set([...(config.hold ?? []), route])]; },
     release: route => { config.hold = config.hold?.filter(item => item !== route); const waiting = held.get(route); held.delete(route); for (const complete of waiting ?? []) complete(); },
+    selectedNodes, fileEntries,
     approve: () => { config.pairingStatus = 'approved'; },
     advance: ms => { clockOffset += ms; },
     select: value => { config.selection = value; reply(selection()); },
@@ -464,7 +483,7 @@ const fakeToken = name => `alk_${name.padEnd(43, '0')}`;
 const DEFAULTS = {
   connection: { origin: 'https://console.assetlib.dev', orgId: 'org-one', appId: 'app-a', token: fakeToken('saved'), workspaceName: 'Sample workspace', appName: 'Sample app' },
   identity: { orgId: 'org-one', appId: 'app-a', workspaceName: 'Sample workspace', appName: 'Sample app', scopes: ['draft'] },
-  preferences: { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1, introSeen: true },
+  preferences: { tab: 'insert', browse: 'placements', environment: 'draft', environmentChosen: true, scale: 1, introSeen: true },
   selection: { node: null, reason: 'Select a frame or layer to send.', fileKey: 'abc123', remembered: null },
   delays: {},
   // What the console issues when one-click Connect is approved: the workspace, the app, and who approved it.
@@ -563,7 +582,7 @@ async function openUi(options = {}, { width = 420, height = 720, theme: mode = n
   }
   /** What has focus: an id, a data-key or data-asset-id, or "body". */
   const focused = () => evaluate(`(() => { const el = document.activeElement; if (!el || el === document.body) return 'body';
-    return el.id || el.getAttribute('data-key') || el.getAttribute('data-asset-id') || el.tagName; })()`);
+    return (el.matches('#insert-cells [role=radio]') ? 'insert-cell' : '') || el.id || el.getAttribute('data-key') || el.getAttribute('data-asset-id') || el.tagName; })()`);
   /**
    * The colour Chrome painted at one CSS pixel, as [r, g, b]. A 1×1 PNG needs no unfiltering: with no neighbours, every
    * PNG filter leaves the bytes as they are.
@@ -605,7 +624,11 @@ const textOf = id => `document.getElementById('${id}').textContent`;
 const inViewport = id => `(() => { const r = document.getElementById('${id}').getBoundingClientRect();
   return r.width > 0 && r.height > 0 && r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight + 0.5 && r.right <= innerWidth + 0.5; })()`;
 /** Chooses a <select> value as a person would, firing change. */
-const choose = (id, value) => `(() => { const s = document.getElementById('${id}'); s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event('change')); })()`;
+const choose = (id, value) => /^insert-(state|appearance|arm)$/.test(id)
+  ? `(() => { const radios = [...document.querySelectorAll('#insert-cells [role="radio"]')]; const current = radios.find(el => el.getAttribute('aria-checked') === 'true');
+    const wanted = Object.fromEntries(['state', 'appearance', 'arm'].map(axis => [axis, axis === '${id.slice(7)}' ? ${JSON.stringify(value)} : current.dataset[axis]]));
+    const next = radios.find(el => Object.entries(wanted).every(([axis, value]) => el.dataset[axis] === value)); if (!next) throw new Error('Cell not found'); next.click(); })()`
+  : `(() => { const s = document.getElementById('${id}'); s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event('change')); })()`;
 /** How many times `text` is on screen: rendered text outside the visually hidden live regions. */
 const timesShown = text => `(() => { let count = 0; const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -1059,16 +1082,17 @@ test('one-click Connect shows the code to compare, cancels, connects without a t
   } finally { await refused.close(); }
 });
 
-test('≥7 placement rows visible at 420×720 with a selection and cell pickers', async () => {
+test('56 px placement rows and a bounded cell strip leave the list scrollable at 420×720', async () => {
   const page = await openUi({ placements: 30, declared: true });
   try {
     await page.waitFor(`${rows} === 30`, { message: 'thirty placements' });
     await page.click('#insert-list .placement[data-key="screen0.slot0"]');
-    assert.equal(await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker')].filter(label => !label.hidden).length`), 3, 'State, Appearance, and A/B arm');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#insert-cells [role=radio][tabindex="0"]').length`), 1);
+    assert.ok(await page.evaluate(`document.getElementById('insert-cells').getBoundingClientRect().height <= 160`));
     const visible = await page.evaluate(`(() => { const region = document.getElementById('list-region').getBoundingClientRect();
       return [...document.querySelectorAll('#insert-list .placement[data-key]')].filter(row => { const r = row.getBoundingClientRect();
         return r.top >= region.top - 0.5 && r.bottom <= region.bottom + 0.5; }).length; })()`);
-    assert.ok(visible >= 7, `${visible} rows are fully visible`);
+    assert.ok(visible >= 5, `${visible} rows are fully visible`);
     // The bars are fixed: only the list scrolls.
     const bars = `['.topbar', '.toolbar', '.scopebar', '#insert-bar'].map(s => Math.round(document.querySelector(s).getBoundingClientRect().top))`;
     const before = await page.evaluate(bars);
@@ -1095,7 +1119,7 @@ const longRebound = (() => {
 // What main reports for a selected frame with children, with a name the footer's primary must shorten (A.5), and for
 // several shapes or one linked layer.
 const longFrame = 'A frame with a long name that has to be shortened somewhere';
-const intoLong = { mode: 'into', label: `Insert into ${longFrame}`, count: 1, nodeIds: ['40:1'], name: longFrame, containerWidth: 390 };
+const intoLong = { mode: 'into', label: `Insert into ${longFrame}`, count: 1, nodeIds: ['40:1'], name: longFrame, containerWidth: 390, containerHeight: 844 };
 const fillThree = { mode: 'fill', label: 'Fill 3 layers', count: 3, skipped: 1, nodeIds: ['41:1', '41:2', '41:3'], containerWidth: 120 };
 const replaceOne = { mode: 'replace', label: 'Replace image', count: 1, nodeIds: ['42:1'], name: 'home.banner', containerWidth: 390 };
 const intoComponent = { mode: 'into', label: 'Insert into Card', count: 1, nodeIds: ['43:1'], name: 'Card', containerWidth: 390, insideComponent: true };
@@ -1111,7 +1135,7 @@ const linkedSelection = layer => ({ node: layer, reason: null, fileKey: 'abc123'
 test('no overflow at 320×480, 420×720, 640×900', async () => {
   // Nothing wider than the window, and the page itself never scrolls either way: only the list (or the Send form) does.
   const check = `(() => { const width = document.documentElement.clientWidth; const region = document.getElementById('list-region');
-    const wide = [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden')).filter(el => { const r = el.getBoundingClientRect();
+    const wide = [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden') && (!el.closest('#insert-cells') || el.id === 'insert-cells')).filter(el => { const r = el.getBoundingClientRect();
       return r.width > 0 && r.right > width + 0.5; }).map(el => el.id || el.getAttribute('data-key') || el.className || el.tagName);
     return { page: document.documentElement.scrollWidth - width, pageY: document.documentElement.scrollHeight - document.documentElement.clientHeight,
       list: region.scrollWidth - region.clientWidth, wide: wide.slice(0, 5) }; })()`;
@@ -1125,7 +1149,7 @@ test('no overflow at 320×480, 420×720, 640×900', async () => {
     ['Switch workspace waiting', { connection: browserConnection }, async page => {
       await page.waitFor(`${rows} === 7`); await page.click('#settings-summary'); await page.click('#switch-workspace'); await page.waitFor(shown('pairing'));
     }],
-    ['the list with a selection and pickers', { placements: 30, declared: true }, async page => { await page.waitFor(`${rows} === 30`); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
+    ['the list with a selection and cell strip', { placements: 30, declared: true }, async page => { await page.waitFor(`${rows} === 30`); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
     ['the image grid', { preferences: { browse: 'images' }, imageNames: longImageNames }, async page => { await page.waitFor(`${tiles} === 24`); await page.click('#image-grid .tile'); }],
     ['the open account panel', {}, async page => { await page.waitFor(`${rows} === 7`); await page.click('#settings-summary'); }],
     ['Send with the ratio gate', { preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: 'abc123', remembered } },
@@ -1182,8 +1206,9 @@ test('the selection names the footer’s primary, and Insert as new layer sits u
       const b = document.getElementById('insert-new').getBoundingClientRect(); return { below: b.top >= a.bottom - 0.5, right: Math.round(a.right - b.right) }; })()`),
     { below: true, right: 0 }, 'under the primary, right-aligned with it');
     // The frame's name, quoted and cut to 24 characters, so the note stays short.
-    assert.equal(await page.evaluate(textOf('insert-note')), `Adds a new layer inside ${longFrame}. Wider than “${longFrame.slice(0, 23)}…” (390 px).`);
-    assert.equal(await page.evaluate(shown('scale-group')), true);
+    assert.equal(await page.evaluate(textOf('insert-note')), `Adds a new layer inside ${longFrame}.`);
+    // Into sizes the layer to the container: Insert at is only for a bare canvas.
+    assert.equal(await page.evaluate(shown('scale-group')), false);
     assert.equal(await page.evaluate(inViewport('insert-new')), true);
     await page.click('#insert');
     await page.waitFor('window.__harness.targets.length === 1');
@@ -1242,7 +1267,7 @@ test('the embedded font loads: document.fonts.check(\'12px "Instrument Sans"\')'
     assert.equal(await page.evaluate(`document.fonts.check('12px "Instrument Sans"')`), true);
     // check() is also true for a family nothing declares, so the face itself must be there and loaded.
     assert.deepEqual(await page.evaluate(`[...document.fonts].filter(face => face.family.replace(/["']/g, '') === 'Instrument Sans').map(face => face.status)`), ['loaded']);
-    assert.match(await page.evaluate(`getComputedStyle(document.querySelector('.key')).fontFamily`), /^"?Instrument Sans"?,/);
+    assert.match(await page.evaluate(`getComputedStyle(document.querySelector('.placement .name')).fontFamily`), /^"?Instrument Sans"?,/);
   } finally { await page.close(); }
 });
 
@@ -1454,15 +1479,11 @@ test('footer, chip, grid, and tile details fit at 420 px', async () => {
     await page.evaluate(choose('insert-appearance', 'dark'));
     await page.evaluate(choose('insert-arm', 'b'));
     await page.frames();
-    // Inherited art: the pickers name the cell, and the line names what it inherits, whole.
-    assert.match(await page.evaluate(textOf('insert-meta')), /^→ .+ · Draft · inherits Control · Any art$/);
+    // The footer names the chosen cell and the art it inherits.
+    assert.match(await page.evaluate(textOf('insert-meta')), /^→ .+ · Draft · welcome · Dark · arm b · inherits Control · Any art$/);
     assert.equal(await page.evaluate(`document.getElementById('insert-meta').title === document.getElementById('insert-meta').textContent`), true, 'the full meta is available on hover');
-    // Each label sits 4 px from its select and 12 px from the next picker.
-    const gaps = await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker:not([hidden])')].map(label => {
-      const words = document.createRange(); words.selectNodeContents(label.firstChild);
-      const select = label.querySelector('select').getBoundingClientRect(); const next = label.nextElementSibling?.getBoundingClientRect();
-      return [Math.round(select.left - words.getBoundingClientRect().right), next ? Math.round(next.left - label.getBoundingClientRect().right) : null]; })`);
-    assert.deepEqual(gaps, [[4, 12], [4, 12], [4, null]]);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#insert-cells [role=radio][tabindex="0"]').length`), 1);
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('insert-cells')).gap`), '8px');
   } finally { await page.close(); }
   // The images empty state sits where the placements' does.
   const top = async options => {
@@ -1499,7 +1520,7 @@ test('footer, chip, grid, and tile details fit at 420 px', async () => {
 /** The chosen rows or tiles, and the rows or tiles that are a tab stop (tabindex 0), by key or asset id. */
 const chosenKeys = `[...document.querySelectorAll('[role="option"][aria-selected="true"]')].map(el => el.getAttribute('data-key') || el.getAttribute('data-asset-id'))`;
 const listStops = `[...document.querySelectorAll('[role="option"]')].filter(el => el.tabIndex === 0).map(el => el.getAttribute('data-key') || el.getAttribute('data-asset-id'))`;
-const valueOf = id => `document.getElementById('${id}').value`;
+const valueOf = id => /^insert-(state|appearance|arm)$/.test(id) ? `document.querySelector('#insert-cells [aria-checked="true"]').dataset.${id.slice(7)}` : `document.getElementById('${id}').value`;
 
 test('≤15 tab stops with 500 placements', async () => {
   const page = await openUi({ placements: 500, declared: true });
@@ -1518,10 +1539,10 @@ test('≤15 tab stops with 500 placements', async () => {
     assert.ok(stops.length <= 15, `${stops.length} tab stops: ${stops.join(', ')}`);
     // Tabs → account → search → scope → list → footer; each tab list, radio group, and the list is one stop.
     assert.deepEqual(stops, ['tab-insert', 'settings-summary', 'insert-search', 'insert-refresh', 'browse-placements', 'env-draft', 'screen0.slot0',
-      'insert-state', 'insert-appearance', 'insert-arm', 'scale-1', 'insert']);
+      'insert-cell', 'scale-1', 'insert']);
     assert.deepEqual(await page.evaluate(listStops), ['screen0.slot0'], 'one of the 500 rows is a tab stop');
     // Shift+Tab from the footer comes back to the chosen row.
-    await page.evaluate(`document.getElementById('insert-state').focus()`);
+    await page.evaluate(`document.querySelector('#insert-cells [aria-checked="true"]').focus()`);
     await page.press('Tab', 8);
     assert.equal(await page.focused(), 'screen0.slot0');
   } finally { await page.close(); }
@@ -1973,7 +1994,7 @@ test('the grip resizes the window, keeps focus, saves the size on pointer-up, an
   } finally { await page.close(); }
 });
 
-test('the layout follows the window: an Environment dropdown and value-only pickers below 400 px, a meta column from 560 px', async () => {
+test('the layout follows the window: an Environment dropdown below 400 px and a single cell-strip stop, a meta column from 560 px', async () => {
   const page = await openUi({ declared: true, placements: 30 }, { width: 380, height: 640 });
   try {
     await page.waitFor(`${rows} === 30`);
@@ -1985,29 +2006,25 @@ test('the layout follows the window: an Environment dropdown and value-only pick
     await page.evaluate(choose('env-select', 'production'));
     await page.frames();
     assert.equal(await page.evaluate(`document.getElementById('env-production').getAttribute('aria-checked')`), 'true');
-    // The footer's pickers show their values; each select keeps its name.
     await page.click('#insert-list .placement[data-key="screen0.slot0"]');
-    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker-word')].map(word => word.checkVisibility())`), [false, false, false]);
-    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker select')].map(select => select.getAttribute('aria-label'))`), ['State', 'Appearance', 'A/B arm']);
-    assert.equal(await page.evaluate(`new Set([...document.querySelectorAll('#insert-bar .picker')].map(label => Math.round(label.getBoundingClientRect().top))).size`), 1,
-      'all three on one row');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#insert-bar select').length`), 0);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#insert-cells [tabindex="0"]').length`), 1);
 
     // Crossing 400 px moves focus between the dropdown and the radios, never to the page.
     await page.evaluate(`document.getElementById('env-select').focus()`);
     await resizeTo(page, 420, 640);
     assert.equal(await page.focused(), 'env-production');
     assert.deepEqual(await page.evaluate(`[${visible('env-group')}, ${visible('env-select')}]`), [true, false]);
-    assert.equal(await page.evaluate(`[...document.querySelectorAll('#insert-bar .picker-word')].every(word => word.checkVisibility())`), true);
     await resizeTo(page, 360, 640);
     assert.equal(await page.focused(), 'env-select');
 
     // From 560 px a row's meta sits in a right-aligned column before the tag column, on the key's line.
     await resizeTo(page, 640, 900);
     const columns = await page.evaluate(`[...document.querySelectorAll('#insert-list .placement[data-key]')].slice(0, 8).map(row => {
-      const key = row.querySelector('.key').getBoundingClientRect(); const size = row.querySelector('.size').getBoundingClientRect();
+      const key = row.querySelector('.row-text').getBoundingClientRect(); const size = row.querySelector('.wide-meta').getBoundingClientRect();
       return { right: Math.round(size.right), after: size.left >= key.right, line: Math.abs((key.top + key.bottom) / 2 - (size.top + size.bottom) / 2) < 1, height: Math.round(row.getBoundingClientRect().height) }; })`);
     assert.equal(new Set(columns.map(column => column.right)).size, 1, `the meta column is right-aligned: ${JSON.stringify(columns.map(column => column.right))}`);
-    assert.ok(columns.every(column => column.after && column.line && column.height === 48), JSON.stringify(columns));
+    assert.ok(columns.every(column => column.after && column.line && column.height === 56), JSON.stringify(columns));
   } finally { await page.close(); }
   // Every tag, the widest ("Needs re-upload") included, fits the tag column, so the meta column stays aligned.
   const tagged = await openUi({ changed: ['home.banner'], unset: ['home.tile'], legacy: ['settings.empty'], missing: ['home.promo'] }, { width: 640, height: 900 });
@@ -2016,8 +2033,8 @@ test('the layout follows the window: an Environment dropdown and value-only pick
     await tagged.evaluate('document.fonts.ready.then(() => true)');
     await tagged.frames();
     const edges = await tagged.evaluate(`[...document.querySelectorAll('#insert-list .placement[data-key]')].map(row => [row.querySelector('.tag')?.textContent ?? '',
-      Math.round(row.querySelector('.size').getBoundingClientRect().right), row.querySelector('.tag') ? Math.round(row.querySelector('.tag').getBoundingClientRect().right) : null])`);
-    assert.deepEqual(edges.map(([tag]) => tag), ['New in Draft', '', 'Changed in Draft', 'Unavailable', 'Not set', '', 'Needs re-upload']);
+      Math.round(row.querySelector('.wide-meta').getBoundingClientRect().right), row.querySelector('.tag') ? Math.round(row.querySelector('.tag').getBoundingClientRect().right) : null])`);
+    assert.deepEqual(edges.map(([tag]) => tag), ['Not in this file', 'Not in this file', 'Not in this file', 'Unavailable', 'Not in this file', 'Not in this file', 'Needs re-upload']);
     assert.equal(new Set(edges.map(([, size]) => size)).size, 1, JSON.stringify(edges));
     assert.equal(new Set(edges.filter(([tag]) => tag).map(([, , right]) => right)).size, 1, 'tags end at the row’s padding');
   } finally { await tagged.close(); }
@@ -2111,6 +2128,14 @@ test('a running action keeps its ink and a spinner, and the shell gives names an
   } finally { await first.close(); }
 });
 
+const fileFixture = [
+  { nodeId: '80:1', name: 'Banner', pageId: '0:1', pageName: 'Home', frameId: '81:1', frameName: 'Phone', kind: 'linked', placementKey: 'home.banner', state: null, appearance: null, arm: null, environment: 'production', assetId: bannerArt, image: true, children: 0 },
+  { nodeId: '80:2', name: 'Copy banner', pageId: '0:1', pageName: 'Home', frameId: '81:1', frameName: 'Phone', kind: 'copy', placementKey: 'home.banner', state: null, appearance: null, arm: null, environment: 'production', assetId: bannerArt, image: true, children: 0 },
+  { nodeId: '80:3', name: 'Other banner', pageId: '0:2', pageName: 'Explore', frameId: '81:2', frameName: 'Tablet', kind: 'linked', placementKey: 'home.banner', state: null, appearance: null, arm: null, environment: 'production', assetId: bannerArt, image: true, children: 0 },
+];
+const mainSelection = { ...DEFAULTS.selection, insertTarget: { mode: 'replace', label: 'Replace in component', count: 1, nodeIds: ['82:1'], name: 'Banner', containerWidth: 390, containerHeight: 160,
+  mainOf: { instanceId: '82:2', instanceName: 'Banner instance' }, mainLink: { placementKey: 'home.banner', state: null, appearance: null, arm: null } } };
+
 test('screenshots of every state in both themes', { skip: shots ? false : 'set ASSETLIB_SCREENSHOTS=<directory> to write them' }, async () => {
   await mkdir(shots, { recursive: true });
   const node = { id: '40:1', name: 'Home banner', type: 'FRAME', width: 390, height: 160 };
@@ -2129,6 +2154,12 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
   const waiting = async page => { await page.click('#connect-browser'); await page.waitFor(shown('pairing')); };
   const askForLink = async page => { await pickBanner(page); await page.click('#send'); await page.waitFor(shown('file-fallback')); };
   const states = [
+    ['phase1-rows-chips', { fileEntries: fileFixture, multiPage: true, changed: ['home.banner'] }, ready],
+    ['phase1-cell-strip', { declared: true, noAny: true }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="onboarding.hero"]'); }],
+    ['phase1-file-page', { fileEntries: fileFixture, multiPage: true, preferences: { browse: 'file' } }, ready],
+    ['phase1-file-all', { fileEntries: fileFixture, multiPage: true, fileAll: true, preferences: { browse: 'file' } }, ready],
+    ['phase1-main-component', { selection: mainSelection }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
+    ['phase1-send-export', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner],
     ['first-run', { connection: null }],
     ['first-run-token', { connection: null }, page => page.click('#use-token')],
     // One-click Connect: waiting for approval, resumed after a reopen, and how a request that couldn't run ends.
@@ -2151,7 +2182,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['insert-list', { unset: ['home.tile'], legacy: ['settings.empty'] }, ready],
     ['insert-intro', { preferences: { introSeen: false } }, ready],
     ['insert-hint-seen', { preferences: { hintSeen: true } }, ready],
-    ['insert-selected-pickers', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
+    ['insert-selected-cells', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
     ['insert-scale-3x', {}, async page => { await ready(page); await page.click('#insert-list .placement[data-key="onboarding.hero"]'); await page.click('#scale-3'); }],
     ['insert-not-set', { unset: ['home.tile'] }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.tile"]'); }],
     ['insert-send-here', { unset: ['home.tile'], selection: { node: { ...node, height: 390 }, reason: null, fileKey: 'abc123', remembered: null } },
@@ -2159,7 +2190,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['insert-needs-reupload', { legacy: ['settings.empty'] }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="settings.empty"]'); }],
     ['insert-error', { statuses: { rendition: 404 } }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); await page.click('#insert'); await page.waitFor(shown('error')); }],
     ['insert-production', { preferences: { environment: 'production' } }, ready],
-    // The selection names the primary (A.5): into a frame (with the width hint), fill several layers, replace a linked image.
+    // The selection names the primary (A.5): into a frame (fitted to its size), fill several layers, replace a linked image.
     ['insert-into', canvasSelection(intoLong), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
     ['insert-fill', canvasSelection(fillThree), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
     ['insert-replace', canvasSelection(replaceOne), async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
@@ -2259,7 +2290,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
   ['narrow-images', { preferences: { browse: 'images' }, imageNames: longImageNames }, page => page.waitFor(`${tiles} === 24`)]];
   // A window dragged wider and taller (A.8): the meta column, more tiles a row, and only the list grown.
   const wide = [['wide-list', { changed: ['home.banner'], unset: ['home.tile'], legacy: ['settings.empty'] }, ready],
-    ['wide-selected-pickers', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
+    ['wide-selected-cells', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
     ['wide-images', { preferences: { browse: 'images' }, imageNames: longImageNames }, page => page.waitFor(`${tiles} === 24`)],
     ['wide-send', { preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner]];
   for (const mode of ['light', 'dark']) {
@@ -2459,7 +2490,7 @@ const batch2Fits = `(() => {
   const width = document.documentElement.clientWidth;
   const region = document.getElementById('list-region');
   return document.documentElement.scrollWidth <= width && region.scrollWidth <= region.clientWidth
-    && [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden')).every(el => {
+    && [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden') && (!el.closest('#insert-cells') || el.id === 'insert-cells')).every(el => {
       const r = el.getBoundingClientRect(); return !r.width || r.right <= width + 0.5;
     });
 })()`;
@@ -2511,20 +2542,16 @@ test('intro dismissal and first insert persist, and a screen-only search keeps i
   } finally { await first.close(); }
 });
 
-test('mode notes and Use 3× fit at 320 and 420 px with one primary', async () => {
+test('fitted container sizes and mode notes fit at 320 and 420 px with one primary', async () => {
   for (const width of [320, 420]) {
     const page = await openUi(canvasSelection(intoLong), { width, height: 720 });
     try {
       await page.waitFor(`${rows} === 7`);
       await page.click('#insert-list .placement[data-key="home.banner"]');
-      assert.equal(await page.evaluate(textOf('insert-fit-scale')), 'Use 3×');
       assert.equal(await page.evaluate(batch2Fits), true);
-      assert.match(await page.evaluate(textOf('insert-meta')), /^→ 1170 × 480 · Draft/);
+      assert.match(await page.evaluate(textOf('insert-meta')), /^→ 390 × 160 · Draft/);
       assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
-      await page.click('#insert-fit-scale');
-      await page.waitFor(`document.getElementById('scale-3').getAttribute('aria-checked') === 'true'`);
-      assert.equal(await page.focused(), 'scale-3', 'Use 3× hands focus to the scale it chose before hiding');
-      assert.equal(await page.evaluate(`__harness.saved.at(-1).scale`), 3);
+      assert.equal(await page.evaluate(shown('scale-group')), false);
       assert.equal(await page.evaluate(textOf('insert-note')), `Adds a new layer inside ${longFrame}.`);
       assert.equal(await page.evaluate(batch2Fits), true);
     } finally { await page.close(); }
@@ -2598,7 +2625,7 @@ test('inheritance and Draft tags fit beside a long key at 420 px, and environmen
     const page = await openUi({ longKey: key, declared }, { width: 420, height: 720 });
     try {
       await page.waitFor(`${rows} === 7`);
-      assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement .tag').textContent`), declared ? '10 of 12 inherit' : 'New in Draft');
+      assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement .tag').textContent`), 'Not in this file');
       assert.equal(await page.evaluate(batch2Fits), true);
       assert.equal(await page.evaluate(`(() => { const tag = document.querySelector('#insert-list .placement .tag'); return tag.scrollWidth <= tag.clientWidth; })()`), true);
       assert.equal(await page.evaluate(`document.getElementById('env-draft').title`), 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.');
@@ -2792,7 +2819,7 @@ test('a bound Send or Sync waits for fresh artwork before offering Update or pub
       await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/') && document.getElementById('sync-thumb').src !== ${JSON.stringify(oldThumb)}`);
       await page.click('#tab-insert');
       await page.waitFor(`document.querySelector('#insert-list .placement[data-key="home.banner"] img').src !== ${JSON.stringify(oldThumb)}`);
-      assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement[data-key="home.banner"] .tag').textContent`), 'Changed in Draft');
+      assert.match(await page.evaluate(`document.querySelector('#insert-list .placement[data-key="home.banner"]').title`), /Draft differs from Production/);
       assert.equal(await page.evaluate(shown('sync-update')), false, 'fresh artwork names the image just sent');
       assert.equal(await page.evaluate(textOf('sync-meta')), 'in Draft, not published');
       assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'rendition' && entry.url.includes('/00000000-0000-4000-8000-000000009999/'))`), true);
@@ -2932,7 +2959,7 @@ test('the bar title reveals the linked or copied cell from Images and the list s
       for (let i = 0; i < 30; i += 1) { await page.press('Tab'); const id = await page.focused(); if (id === 'body' || stops.includes(id)) break; stops.push(id); }
       assert.ok(stops.length <= 15, `${kind}: ${stops.length} tab stops: ${stops.join(', ')}`);
       assert.equal(stops.indexOf('sync-title'), stops.indexOf(key) + 1);
-      assert.ok(stops.indexOf('insert-appearance') > stops.indexOf(kind === 'linked' ? 'sync' : 'sync-send'));
+      assert.ok(stops.indexOf('insert-cell') > stops.indexOf(kind === 'linked' ? 'sync' : 'sync-send'));
     } finally { await page.close(); }
   }
   const other = await openUi({ selection: { ...linkedSelection(node), remembered: null, link: { ...linkedSelection(node).link, kind: 'other' } } });
@@ -3196,3 +3223,80 @@ test('fill notes make no blanket link claim for layers inside instances', async 
     } finally { await page.close(); }
   }
 });
+
+
+// Laid out and on screen, not only unhidden: a parent's display: none counts.
+const visible = id => `document.getElementById('${id}').checkVisibility()`;
+for (const theme of ['light', 'dark']) {
+  test(`phase 1 ${theme}: cell-strip radios, row layout and visible-name type-ahead`, async () => {
+    const page = await openUi({ declared: true, noAny: true, fileEntries: fileFixture, multiPage: true }, { theme });
+    try {
+      await page.waitFor(`${rows} === 7`);
+      await page.click('#insert-list .placement[data-key="onboarding.hero"]');
+      const cell = `document.querySelector('#insert-cells [aria-checked="true"]')`;
+      const axes = `(() => { const el = ${cell}; return [el.dataset.state, el.dataset.appearance, el.dataset.arm]; })()`;
+      await page.evaluate(`${cell}.focus()`);
+      for (const [key, expected] of [['Home', ['welcome', 'light', '']], ['ArrowRight', ['welcome', 'dark', '']],
+        ['ArrowDown', ['return', 'dark', '']], ['End', ['return', 'dark', 'b']], ['ArrowLeft', ['return', 'light', 'b']],
+        ['ArrowUp', ['welcome', 'light', 'b']], ['Home', ['welcome', 'light', '']]]) {
+        await page.press(key); assert.deepEqual(await page.evaluate(axes), expected, key);
+        assert.equal(await page.focused(), 'insert-cell');
+        assert.equal(await page.evaluate(`document.querySelectorAll('#insert-cells [tabindex="0"]').length`), 1);
+      }
+      await page.press('Enter'); await page.waitFor('__harness.inserts.length === 1');
+      assert.deepEqual(await page.evaluate(`(() => { const l = __harness.inserts[0].link; return [l.state, l.appearance, l.arm]; })()`), ['welcome', 'light', null]);
+      for (const width of [320, 420, 560]) {
+        await resizeTo(page, width, 720);
+        assert.equal(await page.evaluate('document.documentElement.scrollWidth - innerWidth'), 0);
+        assert.equal(await page.evaluate(`document.getElementById('list-region').scrollWidth - document.getElementById('list-region').clientWidth`), 0);
+        assert.equal(await page.evaluate(`Math.round(document.querySelector('#insert-list .placement').getBoundingClientRect().height)`), 56);
+        if (width === 420) assert.equal(await page.evaluate(`document.getElementById('insert-cells').scrollWidth - document.getElementById('insert-cells').clientWidth`), 0, 'four columns and states fit');
+        if (width === 420) assert.equal(await page.evaluate(`document.getElementById('browse-group').getBoundingClientRect().top === document.getElementById('env-group').getBoundingClientRect().top`), true, 'Browse and Environment share one row');
+      }
+      await page.evaluate(`document.querySelector('#insert-list .placement').focus()`); await page.press('f');
+      assert.deepEqual(await page.evaluate(chosenKeys), ['onboarding.footer'], 'the visible last key segment is a prefix match');
+    } finally { await page.close(); }
+  });
+  test(`phase 1 ${theme}: In this file chooses locally, selects on Enter or click, and includes pages`, async () => {
+    const page = await openUi({ fileEntries: fileFixture, multiPage: true, preferences: { browse: 'file' }, scanDelay: 100 }, { theme });
+    try {
+      await page.waitFor(`${rows} === 2`);
+      assert.equal(await page.evaluate(visible('file-scope')), true);
+      assert.equal(await page.evaluate(visible('insert-bar')), false);
+      assert.equal(await page.evaluate(visible('hint-bar')), false);
+      assert.equal(await page.evaluate(visible('env-group')), false);
+      await page.evaluate(`document.querySelector('#insert-list [role=option]').focus()`);
+      for (const [key, id] of [['ArrowDown', '80:2'], ['Home', '80:1'], ['End', '80:2'], ['b', '80:1']]) {
+        await page.press(key); assert.deepEqual(await page.evaluate(chosenKeys), [id]);
+      }
+      assert.deepEqual(await page.evaluate('__harness.selectedNodes'), []);
+      assert.equal((await page.evaluate(listStops)).length, 1);
+      await page.press('Enter'); assert.deepEqual(await page.evaluate('__harness.selectedNodes'), ['80:1']);
+      await page.click('#insert-list [data-key="80:2"]'); assert.equal(await page.evaluate('__harness.selectedNodes.at(-1)'), '80:2');
+      await page.click('#file-all');
+      assert.equal(await page.evaluate(`document.getElementById('file-all').getAttribute('aria-busy')`), 'true');
+      await page.waitFor(`${rows} === 3`);
+      assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.file-group .group')].map(el => el.textContent)`), ['Home › Phone', 'Explore › Tablet']);
+      assert.equal(await page.evaluate(visible('file-scope')), false);
+      await page.click('#insert-search'); await page.type('Tablet');
+      await page.waitFor(`${rows} === 1`); assert.equal(await page.evaluate(`document.querySelector('#insert-list .name').textContent`), 'Other banner');
+    } finally { await page.close(); }
+  });
+  test(`phase 1 ${theme}: automatic Production and main-component and export copy`, async () => {
+    const page = await openUi({ preferences: { environment: 'draft', environmentChosen: false }, selection: mainSelection }, { theme });
+    try {
+      await page.waitFor(`${rows} === 7`);
+      assert.equal(await page.evaluate(`document.getElementById('env-production').getAttribute('aria-checked')`), 'true');
+      await page.click('#insert-list .placement[data-key="home.banner"]');
+      assert.equal(await page.evaluate(textOf('insert')), 'Replace in component');
+      assert.match(await page.evaluate(textOf('insert-note')), /Changes the main component.*every instance follows/);
+      assert.equal(await page.evaluate(visible('scale-group')), false);
+    } finally { await page.close(); }
+    const send = await openUi({ preferences: { tab: 'send' }, selection: { ...DEFAULTS.selection, reason: null, node: { id: '40:1', type: 'FRAME', name: 'Banner', width: 390, height: 160 } } }, { theme });
+    try {
+      await send.waitFor(`document.getElementById('placement').options.length > 1`);
+      await send.evaluate(choose('placement', 'home.banner')); await send.frames();
+      assert.equal(await send.evaluate(textOf('export-note')), 'Exports up to 1170 × 480 PNG, 3× this layer.');
+    } finally { await send.close(); }
+  });
+}

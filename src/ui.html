@@ -172,6 +172,8 @@
       border-bottom: 1px solid var(--border); }
     .segmented { display: inline-flex; flex: none; height: 24px; padding: 2px; border-radius: 5px; background: var(--bg-secondary); }
     .segmented button { height: 20px; padding: 0 8px; border: 1px solid transparent; border-radius: 4px; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--al-text-meta); }
+    /* Browse and Environment share one row at the default 420 px. */
+    .scopebar .segmented button { padding: 0 6px; }
     .segmented button[aria-checked="true"] { background: var(--bg); border-color: var(--border); color: var(--text); }
     .segmented button:disabled { color: var(--text-disabled); }
     .segmented button[aria-checked="false"]:not(:disabled):hover { color: var(--text); }
@@ -182,7 +184,7 @@
       color: var(--al-text-meta); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Rows and tiles are options of a listbox (one tab stop; the arrow keys move), not buttons. */
     .placement, .tile { cursor: pointer; user-select: none; transition: background-color 120ms; }
-    .placement { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; height: 48px; padding: 8px 12px; }
+    .placement { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; height: 56px; padding: 8px 12px; }
     .placement:hover { background: var(--bg-hover); }
     .placement[aria-selected="true"] { background: var(--bg-tertiary); }
     /* A row's ring sits inside it, so the scroll region never clips it; a tile's sits 2 px out, clear of its name, in the
@@ -196,12 +198,16 @@
     /* Inside the ring, a 1 px band of the panel background: dark mode's vermilion on the selected row's fill is under 3:1. */
     .placement[aria-selected="true"]:focus-visible { box-shadow: inset 0 0 0 3px var(--bg); }
     .row-text { display: grid; min-width: 0; }
-    .key { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .placement .name { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .size { color: var(--al-text-meta); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Tags carry a word, never colour alone: a dot for information, a warning glyph for what blocks Insert. */
     .tag { display: inline-flex; align-items: center; gap: 4px; color: var(--al-text-meta); white-space: nowrap; }
     .tag::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-    .tag.blocking { color: var(--text); }
+    .tag.blocking, .tag.behind { color: var(--text); }
+    .tag.quiet::before { display: none; }
+    .placement .meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .thumb-box { width: 56px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .wide-meta, .wide-key { display: none; }
     .tag.blocking::before { width: 12px; height: 12px; border-radius: 0; -webkit-mask: var(--warning-glyph) center / 12px 12px no-repeat; mask: var(--warning-glyph) center / 12px 12px no-repeat; }
     /* Not positioned, as nothing inside a row or tile may be: a positioned child paints over the focus ring. */
     .thumb { display: block; width: 32px; height: 32px; border-radius: 4px; overflow: hidden;
@@ -223,7 +229,7 @@
     #images-more { display: flex; width: calc(100% - 24px); margin: 0 12px 12px; }
     .skeleton { pointer-events: none; }
     .skeleton .block, .skeleton .bar { display: block; border-radius: 4px; background: var(--bg-secondary); }
-    .skeleton.placement .block { width: 32px; height: 32px; }
+    .skeleton.placement .block { width: 56px; height: 40px; }
     .skeleton .lines { display: grid; gap: 6px; }
     .skeleton .bar { height: 8px; }
     .skeleton .bar + .bar { width: 35%; }
@@ -289,7 +295,16 @@
     .hint-bar p { flex: 1; min-width: 0; padding: 2px 0; }
     .hint-narrow { display: none; }
     .footer { flex: none; display: grid; gap: 0; padding: 0 12px; border-top: 1px solid var(--border); background: var(--bg); }
-    .footer > .pickers { min-height: 32px; padding-top: 8px; }
+    .cell-strip { display: grid; gap: 8px; align-items: center; max-height: 160px; overflow: auto; padding: 6px 4px; margin-top: 4px; }
+    .cell { display: flex; justify-content: center; align-items: center; min-width: 64px; height: 48px; border-radius: 6px; cursor: pointer; }
+    .cell[aria-checked="true"] { box-shadow: 0 0 0 2px var(--text); }
+    .cell:focus-visible { outline-offset: 2px; }
+    .cell[aria-checked="true"]:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus); }
+    .cell-header { color: var(--al-text-meta); font-size: 11px; white-space: pre-line; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; }
+    .cell-state { white-space: nowrap; max-width: 64px; text-align: left; }
+    .thumb.inherits { outline: 1px dashed var(--al-text-meta); outline-offset: -1px; }
+    #file-scope { padding: 4px 12px; }
+
     .footer-row { display: flex; align-items: center; gap: 8px; height: 48px; min-width: 0; }
     /* The item's name keeps room to be read: the primary shortens first. */
     .footer-text { flex: 1; display: grid; min-width: 88px; }
@@ -327,13 +342,11 @@
     /* The resize grip: the window's bottom-right corner, over the 12 px side padding of whatever sits there. */
     .grip { position: fixed; right: 0; bottom: 0; z-index: 3; width: 12px; height: 12px; color: var(--al-text-meta); cursor: nwse-resize; touch-action: none; user-select: none; }
     .grip svg { display: block; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; }
-    /* Narrow windows: the chip keeps the app name, the Environment radios become a dropdown, and the footer's pickers
-       show their values only (each select keeps its name in aria-label). */
+    /* Narrow windows: the chip keeps the app name and the Environment radios become a dropdown. */
     @media (max-width: 399px) {
       .chip-workspace, .chip-sep { display: none; }
       #env-group { display: none; }
       .env-select { display: block; }
-      .picker-word { display: none; }
       /* The footer's name and size keep their room: the selected row shows the image already. */
       #insert-preview { display: none; }
       #insert { max-width: 50%; }
@@ -343,9 +356,11 @@
     /* Wide windows: a row's meta moves to a right-aligned column before its tag, whose column fits the Draft and inheritance tags. */
     @media (min-width: 560px) {
       /* The key keeps most of the room: a long meta line stops at 40% and shortens. */
-      .placement { grid-template-columns: 32px minmax(96px, 1fr) fit-content(40%) minmax(max-content, 120px); }
-      .placement .row-text { display: contents; }
-      .placement .size { text-align: right; }
+      .placement { grid-template-columns: 56px minmax(0, 1fr) fit-content(30%) 128px; }
+      .placement .compact-meta { display: none; }
+      .placement .wide-meta, .placement .wide-key { display: block; }
+      .placement .wide-meta { text-align: right; }
+      .file-row { grid-template-columns: 56px minmax(0, 1fr) auto; }
       .placement .tag { justify-self: end; }
     }
     .intro { margin-bottom: 8px; }
@@ -438,6 +453,7 @@
         <div id="browse-group" class="segmented" role="radiogroup" aria-label="Browse">
           <button id="browse-placements" type="button" role="radio" aria-checked="true">Placements</button>
           <button id="browse-images" type="button" role="radio" aria-checked="false">Images</button>
+          <button id="browse-file" type="button" role="radio" aria-checked="false">In this file</button>
         </div>
         <div id="env-group" class="segmented" role="radiogroup" aria-label="Environment">
           <button id="env-draft" type="button" role="radio" aria-checked="true">Draft</button>
@@ -451,6 +467,7 @@
         </select>
       </div>
       <p id="env-note" class="note" hidden></p>
+      <div id="file-scope" class="meta" hidden>This page only. <button id="file-all" class="text-action" type="button">Include all pages</button></div>
       <div id="list-region" class="list-region">
         <div id="intro" class="info intro" hidden><p>Placements are the image slots your app’s code declares. Each has cells for its states, appearances, and A/B arms. Draft holds unpublished art, and Send and Sync change it. Staging and Production show what someone published, and stay unavailable until a release exists.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
         <div id="insert-list"></div>
@@ -523,11 +540,7 @@
       <button id="hint-close" class="icon-button" type="button" aria-label="Close hint" title="Close"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg></button>
     </div>
     <footer id="insert-bar" class="footer" hidden>
-      <div class="pickers">
-        <label id="insert-state-label" class="picker" hidden><span class="picker-word">State</span><select id="insert-state" aria-label="State" title="State"></select></label>
-        <label id="insert-appearance-label" class="picker" hidden><span class="picker-word">Appearance</span><select id="insert-appearance" aria-label="Appearance" title="Appearance"></select></label>
-        <label id="insert-arm-label" class="picker" hidden><span class="picker-word">A/B arm</span><select id="insert-arm" aria-label="A/B arm" title="A/B arm"></select></label>
-      </div>
+      <div id="insert-cells" class="cell-strip" role="radiogroup" aria-label="Cell" hidden></div>
       <div class="footer-row">
         <span id="insert-preview" class="thumb"><img id="insert-thumb" alt=""></span>
         <div class="footer-text"><p id="insert-title" class="title"></p><p id="insert-meta" class="meta"></p></div>
@@ -538,7 +551,7 @@
         </div>
         <button id="insert" class="primary" type="button" aria-disabled="true">Insert</button>
       </div>
-      <div class="footer-note"><p id="insert-note" hidden></p><button id="insert-send-here" class="text-action" type="button" hidden>Send selected layer here</button><button id="insert-fit-scale" class="text-action" type="button" hidden></button><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new layer</button></div>
+      <div class="footer-note"><p id="insert-note" hidden></p><button id="insert-send-here" class="text-action" type="button" hidden>Send selected layer here</button><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new layer</button></div>
     </footer>
     <footer id="send-bar" class="footer" hidden>
       <div class="footer-actions"><button id="send" class="primary" type="button" aria-disabled="true">Send to draft</button></div>

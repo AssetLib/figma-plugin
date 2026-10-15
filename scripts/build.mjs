@@ -12,7 +12,8 @@ const watching = args.has('--watch');
 const dev = watching || args.has('--dev');
 // Release budget, embedded font included; raised from 176 KB on October 13, 2026 for the usability release:
 // Connect recovery, explanations, Update from Assetlib, the Send picker.
-const MAX_UI_BYTES = 192_000;
+// Raised on October 14, 2026: phase 1: cell strip and In this file.
+const MAX_UI_BYTES = 196_000;
 const MAX_MAIN_BYTES = 48_000;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const templateUrl = new URL('../src/ui.html', import.meta.url);

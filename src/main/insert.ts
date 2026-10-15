@@ -3,12 +3,13 @@
 // landed (or replaces the image of the image frame it landed on), which its insert then fills. Each ends with one
 // figma.commitUndo(), so it is one undo step, a drop's placeholder included. A toast's Undo restores the fill as its own step.
 import {
-  MAX_INSERT_PIXELS, environmentLabel, insideInstance, isPlacementMarker, isUint8Array, placementMarker, pngSize, sanitizeName, validateInsertLink,
+  MAX_INSERT_PIXELS, environmentLabel, insideInstance, insertSize, isPlacementMarker, isUint8Array, placementMarker, pngSize, sanitizeName, validateInsertLink,
 } from '../shared/index.js';
 import type { CanvasTarget, Connection, InsertLink, InsertMode, StoredLink } from '../shared/index.js';
 import { dropRequestId, isAssetlibDrop, parseDropMetadata, toastText } from '../shared/protocol.js';
 import type { DropMetadata, InsertDestination, UiMessage } from '../shared/protocol.js';
 import { describeNode, dropStoredTargets, hasImagePaint, inComponent, insertTarget, nodeLink, reportSelection, writeLink } from './selection.js';
+import { scanLinks } from './inventory.js';
 import { LINK_KEY, SELECTION_MOVED, main, post } from './state.js';
 
 // A transcoded 2048 px PNG fits.
@@ -104,9 +105,6 @@ function insertedNotice(name: string, link: InsertLink | null): string {
   return link ? `Inserted ${name} from ${environmentLabel(link.environment)}` : `Inserted ${name}`;
 }
 
-/** A side in Figma when Insert at divides it, to two decimals. */
-function side(value: number, scale: number): number { return Math.round((value / scale) * 100) / 100; }
-
 /** The topmost visible image's hash replaced, keeping its paint fields; append an image when none is visible. */
 function withImage(fills: MinimalFillsMixin['fills'], hash: string): Paint[] {
   const paints: Paint[] = Array.isArray(fills) ? [...(fills as readonly Paint[])] : [];
@@ -136,13 +134,12 @@ function stillSelected(target: InsertDestination, current: CanvasTarget): boolea
 /** A new frame (or component, for placement art with a marker): in the selected container, beside the selection, or centered in the view. */
 function place(config: Connection, target: InsertDestination, selection: readonly SceneNode[], hash: string, frame: Frame, scale: number,
   link: InsertLink | null, name: string): Inserted {
-  const width = side(frame.width, scale);
-  const height = side(frame.height, scale);
+  const container = target.kind === 'into' ? selection[0] as FrameNode | ComponentNode : null;
+  const { width, height } = insertSize(frame, scale, container);
   // Not a rectangle: designers can add layers inside without changing the node id. A placement's art is a
   // component, whose description Figma's MCP server passes to coding agents; any other image, or a placement
   // key outside the catalog's grammar, is a frame.
   const marker = link ? placementMarker(config, link.placementKey, frame) : null;
-  const container = target.kind === 'into' ? selection[0] as FrameNode | ComponentNode : null;
   // Figma puts no component inside another; the UI offers Insert beside one instead.
   if (container && marker && inComponent(container)) throw new Error(`Placement art is a component, and Figma can’t put one inside ${container.name}. Choose Insert as new layer.`);
   const component = marker ? figma.createComponent() : null;
@@ -271,6 +268,7 @@ function notifyUndo(notice: string, filled: Filled[]): void {
     if (refused) return;
     // Undo puts back the layers' earlier link too, which no selection change reports.
     void reportSelection();
+    void scanLinks();
   } } });
   undoToast = toast;
 }
@@ -313,6 +311,7 @@ async function apply(message: InsertMessage, config: Connection, edit: (hash: st
   } finally { main.importing = false; }
   // selectionchange is asynchronous and coalesced; report the new selection (or the newly linked layers) now.
   await reportSelection();
+  await scanLinks();
 }
 
 export async function insert(message: InsertMessage): Promise<void> {
@@ -335,12 +334,31 @@ export async function insert(message: InsertMessage): Promise<void> {
       throw new Error(UPDATE_CHANGED);
     }
   }
-  if (!stillSelected(target, insertTarget(selection, config))) {
+  const current = await insertTarget(selection, config);
+  if (main.connection !== config || !sameSelection(selection)) throw new Error(SELECTION_MOVED);
+  if (!stillSelected(target, current)) {
     await reportSelection();
     throw new Error(message.update ? UPDATE_CHANGED : SELECTION_MOVED);
   }
-  await apply(message, config, hash => target.kind === 'fill' ? fill(config, target, selection, hash, frame, link, name, Boolean(message.update))
-    : place(config, target, selection, hash, frame, scale, link, name));
+  let layers = selection;
+  if (current.mainOf && target.kind === 'fill') {
+    const component = await figma.getNodeByIdAsync(current.nodeIds[0]!);
+    if (!component || component.removed || component.type !== 'COMPONENT' || component.remote || !sameSelection(selection) || main.connection !== config) throw new Error(SELECTION_MOVED);
+    layers = [component];
+  }
+  checkInsert(message);
+  await apply(message, config, hash => {
+    const result = target.kind === 'fill' ? fill(config, target, layers, hash, frame, link, name, Boolean(message.update))
+      : place(config, target, selection, hash, frame, scale, link, name);
+    if (current.mainOf && target.kind === 'fill') result.notice = toastText(current.mode === 'replace'
+      ? `Replaced the image in main component ${current.name}; its instances follow`
+      : `Filled main component ${current.name} with ${link?.placementKey ?? name}; its instances follow`);
+    return result;
+  });
+}
+
+function sameSelection(nodes: readonly SceneNode[]): boolean {
+  return nodes.length === figma.currentPage.selection.length && nodes.every((node, i) => node === figma.currentPage.selection[i]);
 }
 
 // ---- Drag to canvas ----
@@ -369,7 +387,7 @@ export function discardDrops(): void {
 
 /** An image frame a drop replaces: a layer with a visible image paint and nothing inside, or one this app's art is linked to. */
 function replaceable(node: BaseNode, config: Connection): node is Paintable {
-  if (node.type === 'PAGE' || node.type === 'DOCUMENT' || !('fills' in node) || !Array.isArray(node.fills)) return false;
+  if (node.type === 'INSTANCE' || node.type === 'PAGE' || node.type === 'DOCUMENT' || !('fills' in node) || !Array.isArray(node.fills)) return false;
   if (!hasImagePaint(node)) return false;
   return !('children' in node) || node.children.length === 0 || nodeLink(node as SceneNode, config) !== null;
 }
@@ -386,15 +404,16 @@ function dropParent(node: BaseNode, component: boolean): (BaseNode & ChildrenMix
  */
 function placeholder(config: Connection, meta: DropMetadata, link: InsertLink | null, name: string, event: DropEvent): SceneNode {
   const marker = link ? placementMarker(config, link.placementKey, meta.frame) : null;
-  const width = side(meta.frame.width, meta.scale);
-  const height = side(meta.frame.height, meta.scale);
+  let parent = dropParent(event.node, marker !== null);
+  for (let ancestor = event.node.parent; !parent && ancestor && ancestor.type !== 'PAGE'; ancestor = ancestor.parent) parent = dropParent(ancestor, marker !== null);
+  const container = parent?.type === 'FRAME' || parent?.type === 'COMPONENT' ? parent as FrameNode | ComponentNode : null;
+  const { width, height } = insertSize(meta.frame, meta.scale, container);
   const node: ComponentNode | FrameNode = marker ? figma.createComponent() : figma.createFrame();
   try {
     node.name = `${name} · loading`;
     node.resize(width, height);
     node.fills = [PLACEHOLDER_FILL];
     node.clipsContent = true;
-    const parent = dropParent(event.node, marker !== null);
     let flow = false;
     if (parent) {
       // A refusal leaves it on the page, where Figma made it.

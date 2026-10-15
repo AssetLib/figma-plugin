@@ -1,4 +1,5 @@
 import { MISSING_INSERT, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, defaultPreferences, reconnectText } from '../shared/index.js';
+import type { FileLinks } from '../shared/protocol.js';
 import type { CanvasTarget, Connection, Placement, Preferences } from '../shared/index.js';
 import type { SelectionState } from '../shared/protocol.js';
 
@@ -38,6 +39,7 @@ export const NEW_FRAME: CanvasTarget = { mode: 'new', label: 'Insert', count: 0,
 // State more than one module reads. Each module keeps the rest to itself.
 export const state = {
   connection: null as Connection | null,
+  fileLinks: null as FileLinks | null,
   // Null while a connection save awaits main's acknowledgement, so no selection reply is trusted meanwhile.
   connectionGeneration: null as number | null,
   // Identifying or beginning to save a replacement connection, distinct from retesting the current one.

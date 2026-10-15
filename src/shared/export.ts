@@ -44,13 +44,31 @@ export function ratioLabel(placement: Pick<Placement, 'width' | 'height'>): stri
   return `${Number((placement.width / placement.height).toFixed(2))}\u00a0:\u00a01`;
 }
 
-export function chooseExportSettings(node: Pick<NodeSelection, 'width' | 'height'>, placement: Pick<Placement, 'width' | 'height'>): ExportSettings {
+export const MAX_EXPORT_EDGE = 2048;
+export const EXPORT_DENSITY = 3;
+export const MAX_EXPORT_BYTES = 3_300_000;
+
+function gcd(a: number, b: number): number { while (b) [a, b] = [b, a % b]; return a; }
+
+/** A compact ratio, reduced when its terms are small, otherwise decimal against 1. */
+export function ratioName(width: number, height: number): string {
+  const divisor = gcd(width, height);
+  const w = width / divisor, h = height / divisor;
+  if (w <= 32 && h <= 32) return `${w}:${h}`;
+  return width >= height ? `${Number((width / height).toFixed(2))}:1` : `1:${Number((height / width).toFixed(2))}`;
+}
+
+export function chooseExportSettings(node: Pick<NodeSelection, 'width' | 'height'>, placement: Pick<Placement, 'width' | 'height'>,
+  options: { density?: number | null; scale?: number } = {}): ExportSettings {
   checkDimensions(node, placement);
-  // Phase 3 G1 explicitly prescribes HEIGHT for a proportionally taller node.
-  const taller = node.height / node.width > placement.height / placement.width;
-  return { format: 'PNG', useAbsoluteBounds: true, constraint: taller
-    ? { type: 'HEIGHT', value: placement.height }
-    : { type: 'WIDTH', value: placement.width } };
+  const type = node.height / node.width > placement.height / placement.width ? 'HEIGHT' : 'WIDTH';
+  let scale = options.scale ?? EXPORT_DENSITY;
+  if (typeof options.density === 'number' && Number.isFinite(options.density) && options.density > 0) scale = Math.min(scale, Math.max(1, options.density));
+  scale = Math.min(scale, (MAX_EXPORT_EDGE - 1) / Math.max(node.width, node.height));
+  const target = (type === 'WIDTH' ? node.width : node.height) * scale;
+  const unit = (type === 'WIDTH' ? placement.width : placement.height) / gcd(placement.width, placement.height);
+  const value = unit <= target ? Math.floor(target / unit) * unit : Math.max(1, Math.round(target));
+  return { format: 'PNG', useAbsoluteBounds: true, constraint: { type, value } };
 }
 
 // The signature and IHDR header fields, or null; dimensions are returned unchecked.

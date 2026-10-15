@@ -1,7 +1,7 @@
 // The Send tab: the selection, the placement and cell pickers, the ratio gate, Send, and the file link; and Sync, which
 // the Sync bar (syncbar.ts) shows on both tabs from what `syncBar()` says about the selection.
 import {
-  DRAFT_MAY_HAVE_ARRIVED, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
+  MAX_EXPORT_EDGE, EXPORT_FAILED, DRAFT_MAY_HAVE_ARRIVED, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
   consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel,
   reconnectText, refusalCode, sameCoordinate, sizeLabel, tokenRefused, validUuid, validateBinding,
 } from '../shared/index.js';
@@ -183,14 +183,14 @@ export function clearPlacements(text: string): void {
   updateCellPickers();
 }
 
-/** "Exports 1170 × 2534 PNG": the PNG's size, from the export constraint and the node's own ratio. */
+/** The largest PNG this layer may export, before its raster density or byte limit lowers it. */
 function exportDescription(placement: Placement): string {
   const node = state.selection.node;
   if (!node) return '';
   const { constraint } = chooseExportSettings(node, placement);
   const width = constraint.type === 'WIDTH' ? constraint.value : Math.round((constraint.value * node.width) / node.height);
   const height = constraint.type === 'HEIGHT' ? constraint.value : Math.round((constraint.value * node.height) / node.width);
-  return `Exports ${width} × ${height} PNG`;
+  return `Exports up to ${width} × ${height} PNG, ${3 * Math.max(node.width, node.height) > MAX_EXPORT_EDGE - 1 ? 'the largest size Assetlib keeps' : '3× this layer'}.`;
 }
 /** True when the selected node's ratio is more than 2% off this placement's, which blocks Send or Sync to it. */
 function ratioBlocks(placement: Placement | undefined | null): placement is Placement {
@@ -514,6 +514,7 @@ export async function sendExport(message: Extract<MainMessage, { type: 'exported
     const bytes = new Uint8Array(message.bytes);
     // An unreadable PNG says Figma's export failed (EXPORT_FAILED).
     const dimensions = parsePngDimensions(bytes);
+    if (Math.max(dimensions.width, dimensions.height) > MAX_EXPORT_EDGE) throw new Error(EXPORT_FAILED);
     const difference = aspectRatioDifference(dimensions, operation.placement);
     if (difference > 0.02) {
       throw new Error(`The exported PNG is ${dimensions.width} × ${dimensions.height}, ${(difference * 100).toFixed(1)}% off ${operation.placement.key}’s ${ratioLabel(operation.placement)} ratio. Nothing was uploaded. Resize the frame or match the ratio.`);

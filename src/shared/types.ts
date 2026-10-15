@@ -184,6 +184,10 @@ export interface CanvasTarget {
   insideComponent?: true;
   /** Selected layers skipped by a fill because they cannot show an image. */
   skipped?: number;
+  skippedInstances?: number;
+  mainOf?: { instanceId: string; instanceName: string };
+  mainLink?: Pick<InsertLink, 'placementKey' | 'state' | 'appearance' | 'arm'>;
+  lockedMain?: string;
   /** New layer beside a selection that cannot take the image. */
   beside?: true;
 }
@@ -200,8 +204,9 @@ export interface StoredLink extends InsertLink {
 
 export interface Preferences {
   tab: 'send' | 'insert';
-  browse: 'placements' | 'images';
+  browse: 'placements' | 'images' | 'file';
   environment: EnvironmentName;
+  environmentChosen?: true;
   scale: 1 | 2 | 3;
   // Optional, absent until set: the window size the person dragged the grip to, and whether the insert hint and intro were dismissed.
   window?: { width: number; height: number };

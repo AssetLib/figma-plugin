@@ -5,6 +5,7 @@ import type { MainMessage } from '../shared/protocol.js';
 import { adopted, applyPairing, connectFocus, failOpenPage, hintOfCurrent, initConnect, releaseHeld, renderConnect, saveRefused, startConnect, turned } from './connect.js';
 import { applyConnection, failConnection, initConnection, loadPlacements, needsAttention, openSettings, problemInSettings, renderConnection } from './connection.js';
 import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
+import { acceptFileLinks, failFileScan, focusFile } from './infile.js';
 import { abortAll } from './http.js';
 import {
   applyPreferences, connectionKept, draftArtState, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
@@ -106,6 +107,7 @@ function onError(message: Extract<MainMessage, { type: 'error' }>): void {
   // A reply for an operation that already ended matches nothing and is dropped.
   // A refused connection save leaves the connection as it was; the Insert list picks up what the wait dropped.
   if (failConnection(id, message.message)) { connectionKept(); saveRefused(id); return; }
+  if (failFileScan(id, message.message)) return;
   if (failOpenPage(id)) return;
   if (failSend(id, message.message)) return;
   if (failInsert(id, message.message)) return;
@@ -123,6 +125,7 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
       applySelection(message);
       if (message.connectionGeneration === state.connectionGeneration) noteLinkSeen();
       break;
+    case 'file-links': acceptFileLinks(message); break;
     case 'file-saved': fileSaved(message); break;
     case 'file-mismatch': fileMismatch(message); break;
     case 'launch': launch(message.command); break;
@@ -233,6 +236,7 @@ grip.addEventListener('dblclick', event => {
 // A new width can show or hide parts of the top bar (the chip's workspace name), which the render measures.
 window.addEventListener('resize', () => scheduleRender());
 window.addEventListener('focus', refreshArtworkIfStale);
+window.addEventListener('focus', focusFile);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshArtworkIfStale(); });
 
 // Figma's Copy link shortcut, as this platform spells it.

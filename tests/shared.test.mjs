@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import {
   MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
   apiUrl, artworkAsset, aspectMismatch, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
-  cellOptions, changedArt, chooseExportSettings, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
+  cellOptions, changedArt, chooseExportSettings, ratioName, insertSize, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
   insertRendition, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
   normalizeConsoleOrigin, parseArtwork, parseAssetPage, parseDraftResponse, parsePlacements, parsePngDimensions,
   parsePreferences, parseStoredLink, placementMarker, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
@@ -164,11 +164,11 @@ test('binding permits only declared cells, with null for control/any/default', (
 });
 
 test('export uses absolute bounds with HEIGHT for taller nodes and WIDTH otherwise', () => {
-  assert.deepEqual(chooseExportSettings(node, placement), { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 1200 } });
+  assert.deepEqual(chooseExportSettings(node, placement), { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 2044 } });
   assert.deepEqual(chooseExportSettings({ ...node, width: 400, height: 800 }, placement),
-    { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'HEIGHT', value: 900 } });
+    { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'HEIGHT', value: 2046 } });
   assert.deepEqual(chooseExportSettings({ ...node, width: 1600, height: 400 }, placement),
-    { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 1200 } });
+    { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 2044 } });
   for (const dimension of [0, -1, NaN, Infinity]) {
     assert.throws(() => chooseExportSettings({ ...node, width: dimension }, placement), /^Error: This layer has no visible area to export\.$/);
     assert.throws(() => aspectRatioDifference(node, { ...placement, height: dimension }), /no visible area/);
@@ -279,7 +279,7 @@ test('draft body contains only the source export and chosen binding contract', (
   assert.deepEqual(makeBody(), {
     schemaVersion: 1, name: 'Hero / Coast', mime: 'image/png', imageBase64: png,
     source: { provider: 'figma', fileKey: 'abc123', nodeId: '12:34', nodeName: 'Hero / Coast', versionId: null,
-      export: { format: 'PNG', constraint: { type: 'WIDTH', value: 1200 } } },
+      export: { format: 'PNG', constraint: { type: 'WIDTH', value: 2044 } } },
     bind, rebind: false,
   });
   const family = { ...placement, states: ['empty', 'growing'], defaultState: 'empty', variants: { arm: ['b'], appearance: ['dark'] } };
@@ -292,7 +292,7 @@ test('draft body contains only the source export and chosen binding contract', (
   assert.equal(makeBody({ node: { ...node, name: ' ' } }).name, placement.key);
   for (const fileKey of ['', 'bad/key', 'x'.repeat(129)]) assert.throws(() => makeBody({ fileKey }), /file’s link/);
   for (const id of ['', 'bad_id', 'x'.repeat(65)]) assert.throws(() => makeBody({ node: { ...node, id } }), /can’t be sent/);
-  assert.throws(() => makeBody({ settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 600 } } }),
+  assert.throws(() => makeBody({ settings: { format: 'PNG', useAbsoluteBounds: true, constraint: { type: 'WIDTH', value: 2045 } } }),
     /^Error: The selection changed while sending\. Check it and send again\.$/);
   for (const useAbsoluteBounds of [undefined, false]) {
     assert.throws(() => makeBody({ settings: { ...chooseExportSettings(node, placement), useAbsoluteBounds } }), /selection changed while sending/);
@@ -562,12 +562,12 @@ test('default tab is insert', () => {
   assert.equal(parsePreferences({ tab: 'send' }).tab, 'send', 'a saved Send tab is kept');
 });
 
-test('preferences fall back field by field to Insert, Placements, Draft, and 1×, with optional window and hint fields', () => {
-  assert.deepEqual(defaultPreferences(), { tab: 'insert', browse: 'placements', environment: 'draft', scale: 1 });
+test('preferences fall back field by field to Insert, Placements, Production, and 1×, with optional window and hint fields', () => {
+  assert.deepEqual(defaultPreferences(), { tab: 'insert', browse: 'placements', environment: 'production', scale: 1 });
   assert.deepEqual(parsePreferences({ tab: 'send', browse: 'images', environment: 'production', scale: 3, extra: true }),
     { tab: 'send', browse: 'images', environment: 'production', scale: 3 });
   assert.deepEqual(parsePreferences({ tab: 'publish', browse: 'images', environment: 'live', scale: '2' }),
-    { tab: 'insert', browse: 'images', environment: 'draft', scale: 1 });
+    { tab: 'insert', browse: 'images', environment: 'production', scale: 1 });
   for (const value of [undefined, null, 'text', []]) assert.deepEqual(parsePreferences(value), defaultPreferences());
   // The new fields are kept only when valid, and are absent otherwise, so saved preferences keep their shape.
   assert.deepEqual(parsePreferences({ window: { width: 420, height: 640 }, hintSeen: true }),
@@ -784,8 +784,8 @@ test('toasts are at most 100 characters, and rows and pickers name only what a p
   assert.equal(Array.from(long).length, 100);
   assert.ok(long.endsWith('…'));
   assert.equal(placementMeta({ width: 1170, height: 1560, states: ['a', 'b'], variants: { appearance: ['light', 'dark'], arm: ['b'] } }),
-    '1170 × 1560 · 2 states · light, dark · arm b');
-  assert.equal(placementMeta({ width: 1170, height: 480, states: null, variants: null }), '1170 × 480');
+    '3:4 · 2 states · light/dark · arm b');
+  assert.equal(placementMeta({ width: 1170, height: 480, states: null, variants: null }), '2.44:1');
   assert.deepEqual([null, 'light', 'dark'].map(appearanceLabel), ['Any', 'Light', 'Dark']);
 });
 
@@ -843,10 +843,10 @@ test('classifyInsertTarget: replace a linked layer showing an image, insert into
   assert.deepEqual(only(layer('1:1', 'COMPONENT', { linked: true, image: true, children: 2, width: 390 })),
     { mode: 'replace', label: 'Replace image', count: 1, nodeIds: ['1:1'], name: 'Layer 1:1', containerWidth: 390, containerHeight: 50 }, 'a link wins, even with children');
   assert.deepEqual(only(layer('2:1', 'FRAME', { children: 3, width: 375 })),
-    { mode: 'into', label: 'Insert into Layer 2:1', count: 1, nodeIds: ['2:1'], name: 'Layer 2:1', containerWidth: 375 });
+    { mode: 'into', label: 'Insert into Layer 2:1', count: 1, nodeIds: ['2:1'], name: 'Layer 2:1', containerWidth: 375, containerHeight: 50 });
   // Placement art is a component, which Figma puts in no component, component set, or instance: main says so.
   assert.deepEqual(only(layer('2:2', 'COMPONENT', { children: 1, inComponent: true })),
-    { mode: 'into', label: 'Insert into Layer 2:2', count: 1, nodeIds: ['2:2'], name: 'Layer 2:2', containerWidth: 100, insideComponent: true });
+    { mode: 'into', label: 'Insert into Layer 2:2', count: 1, nodeIds: ['2:2'], name: 'Layer 2:2', containerWidth: 100, containerHeight: 50, insideComponent: true });
   assert.equal(only(layer('2:5', 'FRAME', { children: 1, inComponent: true })).insideComponent, true, 'a frame inside a component');
   // Figma gives an instance, or anything inside one, no new children.
   assert.equal(only(layer('2:3', 'INSTANCE', { children: 2 })).mode, 'new');
@@ -1030,4 +1030,49 @@ test('the plugin menu opens the remembered tab, Insert, or Send and keeps both r
     { command: 'sync', name: 'Sync to Assetlib' }, { command: 'open', name: 'Open Assetlib' },
   ]);
   assert.equal(manifest.id, '1690264758934826227');
+});
+
+test('phase 1 ratios name familiar reduced terms and wide or tall decimals', () => {
+  for (const [w, h, expected] of [[1200, 900, '4:3'], [1920, 1080, '16:9'], [1000, 1000, '1:1'], [1170, 2532, '1:2.16'], [1170, 480, '2.44:1'], [480, 1170, '1:2.44']]) assert.equal(ratioName(w, h), expected);
+});
+test('phase 1 Insert fits both sides without enlarging and uses scale only on bare canvas', () => {
+  const frame = { width: 1200, height: 900 };
+  assert.deepEqual(insertSize(frame, 3, { width: 400, height: 200 }), { width: 266.67, height: 200 });
+  assert.deepEqual(insertSize(frame, 3, { width: 2000, height: 2000 }), frame);
+  assert.deepEqual(insertSize(frame, 1), frame);
+  assert.deepEqual(insertSize(frame, 2), { width: 600, height: 450 });
+});
+test('phase 1 Send uses 3×, exact-ratio snapping, native raster density and the rendition edge cap', () => {
+  const settings = (w, h, p = placement, options) => chooseExportSettings({ width: w, height: h }, p, options).constraint;
+  assert.deepEqual(settings(400, 300), { type: 'WIDTH', value: 1200 });
+  assert.deepEqual(settings(390, 292.5), { type: 'WIDTH', value: 1168 });
+  assert.deepEqual(settings(1000, 750), { type: 'WIDTH', value: 2044 });
+  assert.deepEqual(settings(400, 300, placement, { density: 2 }), { type: 'WIDTH', value: 800 });
+  assert.deepEqual(settings(400, 300, placement, { density: 0.5 }), { type: 'WIDTH', value: 400 });
+  assert.deepEqual(settings(400, 301), { type: 'HEIGHT', value: 903 });
+  assert.deepEqual(settings(1, 1, { width: 1170, height: 2532 }), { type: 'WIDTH', value: 3 });
+  assert.deepEqual(settings(400, 300, placement, { density: NaN }), { type: 'WIDTH', value: 1200 });
+});
+test('phase 1 main component candidates replace, fill, insert beside remote mains and skip in mixed fills', () => {
+  const main = { id: '10:1', name: 'Main', width: 400, height: 300, image: true, remote: false, link: { placementKey: placement.key, state: null, appearance: null, arm: null } };
+  const instance = { id: '10:2', name: 'Instance', type: 'INSTANCE', width: 100, height: 75, children: 0, linked: false, image: true, placementMain: main };
+  assert.deepEqual(classifyInsertTarget([instance]), { mode: 'replace', label: 'Replace in component', count: 1, nodeIds: ['10:1'], name: 'Main', containerWidth: 400, containerHeight: 300, mainOf: { instanceId: '10:2', instanceName: 'Instance' }, mainLink: main.link });
+  assert.equal(classifyInsertTarget([{ ...instance, placementMain: { ...main, image: false } }]).label, 'Fill component');
+  assert.equal(classifyInsertTarget([{ ...instance, placementMain: { ...main, remote: true } }]).lockedMain, 'Main');
+  const mixed = classifyInsertTarget([instance, { ...instance, placementMain: undefined, type: 'RECTANGLE', id: '10:3' }]);
+  assert.equal(mixed.skippedInstances, 1); assert.equal(mixed.skipped, undefined); assert.deepEqual(mixed.nodeIds, ['10:3']);
+});
+test('phase 1 preferences retain file browse and only a true explicit environment flag', () => {
+  assert.deepEqual(parsePreferences({ browse: 'file', environment: 'draft', environmentChosen: true }), { ...defaultPreferences(), browse: 'file', environment: 'draft', environmentChosen: true });
+  for (const value of [false, 1, 'true', null]) assert.equal(parsePreferences({ environmentChosen: value }).environmentChosen, undefined);
+});
+test('phase 1 draft settings accept a smaller integer constraint and reject a value outside the export range', () => {
+  const settings = chooseExportSettings(node, placement);
+  for (const value of [1, 600, settings.constraint.value]) assert.equal(makeBody({ settings: { ...settings, constraint: { ...settings.constraint, value } } }).source.export.constraint.value, value);
+  for (const value of [0, -1, 1.1, Infinity, settings.constraint.value + 1]) assert.throws(() => makeBody({ settings: { ...settings, constraint: { ...settings.constraint, value } } }), /selection changed/);
+});
+test('phase 1 local inventory messages require request ids and select-node requires a Figma node id', () => {
+  assert.equal(parseUiMessage({ type: 'scan-file', requestId: 1, allPages: true }).allPages, true);
+  assert.equal(parseUiMessage({ type: 'select-node', requestId: 2, nodeId: '12:34' }).nodeId, '12:34');
+  for (const value of [{ type: 'scan-file', allPages: true }, { type: 'scan-file', requestId: 1, allPages: 'true' }, { type: 'select-node', requestId: 1, nodeId: '../invalid' }]) assert.throws(() => parseUiMessage(value));
 });
