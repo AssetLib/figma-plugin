@@ -356,9 +356,10 @@ test('a placement cell inserts as a linked image component, centered and selecte
 
   // The marker coding agents read through Figma's MCP server.
   assert.equal(frame.type, 'COMPONENT');
-  assert.equal(frame.description, 'Assetlib placement hero.artwork (1000 × 1000). This image can change after the app is released, '
-    + 'so don’t export it as a static file. In code, use the accessor generated for hero.artwork from assetlib.catalog.json, '
-    + 'which carries the bundled fallback. If hero.artwork isn’t in the catalog, add it there with a fallback image in the same change.');
+  assert.equal(frame.description, 'Assetlib placement hero.artwork (1000 × 1000). This image is data-supplied: it can change after the app is released. '
+    + 'Its exact codebase match is the accessor generated for hero.artwork from assetlib.catalog.json, which carries the bundled fallback, '
+    + 'so render it with that accessor instead of a downloaded file. '
+    + 'If hero.artwork isn’t in the catalog, add it there in the same change and download this image as its bundled fallback.');
   assert.deepEqual(clone(frame.documentationLinks), [{ uri: 'https://console.assetlib.dev/w/org-one/app-a/placements' }]);
   assert.ok(!frame.description.includes(connection.token) && !JSON.stringify(frame.documentationLinks).includes(connection.token), 'the marker never holds the token');
 

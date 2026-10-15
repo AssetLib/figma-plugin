@@ -793,7 +793,12 @@ test('placementMarker names the placement for coding agents and links the consol
   const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org_1', appId: 'app-2', token: 'alk_secret' };
   const marker = placementMarker(connection, placement.key, placement);
   assert.match(marker.description, /^Assetlib placement travel\.coast \(1200 × 900\)\. /);
-  assert.match(marker.description, /use the accessor generated for travel\.coast from assetlib\.catalog\.json/);
+  // Figma's design-to-code skill makes agents download every image except data-supplied imagery and exact codebase
+  // matches; the marker claims both, and a download is only a new key's bundled fallback (Figma MCP test, October 15, 2026).
+  assert.match(marker.description, /This image is data-supplied/);
+  assert.match(marker.description, /exact codebase match is the accessor generated for travel\.coast from assetlib\.catalog\.json/);
+  assert.match(marker.description, /If travel\.coast isn’t in the catalog, add it there in the same change and download this image as its bundled fallback\.$/);
+  assert.doesNotMatch(marker.description, /export/);
   assert.equal(marker.documentationUrl, `${PRODUCTION_ORIGIN}/w/org_1/app-2/placements`);
   assert.ok(!JSON.stringify(marker).includes('alk_secret'));
   assert.equal(placementMarker({ ...connection, origin: LEGACY_PRODUCTION_ORIGIN }, 'a', placement).documentationUrl,
