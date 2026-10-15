@@ -312,9 +312,12 @@ function libraryAsset(n, name, width, height, extra = {}) {
 function library(entries) { return { library: entries.map(entry => entry.asset), renditions: [...renditionsServed(), ...entries.flatMap(entry => entry.served)] }; }
 
 test('a placement cell inserts as a linked image component, centered and selected, with Sync ready', async () => {
-  const app = harness();
+  let time = 100000;
+  const app = harness({ now: () => time });
+  await settle(); time += 1;
   const frame = await insertHeroCell(app);
-  assert.deepEqual(app.requests.filter(request => !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork']);
+  assert.deepEqual(app.requests.filter(request => !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork', 'artwork'],
+    'the newly inserted layer gets one artwork read after its link is first seen');
   const downloads = app.requests.filter(request => request.url.endsWith(sha(11)));
   assert.equal(downloads.length, 1, 'the largest PNG within 4 MiB is fetched once');
   assert.deepEqual(downloads[0], { url: `${connection.origin}/api/apps/org-one/app-a/assets/${armArt}/renditions/${sha(11)}`, method: 'GET',
@@ -2054,7 +2057,7 @@ test('Enter on a row inserts the cell the footer shows, and choosing the chosen 
   await settle();
   assert.deepEqual(app.insertMessages().map(message => [message.name, message.link]),
     [['hero.artwork · b · light · new', { placementKey: placement.key, state: 'new', appearance: 'light', arm: 'b', environment: 'draft', assetId: armArt }]]);
-  assert.equal(app.activeElement(), row, 'focus stays on the row');
+  assert.equal(app.activeElement(), rowFor(app, placement.key), 'focus follows the row through the new link’s artwork refresh');
 });
 
 test('an error never takes focus from a field the person is typing in, nor scrolls it out of view', async () => {
@@ -2907,7 +2910,7 @@ const INSTANCE_LAYERS = 'Filled. Layers inside instances can’t be linked, so S
 test('fill keeps non-image paints and image transform', async () => {
   const under = { type: 'IMAGE', imageHash: 'under', scaleMode: 'FILL', visible: true, opacity: 1, blendMode: 'NORMAL' };
   const photo = { type: 'IMAGE', imageHash: 'old', scaleMode: 'CROP', imageTransform: [[0.5, 0, 0.25], [0, 0.5, 0.1]], filters: { exposure: 0.3, contrast: -0.2 },
-    opacity: 0.6, blendMode: 'MULTIPLY', visible: false };
+    opacity: 0.6, blendMode: 'MULTIPLY', visible: true };
   const overlay = { type: 'GRADIENT_LINEAR', gradientTransform: [[1, 0, 0], [0, 1, 0]], gradientStops: [], opacity: 0.4, visible: true, blendMode: 'NORMAL' };
   const spec = { id: '50:1', name: 'Card art', type: 'RECTANGLE', width: 150, height: 100, x: 40, y: 60, constraints: { horizontal: 'SCALE', vertical: 'MAX' },
     fills: [solid, under, photo, overlay] };
@@ -2923,7 +2926,7 @@ test('fill keeps non-image paints and image transform', async () => {
   await choose(app);
   const layer = app.figma.currentPage.selection[0];
   assert.deepEqual(clone(layer.fills), [solid, under, { ...photo, imageHash: 'hash-1' }, overlay],
-    'only the topmost image changes, keeping its scale mode, transform, filters, opacity, blend, and visibility');
+    'only the topmost visible image changes, keeping its scale mode, transform, filters, opacity, blend, and visibility');
   assert.deepEqual([layer.width, layer.height, layer.x, layer.y, layer.constraints], [150, 100, 40, 60, { horizontal: 'SCALE', vertical: 'MAX' }]);
   assert.equal(app.frames.length, 0, 'no new layer');
   assert.deepEqual(app.resizes, []);
@@ -2938,6 +2941,55 @@ test('fill keeps non-image paints and image transform', async () => {
   assert.equal(app.element('insert').textContent, 'Replace image');
   assert.deepEqual(lastSelection(app).remembered.insertedFrom, { environment: 'draft', assetId: cardArt });
   assert.equal(app.element('error').hidden, true);
+});
+
+test('Replace image changes the topmost visible image below a hidden paint', async () => {
+  const app = harness({ remembered: null, console: canvasConsole() });
+  const layer = await insertHeroCell(app);
+  const photo = { type: 'IMAGE', imageHash: 'visible', scaleMode: 'CROP', imageTransform: [[0.8, 0, 0.1], [0, 0.8, 0.1]],
+    filters: { exposure: 0.2 }, opacity: 0.7, blendMode: 'MULTIPLY', visible: true };
+  const hidden = { type: 'IMAGE', imageHash: 'hidden', scaleMode: 'FIT', visible: false };
+  layer.fills = [solid, photo, hidden];
+  assert.equal(app.element('insert').textContent, 'Replace image');
+  rowFor(app, card.key).dispatch('click');
+  await choose(app);
+  assert.deepEqual(clone(layer.fills), [solid, { ...photo, imageHash: 'hash-2' }, hidden], 'the hidden paint is untouched');
+  assert.equal(linkOf(layer).assetId, cardArt);
+  assert.equal(insertedMessage(app).mode, 'replace');
+  assert.equal(app.undoCommits.length, 2, 'one step for each image write');
+  app.notifications.at(-1).options.button.action();
+  assert.deepEqual(app.undoTriggers, [2], 'the complete paint snapshot permits Undo while unchanged');
+});
+
+test('Fill appends a visible image above hidden images and its Undo checks every paint', async () => {
+  const hidden = { type: 'IMAGE', imageHash: 'hidden', scaleMode: 'CROP', visible: false, opacity: 0.5 };
+  const selection = [{ id: '51:3', name: 'Hidden photo', type: 'RECTANGLE', width: 150, height: 100, fills: [solid, hidden] }];
+  for (const editAfter of [false, true]) {
+    const app = await canvas(selection);
+    assert.equal(app.element('insert').textContent, 'Fill Hidden photo');
+    await choose(app);
+    const layer = app.figma.currentPage.selection[0];
+    assert.deepEqual(clone(layer.fills), [solid, hidden, { type: 'IMAGE', imageHash: 'hash-1', scaleMode: 'FILL' }]);
+    assert.equal(app.undoCommits.length, 1);
+    if (editAfter) layer.fills = layer.fills.map(paint => paint.imageHash === 'hidden' ? { ...paint, opacity: 0.8 } : paint);
+    app.notifications.at(-1).options.button.action();
+    assert.deepEqual(app.undoTriggers, editAfter ? [] : [1], 'a later edit to even the hidden paint prevents Undo');
+    if (editAfter) assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.');
+  }
+});
+
+test('a drop onto an image frame replaces its visible image below a hidden paint', async () => {
+  const photo = { type: 'IMAGE', imageHash: 'visible', scaleMode: 'CROP', imageTransform: [[0.8, 0, 0.1], [0, 0.8, 0.1]], visible: true };
+  const hidden = { type: 'IMAGE', imageHash: 'hidden', scaleMode: 'FIT', visible: false };
+  const app = await canvas([{ id: '51:4', name: 'Drop target', type: 'FRAME', width: 300, height: 200, fills: [solid, photo, hidden], children: [] }]);
+  const layer = app.figma.currentPage.selection[0];
+  drag(rowFor(app, card.key));
+  app.dropOnCanvas({ node: layer, absoluteX: 150, absoluteY: 100 });
+  await settle();
+  assert.deepEqual(clone(layer.fills), [solid, { ...photo, imageHash: 'hash-1' }, hidden]);
+  assert.equal(app.frames.length, 0, 'the existing frame takes the image without a placeholder');
+  assert.equal(linkOf(layer).assetId, cardArt);
+  assert.equal(app.undoCommits.length, 1);
 });
 
 test('fill appends an image paint when none exists', async () => {
@@ -6011,6 +6063,94 @@ test('Cancel returns a healthy pasted connection to Connect with browser', async
   assert.equal(app.activeElement(), app.element('switch-workspace'));
 });
 
+// Batch 3 review: an unfinished reveal belongs to the view and selection that requested it.
+test('Batch 3 review F2: a reveal abandoned for Send never overrides later Insert choices on Refresh', async () => {
+  const gate = deferred();
+  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: gate } } });
+  const other = { ...placement, key: 'other.artwork', screen: 'Other', cells: heroCells() };
+  app.console.artwork.placements.push(other);
+  app.console.placements.push(other);
+  await settle();
+  app.element('sync-title').dispatch('click'); await settle();
+  assert.equal(app.element('panel-insert').hidden, false);
+  app.element('tab-send').dispatch('click'); await settle();
+  gate.resolve(); await settle();
+  app.element('tab-insert').dispatch('click'); await settle();
+  app.element('env-staging').dispatch('click');
+  rowFor(app, other.key).dispatch('click');
+  pick(app, 'insert-appearance', 'light');
+  app.element('insert-search').value = 'other';
+  app.element('insert-search').dispatch('input'); await settle();
+  app.element('insert-search').focus();
+  app.element('insert-refresh').dispatch('click'); await settle();
+  assert.equal(app.element('insert-search').value, 'other', 'the abandoned reveal does not clear a later search');
+  assert.equal(app.element('env-staging').getAttribute('aria-checked'), 'true');
+  assert.equal(rowFor(app, other.key).getAttribute('aria-selected'), 'true');
+  assert.equal(app.element('insert-appearance').value, 'light');
+  assert.equal(app.activeElement(), app.element('insert-search'));
+});
+
+test('Batch 3 review F2: a reveal whose linked selection changed is discarded when artwork arrives', async () => {
+  const gate = deferred();
+  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: gate } } });
+  await settle();
+  app.element('sync-title').dispatch('click'); await settle();
+  app.select([]); await settle();
+  app.element('insert-search').value = 'nothing here';
+  app.element('insert-search').dispatch('input');
+  app.element('insert-search').focus();
+  gate.resolve(); await settle();
+  assert.equal(app.element('insert-search').value, 'nothing here');
+  assert.equal(app.element('env-draft').getAttribute('aria-checked'), 'true');
+  assert.equal(app.element('insert-bar').hidden, true, 'the old linked cell is not chosen');
+  assert.equal(app.activeElement(), app.element('insert-search'));
+});
+
+test('Batch 3 review F2: a title reveal that starts a stale full load focuses its row when the load finishes', async () => {
+  const app = batch3({ prefs: { tab: 'insert' }, link: { appearance: 'dark' } }); await settle();
+  const gate = deferred(); app.console.gates.artwork = gate;
+  app.element('insert-refresh').dispatch('click'); await settle();
+  const abandoned = artworkReads(app).at(-1);
+  app.element('browse-images').dispatch('click'); await settle();
+  assert.equal(abandoned.signal.aborted, true);
+  const reads = artworkReads(app).length;
+  app.element('sync-title').focus(); app.element('sync-title').dispatch('click'); await settle();
+  assert.equal(artworkReads(app).length, reads + 1, 'the title starts the missing Placements load');
+  assert.equal(app.element('insert-list').getAttribute('aria-busy'), 'true');
+  gate.resolve(); await settle();
+  const row = rowFor(app, placement.key);
+  assert.equal(app.activeElement(), row, 'the completed load applies the reveal after rows exist');
+  assert.deepEqual(clone(row.scrolledIntoView), { block: 'nearest' });
+  assert.equal(row.getAttribute('aria-selected'), 'true');
+  assert.equal(app.element('insert-appearance').value, 'dark');
+  assert.equal(app.element('env-production').getAttribute('aria-checked'), 'true');
+});
+
+for (const kind of ['quiet', 'full']) test(`Batch 3 review F5: a ${kind} artwork read cannot clear a newer Sync token refusal`, async () => {
+  const app = batch3(); await settle();
+  if (kind === 'full') { app.element('tab-insert').dispatch('click'); await settle(); }
+  const gate = deferred(); app.console.gates.artwork = gate;
+  if (kind === 'quiet') { app.advance(60000); app.focusWindow(); }
+  else app.element('insert-refresh').dispatch('click');
+  await settle();
+  assert.equal(artworkReads(app).length, 2);
+  app.console.statuses.drafts = 401;
+  app.element('sync').dispatch('click'); await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(app.element('error').textContent, refusedPastedText);
+  app.element('settings').open = true; app.element('settings').dispatch('toggle');
+  assert.equal(app.element('connect-browser').className, 'primary wide');
+  assert.equal(app.element('connection-error').hidden, false);
+  app.console.artwork.environments.production.sequence = 13;
+  gate.resolve(); await settle();
+  assert.equal(app.element('connect-browser').className, 'primary wide', 'a response to the older read keeps recovery primary');
+  assert.equal(app.element('connection-error').hidden, false);
+  assert.equal(app.element('connection-error').textContent, refusedPastedText);
+  assert.equal(app.element('sync').className, 'secondary');
+  assert.equal(app.element('error-action').textContent, 'Connect again');
+  assert.match(app.element('sync-meta').textContent, /in Production \(release 13\)/, 'the artwork itself is still accepted');
+});
+
 // ---- Batch 3: current artwork on either tab, Update, publication status, and placement navigation ----
 function batch3({ environment = 'production', stale = false, layer = {}, link = {}, prefs = { tab: 'send' }, ...options } = {}) {
   let time = 100000;
@@ -6056,7 +6196,7 @@ test('Batch 3: artwork loads once per generation on Send, survives Images search
   assert.equal(app.element('error').hidden, true);
 });
 
-test('Batch 3: quiet artwork refresh throttles focus, visibility and linked selection from completion, including failures', async () => {
+test('Batch 3: quiet artwork refresh throttles focus and visibility from completion, including failures', async () => {
   const app = batch3(); await settle();
   assert.equal(artworkReads(app).length, 1);
   app.advance(59999); app.focusWindow(); app.setVisibility('visible'); app.selectionChanged(); await settle();
@@ -6078,7 +6218,8 @@ test('Batch 3: quiet artwork refresh throttles focus, visibility and linked sele
   assert.equal(app.element('connection-error').hidden, true);
   app.focusWindow(); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, 3);
   delete app.console.statuses.artwork;
-  app.advance(60000); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, 4, 'linked selection refreshes old art');
+  app.advance(60000); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, 3, 'reselection does not refresh the same link');
+  app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, 4, 'focus refreshes old art');
   app.element('tab-insert').dispatch('click'); await settle();
   app.element('insert-refresh').dispatch('click'); await settle();
   const full = artworkReads(app).length;
@@ -6662,4 +6803,195 @@ test('Batch 4: Send here keeps an explicit Send visible when the empty cell is a
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].body.rebind, false);
   assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: null, arm: null });
+});
+
+// Batch 3 review: a layer's new link must never be compared with artwork requested before this window saw it.
+for (const fails of [false, true]) test(`F1: a synced link waits for fresh artwork${fails ? ' even when its quiet read fails' : ''}`, async () => {
+  const app = batch3({ environment: 'draft', console: { draft: boundDraft } }); await settle();
+  app.advance(10000);
+  const gate = deferred(); app.console.gates.artwork = gate;
+  app.element('sync').dispatch('click'); await settle();
+  assert.equal(linkOf(app.layer).assetId, sentArt);
+  assert.equal(app.element('sync-update').hidden, true);
+  assert.doesNotMatch(app.element('sync-meta').textContent, /different art now|no longer has art/);
+  assert.match(app.element('sync-meta').textContent, /sent to Draft$/);
+  const reads = artworkReads(app).length;
+  app.select([]); await settle(); app.select([app.layer]); await settle();
+  assert.equal(artworkReads(app).length, reads, 'the in-flight read covers this link');
+  if (fails) app.console.statuses.artwork = 500;
+  else for (const cell of app.console.artwork.placements[0].cells) cell.draft = cellArt(sentArt, null, null);
+  gate.resolve(); await settle();
+  assert.equal(app.element('sync-update').hidden, true);
+  assert.doesNotMatch(app.element('sync-meta').textContent, /different art now|no longer has art/);
+  assert.equal(app.element('error').hidden, true);
+  if (!fails) assert.match(app.element('sync-meta').textContent, /in Draft, not published$/);
+  app.advance(60001); app.select([]); await settle(); app.select([app.layer]); await settle();
+  assert.equal(artworkReads(app).length, reads, 'reselection never retries this link, including after failure');
+});
+
+test('F1: a newly seen teammate link forces one read before offering different Draft art', async () => {
+  const app = batch3({ environment: 'draft' }); await settle();
+  app.advance(10000);
+  const gate = deferred(); app.console.gates.artwork = gate;
+  const link = { ...linkOf(app.layer), assetId: sentArt, insertedAt: '2099-01-01T00:00:00.000Z' };
+  app.layer.setPluginData(LINK_KEY, JSON.stringify(link));
+  const before = artworkReads(app).length;
+  app.selectionChanged(); await settle();
+  assert.equal(app.element('sync-update').hidden, true);
+  assert.doesNotMatch(app.element('sync-meta').textContent, /different art now|no longer has art|not published/);
+  assert.equal(artworkReads(app).length, before + 1, 'a new link bypasses the focus throttle');
+  app.select([]); await settle(); app.select([app.layer]); await settle();
+  assert.equal(artworkReads(app).length, before + 1);
+  for (const cell of app.console.artwork.placements[0].cells) cell.draft = cellArt(armArt, null, null);
+  gate.resolve(); await settle();
+  assert.equal(app.element('sync-update').hidden, false);
+  assert.equal(app.element('sync-meta').textContent, 'Draft has different art now');
+  assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(13));
+  app.advance(60001); app.select([]); await settle(); app.select([app.layer]); await settle();
+  assert.equal(artworkReads(app).length, before + 1, 'reselecting keeps its first observation, regardless of the other device clock');
+  assert.equal(app.element('sync-update').hidden, false);
+});
+
+test('F1: a first Send into an empty Draft cell keeps fallback meta until a fresh read arrives', async () => {
+  let time = 100000;
+  const data = artwork(); for (const cell of data.placements[0].cells) cell.draft = null;
+  const app = harness({ remembered: null, now: () => time, console: { artwork: data, draft: boundDraft },
+    selection: [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'first-send', scaleMode: 'FILL' }] }] });
+  await settle();
+  time += 10000;
+  app.console.gates.artwork = deferred();
+  pick(app, 'placement', placement.key); app.element('send').dispatch('click'); await settle();
+  assert.equal(linkOf(app.figma.currentPage.selection[0]).assetId, sentArt);
+  assert.equal(app.element('sync-update').hidden, true);
+  assert.doesNotMatch(app.element('sync-meta').textContent, /no longer has art|different art now/);
+  assert.match(app.element('sync-meta').textContent, /sent to Draft$/);
+  for (const cell of app.console.artwork.placements[0].cells) cell.draft = cellArt(sentArt, null, null);
+  app.console.gates.artwork.resolve(); await settle();
+  assert.match(app.element('sync-meta').textContent, /in Draft, not published$/);
+});
+
+test('F1: a full read started before a new link stays stale even when it completes later', async () => {
+  const app = batch3({ environment: 'draft', prefs: { tab: 'insert' } }); await settle();
+  const full = deferred(); app.console.gates.artwork = full;
+  app.element('insert-refresh').dispatch('click'); await settle();
+  app.advance(10000);
+  app.layer.setPluginData(LINK_KEY, JSON.stringify({ ...linkOf(app.layer), assetId: sentArt }));
+  app.selectionChanged(); await settle();
+  const fresh = deferred(); app.console.gates.artwork = fresh;
+  full.resolve(); await settle();
+  assert.equal(app.element('sync-update').hidden, true, 'completion time cannot make the older request fresh');
+  assert.doesNotMatch(app.element('sync-meta').textContent, /different art now|no longer has art/);
+  assert.equal(artworkReads(app).length, 3, 'the full read is followed by one read covering the new link');
+  for (const cell of app.console.artwork.placements[0].cells) cell.draft = cellArt(sentArt, null, null);
+  fresh.resolve(); await settle();
+  assert.match(app.element('sync-meta').textContent, /in Draft, not published$/);
+});
+
+test('F4: a linked TEXT with an image fill never offers Update', async () => {
+  const app = batch3({ stale: true, layer: { type: 'TEXT' } }); await settle();
+  assert.equal(lastSelection(app).link.image, true, 'the layer has an image paint');
+  assert.equal(lastSelection(app).insertTarget.mode, 'new');
+  assert.equal(app.element('sync-update').hidden, true);
+  app.element('sync-update').dispatch('click'); await settle();
+  assert.equal(app.insertMessages().length, 0);
+  assert.equal(app.element('error').hidden, true);
+});
+
+test('F2: a failed quiet read discards an abandoned reveal before a later full load', async () => {
+  const gate = deferred();
+  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: gate }, statuses: { artwork: 500 } } });
+  await settle();
+  app.element('sync-title').dispatch('click'); await settle();
+  app.element('insert-search').value = 'keep this search'; app.element('insert-search').dispatch('input');
+  app.element('tab-send').dispatch('click'); await settle();
+  gate.resolve(); await settle();
+  delete app.console.statuses.artwork;
+  app.element('tab-insert').dispatch('click'); app.element('insert-search').focus(); await settle();
+  assert.equal(app.element('insert-search').value, 'keep this search');
+  assert.equal(app.element('env-draft').getAttribute('aria-checked'), 'true');
+  assert.equal(app.element('insert-bar').hidden, true);
+  assert.equal(app.activeElement(), app.element('insert-search'));
+});
+
+test('F1: freshness follows each node and environment, and forgets the oldest link past 500', async () => {
+  const app = batch3(); await settle();
+  const original = clone(lastSelection(app));
+  const deliver = selection => app.deliver({ type: 'selection', connectionGeneration: 0, selection });
+  const gate = deferred(); app.console.gates.artwork = gate;
+  app.advance(10000);
+  for (let i = 0; i < 500; i++) {
+    const selection = clone(original);
+    selection.node.id = `fresh:${i}`;
+    selection.remembered.nodeId = selection.node.id;
+    selection.insertTarget.nodeIds = [selection.node.id];
+    deliver(selection);
+  }
+  await settle();
+  assert.equal(artworkReads(app).length, 2, 'one quiet read covers links seen at its start time');
+  assert.equal(app.element('sync-meta').textContent, 'old · Any · Control · Production art', 'another node cannot borrow the first node’s status');
+  app.advance(1); deliver(original); await settle();
+  assert.equal(artworkReads(app).length, 3, 'the oldest of 501 links was evicted with its read tracking');
+  assert.equal(artworkReads(app)[1].signal.aborted, true, 'an in-flight read from before this observation is superseded');
+  gate.resolve(); await settle();
+  assert.match(app.element('sync-meta').textContent, /in Production \(release 12\)/);
+  app.advance(1);
+  app.console.gates.artwork = deferred();
+  const staging = clone(original);
+  staging.link.environment = 'staging'; staging.remembered.insertedFrom.environment = 'staging';
+  deliver(staging); await settle();
+  assert.equal(artworkReads(app).length, 4, 'a changed environment is a new link observation');
+  assert.equal(app.element('sync-meta').textContent, 'old · Any · Control · Staging art');
+  app.console.gates.artwork.resolve(); await settle();
+  assert.match(app.element('sync-meta').textContent, /in Production \(release 12\)/);
+});
+
+test('F1: a link first seen during a connection retest gets its quiet read when the test ends', async () => {
+  const app = batch3({ environment: 'draft' }); await settle();
+  app.advance(10000);
+  const gate = deferred(); app.console.gates.placements = gate;
+  app.element('connection-form').dispatch('submit'); await settle();
+  assert.equal(off(app, 'sync'), true, 'the same connection is being tested');
+  app.layer.setPluginData(LINK_KEY, JSON.stringify({ ...linkOf(app.layer), assetId: sentArt }));
+  app.selectionChanged(); await settle();
+  assert.equal(artworkReads(app).length, 1, 'the link read waits for the connection test');
+  gate.resolve(); await settle();
+  assert.equal(artworkReads(app).length, 2, 'completion honors the link seen while actions waited');
+  assert.equal(app.element('sync-update').hidden, false, 'the fresh read now confirms different art');
+});
+
+test('a menu command waits for the connection test before its tab reads lists', async () => {
+  for (const command of ['insert', 'send']) {
+    const app = harness({ command, prefs: { tab: command === 'send' ? 'insert' : 'send' } });
+    await settle();
+    const reads = app.requests.filter(request => request.route === 'placements' || request.route === 'artwork').map(request => request.route);
+    assert.equal(reads[0], 'placements', `${command}: the test reads first`);
+    assert.equal(reads.filter(route => route === 'placements').length, 1, `${command}: one placements read`);
+    assert.equal(app.element(`tab-${command}`).getAttribute('aria-selected'), 'true');
+  }
+});
+
+test('Fits this layer follows a resize of the same layer', async () => {
+  const banner = { ...placement, key: 'home.banner', width: 1170, height: 480 };
+  const app = harness({ remembered: null, selection: [{ ...node, id: '72:1', width: 390, height: 160 }], console: { placements: [banner, placement] } });
+  await settle();
+  const fits = () => app.element('placement').children.find(child => child.tagName === 'OPTGROUP' && child.label === 'Fits this layer')?.children.map(option => option.value);
+  assert.deepEqual(fits(), ['home.banner']);
+  pick(app, 'placement', 'home.banner');
+  app.select([{ ...node, id: '72:1', width: 390, height: 390 }]); await settle();
+  assert.deepEqual(fits(), ['hero.artwork']);
+  assert.equal(app.element('placement').value, 'home.banner', 'the choice stays');
+});
+
+test('Cmd+Enter keeps the status line while an Update runs', async () => {
+  const app = batch3({ prefs: { tab: 'insert' } }); await settle();
+  for (const cell of app.console.artwork.placements[0].cells) cell.production = cellArt(armArt, null, null);
+  app.advance(60000); app.focusWindow(); await settle();
+  assert.equal(app.element('sync-update').hidden, false);
+  const gate = deferred(); app.console.gates.rendition = gate;
+  app.element('sync-update').dispatch('click'); await settle();
+  const running = app.element('status').textContent;
+  assert.match(running, /^Downloading /);
+  app.element('insert-search').focus(); app.keydown({ key: 'Enter', metaKey: true }); await settle();
+  assert.equal(app.element('status').textContent, running);
+  gate.resolve(); await settle();
 });

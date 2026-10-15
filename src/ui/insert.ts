@@ -7,7 +7,7 @@ import {
 import type {
   Appearance, ArtworkResponse, CanvasTarget, CellArtwork, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
 } from '../shared/index.js';
-import type { InsertDestination, MainMessage, SelectedLink } from '../shared/protocol.js';
+import type { InsertDestination, MainMessage, SelectedLink, UiMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
 import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
@@ -62,13 +62,18 @@ type ListState = {
 // Everything here resets on every connection message.
 let artwork: ArtworkResponse | null = null;
 let artworkGeneration: number | null = null;
+// Only this window's clock: a request must start at or after we first saw the selected layer's current link.
+let artworkFrom: number | null = null;
+const seenLinks = new Map<string, number>();
+const checkedLinks = new Set<string>();
 // A full Refresh abandoned for Images must still reload when Placements next shows, without losing the bar's preview.
 let artworkListStale = false;
 let quietTicket = 0;
 let quietLoading = false;
+let quietFrom: number | null = null;
 // A Send or Sync that finishes during a full load still needs a read made after its draft was bound.
 let artworkRefreshPending = false;
-// A focus or selection refresh waits a minute after the last artwork request finished, even when it failed.
+// A focus or visibility refresh waits a minute after the last artwork request finished, even when it failed.
 let artworkFinishedAt: number | null = null;
 let images: { items: LibraryAsset[]; nextCursor: string | null; q: string } | null = null;
 // A row's placement and the cell its pickers show, or a tile's image.
@@ -393,73 +398,69 @@ export function renderSendCurrent(): void {
   showThumbnail(element<HTMLImageElement>('send-current-thumb'), current.hidden || !artwork ? null : artworkAsset(artwork, art));
 }
 
+/** New list content, with text assigned as text rather than parsed as markup. */
+function makeNode<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = ''): HTMLElementTagNameMap[K] {
+  const item = document.createElement(tag);
+  item.className = className;
+  item.textContent = text;
+  return item;
+}
+/** Rows and tiles share their listbox role, choice and drag handlers, and lookup entries. */
+function wireItem(item: HTMLElement, key: string, name: string, choose: (key: string) => void): HTMLElement {
+  item.setAttribute('role', 'option');
+  item.addEventListener('click', () => choose(key));
+  item.addEventListener('dblclick', () => insertFrom(key));
+  item.draggable = canDrag(insertTarget(choiceFor(key)));
+  item.addEventListener('dragstart', event => dragStart(event, key));
+  item.addEventListener('dragend', dragEnd);
+  rows.set(key, item);
+  rowNames.set(key, name.toLowerCase());
+  return item;
+}
 function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HTMLElement {
-  const row = document.createElement('div');
-  row.className = 'placement';
-  row.setAttribute('role', 'option');
+  const row = makeNode('div', 'placement');
   row.setAttribute('data-key', placement.key);
-  const text = document.createElement('span'); text.className = 'row-text';
-  const key = document.createElement('span'); key.className = 'key'; key.textContent = placement.key;
-  const size = document.createElement('span'); size.className = 'size'; size.textContent = placementMeta(placement);
+  const text = makeNode('span', 'row-text');
+  const key = makeNode('span', 'key', placement.key);
+  const size = makeNode('span', 'size', placementMeta(placement));
   text.append(key, size);
   const art = findCell(placement, baseCoordinate(placement))?.[shownEnvironment()] ?? null;
   // A cell with nothing in this environment shows an empty slot.
   row.append(thumbnailFrame(artworkAsset(current, art), !art), text);
   const tag = rowTag(placement);
   if (tag) {
-    const chip = document.createElement('span');
-    chip.className = tag.blocking ? 'tag blocking' : 'tag';
-    chip.textContent = tag.word;
+    const chip = makeNode('span', tag.blocking ? 'tag blocking' : 'tag', tag.word);
     chip.title = tag.title;
     row.append(chip);
   }
-  row.addEventListener('click', () => selectPlacement(placement.key));
-  row.addEventListener('dblclick', () => insertFrom(placement.key));
-  row.draggable = canDrag(insertTarget(choiceFor(placement.key)));
-  row.addEventListener('dragstart', event => dragStart(event, placement.key));
-  row.addEventListener('dragend', dragEnd);
-  rows.set(placement.key, row);
-  rowNames.set(placement.key, placement.key.toLowerCase());
-  return row;
+  return wireItem(row, placement.key, placement.key, selectPlacement);
 }
 function imageTile(asset: LibraryAsset): HTMLElement {
-  const tile = document.createElement('div');
-  tile.className = 'tile';
-  tile.setAttribute('role', 'option');
+  const tile = makeNode('div', 'tile');
   tile.setAttribute('data-asset-id', asset.id);
   const kind = asset.processingIntent === 'photo' ? 'Photo' : 'Artwork';
   tile.title = `${asset.name || 'Untitled image'} · ${asset.width} × ${asset.height} · ${kind}`;
-  const name = document.createElement('span'); name.className = 'name';
+  const name = makeNode('span', 'name');
   // A name breaks after its separators (travel.coast.|background, hero_dark_|final) before anywhere else.
   for (const [index, part] of (asset.name || 'Untitled image').split(/(?<=[._-])/).entries()) {
     if (index) name.append(document.createElement('wbr'));
     name.append(part);
   }
-  const size = document.createElement('span'); size.className = 'size'; size.textContent = `${asset.width} × ${asset.height}`;
+  const size = makeNode('span', 'size', `${asset.width} × ${asset.height}`);
   tile.append(thumbnailFrame(asset), name, size);
-  tile.addEventListener('click', () => selectImage(asset.id));
-  tile.addEventListener('dblclick', () => insertFrom(asset.id));
-  tile.draggable = canDrag(insertTarget({ kind: 'image', assetId: asset.id }));
-  tile.addEventListener('dragstart', event => dragStart(event, asset.id));
-  tile.addEventListener('dragend', dragEnd);
-  rows.set(asset.id, tile);
-  rowNames.set(asset.id, (asset.name || 'Untitled image').toLowerCase());
-  return tile;
+  return wireItem(tile, asset.id, asset.name || 'Untitled image', selectImage);
 }
 /** Grey blocks where rows or tiles will be, while the list loads (no shimmer), and the words a screen reader finds there. */
 function skeletons(kind: 'placements' | 'images'): HTMLElement[] {
-  const words = document.createElement('p');
-  words.className = 'visually-hidden';
-  words.textContent = kind === 'placements' ? 'Loading placements' : 'Loading images';
+  const words = makeNode('p', 'visually-hidden', kind === 'placements' ? 'Loading placements' : 'Loading images');
   return [words, ...Array.from({ length: kind === 'placements' ? 6 : 9 }, () => {
-    const item = document.createElement('div');
-    item.className = kind === 'placements' ? 'placement skeleton' : 'tile skeleton';
+    const item = makeNode('div', kind === 'placements' ? 'placement skeleton' : 'tile skeleton');
     item.setAttribute('aria-hidden', 'true');
-    const block = document.createElement('span'); block.className = 'block';
+    const block = makeNode('span', 'block');
     if (kind === 'images') { item.append(block); return item; }
-    const lines = document.createElement('span'); lines.className = 'lines';
-    const first = document.createElement('span'); first.className = 'bar';
-    const second = document.createElement('span'); second.className = 'bar';
+    const lines = makeNode('span', 'lines');
+    const first = makeNode('span', 'bar');
+    const second = makeNode('span', 'bar');
     lines.append(first, second);
     item.append(block, lines);
     return item;
@@ -484,10 +485,38 @@ function currentLink(): SelectedLink | null {
     || !sameCoordinate(placement, link, remembered)) return null;
   return link;
 }
+function seenKey(link: InsertLink): string { return `${state.selection.node?.id}|${link.assetId}|${link.environment}`; }
+function artworkCurrentFor(link: InsertLink): boolean {
+  const seen = seenLinks.get(seenKey(link));
+  return artworkFrom !== null && seen !== undefined && artworkFrom >= seen;
+}
+/** Called once for each current-generation selection; reselecting a link never changes its first observation. */
+export function noteLinkSeen(): void {
+  const { link, node } = state.selection;
+  if (!hasCurrentSelection() || !node || link?.kind !== 'linked') return;
+  const key = seenKey(link);
+  if (!seenLinks.has(key)) {
+    seenLinks.set(key, Date.now());
+    if (seenLinks.size > 500) {
+      const oldest = seenLinks.keys().next().value!;
+      seenLinks.delete(oldest); checkedLinks.delete(oldest);
+    }
+  }
+  if (!artworkCurrentFor(link) && !checkedLinks.has(key) && !state.ops.connecting) {
+    checkedLinks.add(key);
+    if (quietFrom === null || quietFrom < seenLinks.get(key)!) ensureArtwork(true);
+  }
+  scheduleRender();
+}
+function artworkRequested(from: number): void {
+  for (const [key, seen] of seenLinks) if (from >= seen) checkedLinks.add(key);
+}
 /** New art for an image-only layer in the environment its link names. */
 export function linkUpdate(): { art: CellArtwork; asset: LibraryAsset; environment: EnvironmentName; placement: PlacementArtwork } | null {
   const link = currentLink();
-  if (!link?.image || link.children !== 0 || !artwork || artworkGeneration !== state.connectionGeneration) return null;
+  const target = state.selection.insertTarget;
+  if (!link?.image || link.children !== 0 || target?.mode !== 'replace' || target.nodeIds?.length !== 1 || target.nodeIds[0] !== state.selection.node?.id
+    || !artwork || artworkGeneration !== state.connectionGeneration || !artworkCurrentFor(link)) return null;
   const art = changedArt(artwork, link);
   const asset = artworkAsset(artwork, art);
   const placement = artwork.placements.find(item => item.key === link.placementKey);
@@ -495,6 +524,7 @@ export function linkUpdate(): { art: CellArtwork; asset: LibraryAsset; environme
 }
 /** A cell with no art says so; a sent layer with contents can only replace different Draft art by syncing. */
 export function linkArtworkMeta(link: SelectedLink): string | null {
+  if (!artworkCurrentFor(link)) return null;
   const cell = currentCell(link.placementKey, link);
   if (!cell) return null;
   const art = cell[link.environment];
@@ -504,6 +534,7 @@ export function linkArtworkMeta(link: SelectedLink): string | null {
 }
 /** Where this layer's image is published, with Production taking precedence over Staging and Draft. */
 export function linkStatus(link: InsertLink, coordinate: CellCoordinate = link): string | null {
+  if (!artworkCurrentFor(link)) return null;
   const cell = currentCell(link.placementKey, coordinate);
   if (!cell) return null;
   if (cell.production?.assetId === link.assetId && artwork?.environments.production) return `in Production (release ${artwork.environments.production.sequence})`;
@@ -518,7 +549,7 @@ export function slotIdOf(key: string): string | null {
 /** Reveal the linked cell in Insert; a pending reveal is completed once its artwork arrives. */
 export function revealPlacement(key: string, cell: CellCoordinate, environment: EnvironmentName): void {
   setBrowse('placements');
-  if (!artwork || artworkGeneration !== state.connectionGeneration) {
+  if (!artwork || artworkGeneration !== state.connectionGeneration || state.ops.loadingList === 'placements') {
     pendingReveal = { key, cell, environment };
     enterInsert();
     return;
@@ -597,13 +628,11 @@ export function renderList(): void {
       const screens = distinct(matches.map(item => item.screen));
       screens.forEach((screen, index) => {
         // Each screen is a group of options named by its header, which stays in view while its rows scroll.
-        const header = document.createElement('p');
-        header.className = 'group';
+        const header = makeNode('p', 'group', screen);
         header.id = `insert-group-${index}`;
         header.setAttribute('role', 'presentation');
         // It names the group (aria-labelledby reads a hidden element too), so it isn't read again as text inside it.
         header.setAttribute('aria-hidden', 'true');
-        header.textContent = screen;
         const group = document.createElement('div');
         group.setAttribute('role', 'group');
         group.setAttribute('aria-labelledby', header.id);
@@ -757,14 +786,15 @@ export function ensureArtwork(force = false): void {
   artworkRefreshPending = false;
   void loadArtworkQuietly();
 }
-/** Focus, visibility, and a linked selection refresh quietly at most once a minute after a completed load. */
+/** Focus and visibility refresh quietly at most once a minute after a completed load. */
 export function refreshArtworkIfStale(): void {
   if (quietLoading || state.ops.loadingList === 'placements' || (artworkFinishedAt !== null && Date.now() - artworkFinishedAt < 60000)) return;
   ensureArtwork(true);
 }
-function acceptArtwork(payload: unknown, generation: number): void {
+function acceptArtwork(payload: unknown, generation: number, from: number, attention: number): void {
   artwork = parseArtwork(payload);
   artworkGeneration = generation;
+  artworkFrom = from;
   artworkListStale = false;
   const placement = selectedPlacement();
   if (selected?.kind === 'placement') {
@@ -775,11 +805,14 @@ function acceptArtwork(payload: unknown, generation: number): void {
       buildInsertPickers(placement, cell);
     }
   }
-  markConnected();
+  if (attention === state.attentionCount) markConnected();
 }
 function finishReveal(): void {
-  if (!pendingReveal || !artwork || artworkGeneration !== state.connectionGeneration || state.prefs.tab !== 'insert' || state.prefs.browse !== 'placements') return;
   const reveal = pendingReveal;
+  pendingReveal = null;
+  const shown = syncBar();
+  if (!reveal || !artwork || artworkGeneration !== state.connectionGeneration || state.prefs.tab !== 'insert' || state.prefs.browse !== 'placements'
+    || (shown?.kind !== 'linked' && shown?.kind !== 'copy') || shown.key !== reveal.key) return;
   revealPlacement(reveal.key, reveal.cell, reveal.environment);
 }
 async function loadArtworkQuietly(): Promise<void> {
@@ -788,6 +821,9 @@ async function loadArtworkQuietly(): Promise<void> {
   if (!config || generation === null) return;
   const ticket = ++quietTicket;
   quietLoading = true;
+  const from = Date.now(), attention = state.attentionCount;
+  quietFrom = from;
+  artworkRequested(from);
   try {
     const result = await send(config, { path: 'placements/artwork', retry: false, channel: 'artwork' });
     if (generation !== state.connectionGeneration || ticket !== quietTicket || result.kind === 'aborted') return;
@@ -796,14 +832,14 @@ async function loadArtworkQuietly(): Promise<void> {
       if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true);
       return;
     }
-    acceptArtwork(result.payload, generation);
+    acceptArtwork(result.payload, generation, from, attention);
     scheduleRender(true);
-    finishReveal();
   } catch { /* A quiet reload keeps the artwork already shown and never uses the error line. */ }
   finally {
     if (ticket === quietTicket) {
       quietLoading = false;
-      if (generation === state.connectionGeneration) artworkFinishedAt = Date.now();
+      quietFrom = null;
+      if (generation === state.connectionGeneration) { artworkFinishedAt = Date.now(); finishReveal(); }
       if (!artwork) {
         scheduleRender(true);
         // The person opened Placements while its first quiet read waited. A normal list load can now show a failure;
@@ -887,8 +923,11 @@ async function loadArtwork(): Promise<void> {
   // The full load supersedes a quiet one, but the Sync bar keeps the artwork already shown while it refreshes.
   const artworkTicket = ++quietTicket;
   quietLoading = false;
+  quietFrom = null;
   artworkListStale = true;
   scheduleRender(true);
+  const from = Date.now(), attention = state.attentionCount;
+  artworkRequested(from);
   try {
     // A new list load or a connection change aborts this one; whoever replaced it owns the list.
     const result = await send(config, { path: 'placements/artwork', channel: 'list' });
@@ -899,15 +938,17 @@ async function loadArtwork(): Promise<void> {
       const failure = readFailureOf(result, readFailure(result, config, 'insert'));
       artwork = null;
       artworkGeneration = null;
+      artworkFrom = null;
       if (selected?.kind === 'placement') selected = null;
       showListError(failure);
       return;
     }
-    acceptArtwork(result.payload, generation);
+    acceptArtwork(result.payload, generation, from, attention);
   } catch (error) {
     if (generation !== state.connectionGeneration || ticket !== listTicket) return;
     artwork = null;
     artworkGeneration = null;
+    artworkFrom = null;
     if (selected?.kind === 'placement') selected = null;
     showListError({ kind: 'invalid', status: 200, text: errorText(error) });
   } finally {
@@ -1039,26 +1080,8 @@ async function beginInsert(asNew = false): Promise<void> {
   clearError();
   const rendition = filling(canvas) ? fillRendition(asset, canvas.containerWidth ?? 0, canvas.containerHeight ?? 0) : insertRendition(asset);
   if (!rendition) { showError(TOO_LARGE); return; }
-  const operation = { id: nextRequestId(), generation, kind: 'insert' as const };
-  pendingInsert = operation;
-  state.ops.inserting = true;
-  setStatus(`Downloading ${target.name}…`);
-  scheduleRender();
-  try {
-    const bytes = await download(config, generation, asset, rendition, setStatus);
-    // A connection switch drops this insert quietly; the new connection owns the busy state.
-    if (generation !== state.connectionGeneration || pendingInsert !== operation || !bytes) return;
-    setStatus(`Inserting ${target.name}…`);
-    post({ type: 'insert', requestId: operation.id, connectionGeneration: generation, bytes, name: target.name, frame: target.frame, scale, link: target.link,
-      target: destination });
-  } catch (error) {
-    if (generation !== state.connectionGeneration || pendingInsert !== operation) return;
-    pendingInsert = null;
-    state.ops.inserting = false;
-    setStatus('');
-    showInsertError(errorText(error));
-    scheduleRender();
-  }
+  return downloadInsert(config, generation, asset, rendition, 'insert',
+    { name: target.name, frame: target.frame, scale, link: target.link, target: destination });
 }
 /** Update shares Insert's download and completion pipeline, but only its own button shows the busy state. */
 export function isUpdating(): boolean { return pendingInsert?.kind === 'update'; }
@@ -1073,27 +1096,30 @@ export async function updateLinked(): Promise<void> {
   const rendition = fillRendition(asset, node.width, node.height);
   if (!rendition) { showInsertError(asset.renditions.length ? TOO_LARGE : NEEDS_UPLOAD); return; }
   const name = layerName(placement, link);
-  const operation = { id: nextRequestId(), generation, kind: 'update' as const };
+  return downloadInsert(config, generation, asset, rendition, 'update', {
+    name, frame: { width: placement.width, height: placement.height }, scale: 1,
+    link: { placementKey: link.placementKey, state: link.state, appearance: link.appearance, arm: link.arm, environment, assetId: art.assetId },
+    target: { kind: 'fill', nodeIds: [node.id] }, update: { from: link.assetId },
+  });
+}
+/** Both image actions keep their captured destination and let the current operation alone post or report a failure. */
+async function downloadInsert(config: Connection, generation: number, asset: LibraryAsset, rendition: RenditionInfo, kind: 'insert' | 'update',
+  payload: Omit<Extract<UiMessage, { type: 'insert' }>, 'type' | 'requestId' | 'connectionGeneration' | 'bytes'>): Promise<void> {
+  const operation = { id: nextRequestId(), generation, kind };
   pendingInsert = operation;
   state.ops.inserting = true;
-  clearError();
-  setStatus(`Downloading ${name}…`);
+  if (kind === 'update') clearError();
+  setStatus(`Downloading ${payload.name}…`);
   scheduleRender();
   try {
     const bytes = await download(config, generation, asset, rendition, setStatus);
+    // A connection switch drops the action quietly; the new connection owns the busy state.
     if (generation !== state.connectionGeneration || pendingInsert !== operation || !bytes) return;
-    setStatus(`Updating ${name}…`);
-    post({ type: 'insert', requestId: operation.id, connectionGeneration: generation, bytes, name,
-      frame: { width: placement.width, height: placement.height }, scale: 1,
-      link: { placementKey: link.placementKey, state: link.state, appearance: link.appearance, arm: link.arm, environment, assetId: art.assetId },
-      target: { kind: 'fill', nodeIds: [node.id] }, update: { from: link.assetId } });
+    setStatus(`${kind === 'update' ? 'Updating' : 'Inserting'} ${payload.name}…`);
+    post({ type: 'insert', requestId: operation.id, connectionGeneration: generation, bytes, ...payload });
   } catch (error) {
     if (generation !== state.connectionGeneration || pendingInsert !== operation) return;
-    pendingInsert = null;
-    state.ops.inserting = false;
-    setStatus('');
-    showInsertError(errorText(error));
-    scheduleRender();
+    failInsert(operation.id, errorText(error));
   }
 }
 /**
@@ -1226,6 +1252,7 @@ export function failInsert(requestId: number, message: string): boolean {
 
 export function resetInsert(): void {
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
+  artworkFrom = null; quietFrom = null; seenLinks.clear(); checkedLinks.clear();
   quietTicket += 1; quietLoading = false; artworkRefreshPending = false; artworkFinishedAt = null; artworkListStale = false; pendingReveal = null;
   state.ops.loadingList = null; loadingQuery = ''; listError = null; listDeferred = false; listTicket += 1;
   state.ops.inserting = false;

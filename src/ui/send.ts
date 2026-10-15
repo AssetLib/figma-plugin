@@ -46,6 +46,8 @@ let refused: () => void = () => {};
 let artworkChanged: () => void = () => {};
 let draftArtState: (key: string, cell: CellCoordinate) => 'own' | 'inherits' | 'empty' | null = () => null;
 let selectionIdentity = '';
+// The layer's size and why it can't be sent: Fits this layer follows them (a resize or Match ratio keeps the identity).
+let selectionShape = '';
 // Send here is an explicit upload even when that empty cell is the layer's current link.
 let explicitSend = false;
 // The connection generation the placement picker was filled for; a choice never carries over to another connection.
@@ -406,7 +408,9 @@ export function applySelection(message: Extract<MainMessage, { type: 'selection'
   state.selection = message.selection;
   const { selection } = state;
   const identity = JSON.stringify([selection.fileKey, selection.node?.id, selection.remembered]);
-  if (identity !== selectionIdentity) { selectionIdentity = identity; explicitSend = false; if (state.placementsLoaded) buildPlacementOptions(); selectRemembered(); }
+  const shape = JSON.stringify([selection.node?.width, selection.node?.height, selection.reason]);
+  if (identity !== selectionIdentity) { selectionIdentity = identity; selectionShape = shape; explicitSend = false; if (state.placementsLoaded) buildPlacementOptions(); selectRemembered(); }
+  else if (shape !== selectionShape) { selectionShape = shape; if (state.placementsLoaded) buildPlacementOptions(); }
   scheduleRender();
 }
 

@@ -108,12 +108,12 @@ function insertedNotice(name: string, link: InsertLink | null): string {
 /** A side in Figma when Insert at divides it, to two decimals. */
 function side(value: number, scale: number): number { return Math.round((value / scale) * 100) / 100; }
 
-/** The topmost image's hash replaced, keeping its paint fields; Update skips hidden images so the visible art changes. */
-function withImage(fills: MinimalFillsMixin['fills'], hash: string, update = false): Paint[] {
+/** The topmost visible image's hash replaced, keeping its paint fields; append an image when none is visible. */
+function withImage(fills: MinimalFillsMixin['fills'], hash: string): Paint[] {
   const paints: Paint[] = Array.isArray(fills) ? [...(fills as readonly Paint[])] : [];
   for (let index = paints.length - 1; index >= 0; index -= 1) {
     const paint = paints[index]!;
-    if (paint.type === 'IMAGE' && (!update || paint.visible !== false)) { paints[index] = { ...paint, imageHash: hash }; return paints; }
+    if (paint.type === 'IMAGE' && paint.visible !== false) { paints[index] = { ...paint, imageHash: hash }; return paints; }
   }
   return [...paints, { type: 'IMAGE', imageHash: hash, scaleMode: 'FILL' }];
 }
@@ -185,7 +185,7 @@ function place(config: Connection, target: InsertDestination, selection: readonl
 }
 
 /**
- * Each layer's topmost image paint gets the new image (or one is appended); other paints, size, constraints, and
+ * Each layer's topmost visible image paint gets the new image (or one is appended); other paints, size, constraints, and
  * position stay. Placement art links each layer with its own id, except inside an instance; a library image never
  * writes or removes a link, so a linked layer stays linked to its cell.
  */
@@ -198,7 +198,7 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
   const unlinked: SceneNode[] = [];
   for (const node of layers) {
     const previous = link ? nodeLink(node, config) : null;
-    try { node.fills = withImage(node.fills, hash, update); } catch { continue; }
+    try { node.fills = withImage(node.fills, hash); } catch { continue; }
     filled.push(node);
     if (!link) continue;
     if (writeLink(node, config, link)) {

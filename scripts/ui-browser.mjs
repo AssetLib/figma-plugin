@@ -218,7 +218,8 @@ function installFakes(config) {
   const library = Array.from({ length: config.images ?? 30 }, (_, i) => asset(i + 1, config.imageNames?.[i] ?? `Image ${i + 1}`, 400, 200));
   if (config.artwork === 'empty') artwork.placements = [];
 
-  // Advance Date.now without making timers fire early: artwork's focus/selection throttle uses completion time.
+  // Advance Date.now without making timers fire early: artwork freshness uses request start and locally seen links;
+  // the focus/visibility throttle uses completion time.
   let clockOffset = 0;
   const realNow = Date.now;
   Date.now = () => realNow() + clockOffset;
@@ -383,6 +384,8 @@ function installFakes(config) {
             environment: 'draft', assetId: message.assetId, image: true, children: 0 };
           config.selection.remembered = { fileKey: config.selection.fileKey, nodeId: config.selection.node.id, placementKey: 'home.banner',
             state: null, appearance: null, arm: null, insertedFrom: { environment: 'draft', assetId: message.assetId } };
+          config.selection.insertTarget = { mode: 'replace', label: 'Replace image', count: 1, nodeIds: [config.selection.node.id],
+            name: config.selection.node.name, containerWidth: config.selection.node.width };
         }
         reply({ type: 'remembered', requestId: message.requestId }); reply(selection()); break;
       case 'notify': notices.push(message.text); break;
@@ -442,6 +445,7 @@ function installFakes(config) {
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   // Tests may change `delays` mid-test; each request reads its route's delay when it starts.
   window.__harness = { log, received, notices, uuid, delays, targets, inserts, drops, insertDrops, resizes, saved, opened, artwork, inserted: () => frames,
+    hold: route => { config.hold = [...new Set([...(config.hold ?? []), route])]; },
     release: route => { config.hold = config.hold?.filter(item => item !== route); const waiting = held.get(route); held.delete(route); for (const complete of waiting ?? []) complete(); },
     approve: () => { config.pairingStatus = 'approved'; },
     advance: ms => { clockOffset += ms; },
@@ -2748,7 +2752,7 @@ test('quiet artwork loads on Send and during Images searches, throttles focus fr
     await page.evaluate(`window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange'));`);
     await page.frames();
     assert.equal(await page.evaluate(`${artworkReads}.length`), 3, 'a failed completion also starts the throttle');
-    await page.evaluate(`__harness.setStatus('artwork', 0); __harness.delays.artwork = 2000; __harness.select(${JSON.stringify(DEFAULTS.selection)}); __harness.advance(61000); __harness.select(${JSON.stringify(selection)});`);
+    await page.evaluate(`__harness.setStatus('artwork', 0); __harness.delays.artwork = 2000; __harness.select(${JSON.stringify(DEFAULTS.selection)}); __harness.select(${JSON.stringify(selection)}); ${refreshArtworkOnFocus}`);
     await page.waitFor(`${artworkReads}.length === 4 && !${artworkReads}[3].done`);
     await page.click('#settings-summary'); await page.click('#disconnect');
     await page.waitFor(`${artworkReads}[3].aborted`);
@@ -2756,9 +2760,9 @@ test('quiet artwork loads on Send and during Images searches, throttles focus fr
   } finally { await page.close(); }
 });
 
-test('a bound Send or Sync refreshes the bar preview and placement thumbnail without Refresh', async () => {
+test('a bound Send or Sync waits for fresh artwork before offering Update or publication status', async () => {
   const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
-  for (const action of ['send', 'sync']) {
+  for (const action of ['send', 'sync']) for (const fails of [false, true]) {
     const selection = action === 'sync' ? linkedSelection(node) : { ...DEFAULTS.selection, node, reason: null };
     const page = await openUi({ selection, refreshAfterDraft: true });
     try {
@@ -2769,17 +2773,100 @@ test('a bound Send or Sync refreshes the bar preview and placement thumbnail wit
         await page.click('#tab-send');
         await page.evaluate(choose('placement', 'home.banner')); await page.frames();
       }
+      await page.evaluate(`__harness.advance(10000); __harness.hold('artwork');`);
       await page.click(`#${action}`);
-      await page.waitFor(`${artworkReads}.length === 2 && ${artworkReads}[1].done`);
+      await page.waitFor(`__harness.notices.includes('${action === 'sync' ? 'Synced home.banner to draft' : 'Sent to home.banner draft'}')`);
+      await page.waitFor(`${artworkReads}.length > 1 && ${artworkReads}.some(entry => !entry.done && !entry.aborted)`); await page.frames();
+      assert.equal(await page.evaluate(shown('sync-update')), false, `${action}: the old artwork cannot offer Update for the new link`);
+      assert.doesNotMatch(await page.evaluate(textOf('sync-meta')), /different art now|no longer has art|in Production|in Draft, not published/);
+      assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement[data-key="home.banner"] img').src`), oldThumb);
+      if (fails) await page.evaluate(`__harness.setStatus('artwork', 500)`);
+      await page.evaluate(`__harness.release('artwork')`);
+      await page.waitFor(`${artworkReads}.every(entry => entry.done || entry.aborted)`); await page.frames();
+      if (fails) {
+        assert.equal(await page.evaluate(shown('sync-update')), false);
+        assert.doesNotMatch(await page.evaluate(textOf('sync-meta')), /different art now|no longer has art|in Production|in Draft, not published/);
+        assert.equal(await page.evaluate(shown('error-box')), false, 'a failed quiet refresh keeps the fallback without an error line');
+        continue;
+      }
       await page.waitFor(`document.getElementById('sync-thumb').src.startsWith('data:image/') && document.getElementById('sync-thumb').src !== ${JSON.stringify(oldThumb)}`);
       await page.click('#tab-insert');
       await page.waitFor(`document.querySelector('#insert-list .placement[data-key="home.banner"] img').src !== ${JSON.stringify(oldThumb)}`);
       assert.equal(await page.evaluate(`document.querySelector('#insert-list .placement[data-key="home.banner"] .tag').textContent`), 'Changed in Draft');
-      assert.equal(await page.evaluate(`${artworkReads}.length`), 2, `${action} refreshed once`);
+      assert.equal(await page.evaluate(shown('sync-update')), false, 'fresh artwork names the image just sent');
       assert.equal(await page.evaluate(textOf('sync-meta')), 'in Draft, not published');
       assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'rendition' && entry.url.includes('/00000000-0000-4000-8000-000000009999/'))`), true);
     } finally { await page.close(); }
   }
+});
+
+test('a newly seen link refreshes recent artwork once and offers Update only after that read', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const selection = linkedSelection(node);
+  const assetId = '00000000-0000-4000-8000-000000009999';
+  selection.link = { ...selection.link, environment: 'draft', assetId };
+  selection.remembered.insertedFrom = { environment: 'draft', assetId };
+  const page = await openUi();
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.evaluate(`__harness.advance(10000); __harness.hold('artwork'); __harness.select(${JSON.stringify(selection)});`);
+    await page.waitFor(`${artworkReads}.length === 2 && !${artworkReads}[1].done`);
+    await page.frames();
+    assert.equal(await page.evaluate(shown('sync-update')), false);
+    assert.doesNotMatch(await page.evaluate(textOf('sync-meta')), /different art now|no longer has art/);
+    await page.evaluate(`__harness.select(${JSON.stringify(DEFAULTS.selection)}); __harness.select(${JSON.stringify(selection)});`);
+    await page.frames();
+    assert.equal(await page.evaluate(`${artworkReads}.length`), 2, 'reselecting while the request waits does not start another');
+    await page.evaluate(`__harness.replaceArt('home.banner', 'draft', 22002); __harness.release('artwork');`);
+    await page.waitFor(shown('sync-update'));
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'Draft has different art now');
+    await page.waitFor(`__harness.log.some(entry => entry.route === 'rendition' && entry.done && entry.url.includes('/00000000-0000-4000-8000-000000022002/'))`);
+    await page.evaluate(`__harness.select(${JSON.stringify(DEFAULTS.selection)}); __harness.select(${JSON.stringify(selection)});`);
+    await page.frames();
+    assert.equal(await page.evaluate(`${artworkReads}.length`), 2, 'reselecting the same link after completion keeps its first-seen time');
+  } finally { await page.close(); }
+});
+
+test('a first Send to an empty Draft cell keeps fallback meta while fresh artwork waits', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const page = await openUi({ selection: { ...DEFAULTS.selection, node, reason: null }, refreshAfterDraft: true, unset: ['home.banner'] });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#tab-send');
+    await page.evaluate(choose('placement', 'home.banner')); await page.frames();
+    await page.evaluate(`__harness.advance(10000); __harness.hold('artwork');`);
+    await page.click('#send');
+    await page.waitFor(`__harness.notices.includes('Sent to home.banner draft')`);
+    await page.waitFor(`${artworkReads}.length > 1 && ${artworkReads}.some(entry => !entry.done && !entry.aborted)`); await page.frames();
+    assert.equal(await page.evaluate(shown('sync-update')), false);
+    assert.doesNotMatch(await page.evaluate(textOf('sync-meta')), /different art now|no longer has art/);
+    await page.evaluate(`__harness.release('artwork')`);
+    await page.waitFor(`${textOf('sync-meta')} === 'in Draft, not published'`);
+    assert.equal(await page.evaluate(shown('sync-update')), false);
+  } finally { await page.close(); }
+});
+
+test('an earlier quiet artwork response keeps a newer refused Sync recovery visible', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const page = await openUi({ selection: linkedSelection(node), preferences: { tab: 'send' } });
+  try {
+    await page.waitFor(`${textOf('sync-meta')} === 'in Production (release 4)'`);
+    await page.waitFor(`__harness.log.every(entry => entry.done || entry.aborted)`);
+    await page.evaluate(`__harness.hold('artwork'); ${refreshArtworkOnFocus}`);
+    await page.waitFor(`${artworkReads}.length === 2 && !${artworkReads}[1].done`);
+    await page.evaluate(`__harness.setStatus('drafts', 401)`);
+    await page.click('#sync');
+    await page.waitFor(`${shown('error-action')} && ${textOf('error-action')} === 'Connect again'`);
+    assert.equal(await page.evaluate(`document.getElementById('token').getAttribute('aria-invalid')`), 'true');
+    await page.evaluate(`__harness.release('artwork')`);
+    await page.waitFor(`${artworkReads}[1].done`); await page.frames();
+    assert.equal(await page.evaluate(`document.getElementById('token').getAttribute('aria-invalid')`), 'true', 'the older read cannot clear the refused token');
+    assert.equal(await page.evaluate(shown('error-action')), true);
+    assert.equal(await page.evaluate(textOf('error-action')), 'Connect again');
+    await page.click('#settings-summary');
+    assert.equal(await page.evaluate(shown('connect-browser')), true);
+    assert.match(await page.evaluate(textOf('connection-error')), /no longer accepts this token/);
+  } finally { await page.close(); }
 });
 
 test('publication status compares Production first, and missing art or a sent frame never offers Update', async () => {
@@ -2804,6 +2891,18 @@ test('publication status compares Production first, and missing art or a sent fr
       await page.waitFor(`${textOf('sync-meta')} === 'Draft has different art now. Sync replaces it with this layer.'`);
       assert.equal(await page.evaluate(shown('sync-update')), false, `${image ? 'a layer with children' : 'a layer without an image'} has no Update`);
     }
+  } finally { await page.close(); }
+});
+
+test('a linked text layer with an image fill never offers Update', async () => {
+  const node = { id: '40:1', name: 'Linked text', type: 'TEXT', width: 1170, height: 480 };
+  const selection = { ...linkedSelection(node), insertTarget: { mode: 'new', label: 'Insert', count: 0, nodeIds: [], beside: true } };
+  const page = await openUi({ selection, changed: ['home.banner'] });
+  try {
+    await page.waitFor(`${rows} === 7 && ${artworkReads}.every(entry => entry.done || entry.aborted)`); await page.frames();
+    assert.equal(await page.evaluate(shown('sync-update')), false);
+    assert.equal(await page.evaluate(shown('sync')), true);
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
   } finally { await page.close(); }
 });
 
@@ -2841,6 +2940,62 @@ test('the bar title reveals the linked or copied cell from Images and the list s
     await other.waitFor(shown('selection-bar'));
     assert.equal(await other.evaluate(`document.getElementById('sync-title').disabled`), true);
   } finally { await other.close(); }
+});
+
+test('a title reveal abandoned on Send cannot change the later Insert search, environment, choice, or focus', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const page = await openUi({ selection: linkedSelection(node), hold: ['artwork'] });
+  try {
+    await page.waitFor(listBusy);
+    await page.waitFor(`!document.getElementById('sync-title').disabled`);
+    await page.click('#sync-title');
+    await page.click('#tab-send');
+    await page.evaluate(`__harness.release('artwork')`);
+    await page.waitFor(`${artworkReads}.every(entry => entry.done || entry.aborted)`); await page.frames();
+    assert.equal(await page.focused(), 'tab-send', 'the abandoned reveal does not move focus when artwork arrives');
+    await page.click('#tab-insert');
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-list .placement[data-key="settings.header"]');
+    await page.click('#env-draft');
+    await page.click('#insert-search'); await page.type('settings');
+    await page.waitFor(`${rows} === 2`);
+    await page.evaluate(`__harness.hold('artwork')`);
+    await page.click('#insert-refresh');
+    await page.waitFor(listBusy);
+    await page.evaluate(`__harness.release('artwork')`);
+    await page.waitFor(`!(${listBusy})`); await page.frames();
+    assert.equal(await page.evaluate(valueOf('insert-search')), 'settings');
+    assert.equal(await page.evaluate(`document.getElementById('env-draft').getAttribute('aria-checked')`), 'true');
+    assert.deepEqual(await page.evaluate(chosenKeys), ['settings.header']);
+    assert.equal(await page.focused(), 'insert-refresh');
+    assert.equal(await page.evaluate(rows), 2);
+  } finally { await page.close(); }
+});
+
+test('a title reveal that starts a full list load focuses its row after the skeletons disappear', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 1170, height: 480 };
+  const page = await openUi({ selection: linkedSelection(node) });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.evaluate(`__harness.hold('artwork')`);
+    await page.click('#insert-refresh');
+    await page.waitFor(listBusy);
+    await page.click('#browse-images');
+    await page.waitFor(`${tiles} === 24 && !(${gridBusy})`);
+    await page.click('#insert-search'); await page.type('Image 2');
+    await page.waitFor(`${tiles} === 11 && !(${gridBusy})`);
+    await page.click('#sync-title');
+    await page.waitFor(`${listBusy} && ${skeletonRows} === 6`);
+    assert.notEqual(await page.focused(), 'home.banner', 'there is no real row to focus yet');
+    await page.evaluate(`__harness.release('artwork')`);
+    await page.waitFor(`!(${listBusy}) && ${rows} === 7`); await page.frames();
+    assert.equal(await page.focused(), 'home.banner');
+    assert.equal(await page.evaluate(valueOf('insert-search')), '');
+    assert.equal(await page.evaluate(`document.getElementById('env-production').getAttribute('aria-checked')`), 'true');
+    assert.deepEqual(await page.evaluate(chosenKeys), ['home.banner']);
+    assert.equal(await page.evaluate(`(() => { const row = document.querySelector('#insert-list .placement[data-key="home.banner"]').getBoundingClientRect();
+      const list = document.getElementById('list-region').getBoundingClientRect(); return row.top >= list.top && row.bottom <= list.bottom; })()`), true);
+  } finally { await page.close(); }
 });
 
 test('Open in console uses the artwork placement ID only after artwork loads, otherwise the image page', async () => {

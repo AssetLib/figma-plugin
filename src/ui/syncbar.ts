@@ -100,7 +100,7 @@ export function launched(): void { focusOnLaunch = true; }
 /** Cmd+Enter (Ctrl+Enter off Apple platforms): Sync while the bar offers it. False when the bar doesn't, so the key is left alone. */
 export function syncFromKeyboard(): boolean {
   if (!shown || shown.kind !== 'linked' || bar.hidden) return false;
-  if (linkUpdate()) { setStatus('Update first, or choose Sync to draft to replace Draft’s art with this layer.'); return true; }
+  if (linkUpdate()) { if (!actionsBlocked()) setStatus('Update first, or choose Sync to draft to replace Draft’s art with this layer.'); return true; }
   if (sendOtherCell()) { announceSyncTarget(); return true; }
   if (syncAvailable()) beginSync();
   return true;

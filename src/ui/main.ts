@@ -8,7 +8,7 @@ import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, sche
 import { abortAll } from './http.js';
 import {
   applyPreferences, connectionKept, draftArtState, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
-  refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, resetInsert, rowFor, savePreferences,
+  noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, resetInsert, rowFor, savePreferences,
 } from './insert.js';
 import { applyFileUrl, applySelection, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { actionsBlocked, state } from './state.js';
@@ -64,14 +64,19 @@ function onConnection(message: Extract<MainMessage, { type: 'connection' }>): vo
   resetInsert();
   // A Connect request's connection arrived, or main holds a request to resume.
   applyPairing(message);
-  // Main sends launch before the saved preferences. Apply the requested tab only after those preferences arrived.
-  if (menuCommand) { const command = menuCommand; menuCommand = null; launch(command); }
   if (!state.connection) {
     state.ops.connecting = false;
+    runMenuCommand();
     scheduleRender();
     return;
   }
   testConnection();
+  // After the test started (ops.connecting), so the command's tab waits for it instead of loading its own lists.
+  runMenuCommand();
+}
+/** Main sends launch before the saved preferences; the requested tab applies once they and the connection arrived. */
+function runMenuCommand(): void {
+  if (menuCommand) { const command = menuCommand; menuCommand = null; launch(command); }
 }
 
 /** The connection test (reading Send's placements), then the Insert list; Send's Try again runs it again. */
@@ -116,7 +121,7 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
     case 'connection': onConnection(message); break;
     case 'selection':
       applySelection(message);
-      if (message.connectionGeneration === state.connectionGeneration && state.selection.link?.kind === 'linked') refreshArtworkIfStale();
+      if (message.connectionGeneration === state.connectionGeneration) noteLinkSeen();
       break;
     case 'file-saved': fileSaved(message); break;
     case 'file-mismatch': fileMismatch(message); break;

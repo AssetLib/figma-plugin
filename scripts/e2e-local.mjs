@@ -294,7 +294,8 @@ async function runToken() {
   app.select([inserted.draft]);
   await waitFor(() => app.mainMessages.length > selections && lastSelection()?.node?.id === inserted.draft.id, { message: 'the selection report' });
   await waitFor(() => !unavailable('sync'), { message: 'Sync to be ready' });
-  assert.equal(el('sync-meta').textContent, 'Draft art');
+  // Once the artwork read after this selection arrives, the bar says where the layer's art is published.
+  await waitFor(() => /^in (Production \(release \d+\)|Staging, not in Production|Draft, not published)$/.test(el('sync-meta').textContent), { message: 'the Sync bar status' });
   el('sync').dispatch('click');
   assert.equal(el('file-fallback').hidden, false, 'the first Sync asks for the file link');
   assert.equal(app.drafts().length, 0);
