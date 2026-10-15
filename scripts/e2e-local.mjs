@@ -225,7 +225,7 @@ async function runToken() {
     assert.deepEqual([link.placementKey, link.environment, link.assetId, link.nodeId], [PLACEMENT, environment, art.assetId, frame.id]);
     assert.equal(frame.type, 'COMPONENT', 'placement art is a component');
     assert.ok(frame.description.startsWith(`Assetlib placement ${PLACEMENT} (${contract.width} × ${contract.height}). `), 'its description names the placement');
-    assert.deepEqual(JSON.parse(JSON.stringify(frame.documentationLinks)), [{ uri: `${ORIGIN}/w/${connection.orgId}/${connection.appId}/placements` }]);
+    assert.deepEqual(JSON.parse(JSON.stringify(frame.documentationLinks)), [{ uri: `${PAGE_ORIGIN}/w/${connection.orgId}/${connection.appId}/placements` }]);
     assert.ok(!frame.description.includes(token), 'the marker never holds the token');
     assert.equal(lastSelection().remembered?.insertedFrom?.environment, environment);
     assert.equal(el('selection-bar').hidden, false);

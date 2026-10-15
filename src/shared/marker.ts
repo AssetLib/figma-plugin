@@ -3,11 +3,10 @@
 // the art as a static file. Anyone with the file can read them: they never hold the token. The key is the only text
 // from the console, so it must match the catalog's key grammar; anything else gets no marker, so a console response
 // can never put its own words into instructions an agent follows.
-import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN, normalizeConsoleOrigin } from './connection.js';
+import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN } from './connection.js';
+import { consoleLink } from './links.js';
 import type { Connection } from './types.js';
 import { validPlacementKey } from './validation.js';
-
-const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export interface PlacementMarker {
   description: string;
@@ -29,9 +28,8 @@ export function placementMarker(connection: Pick<Connection, 'origin' | 'orgId' 
     + `In code, use the accessor generated for ${key} from assetlib.catalog.json, which carries the bundled fallback. `
     + `If ${key} isn’t in the catalog, add it there with a fallback image in the same change.`;
   let documentationUrl: string | null = null;
-  try {
-    const origin = normalizeConsoleOrigin(connection.origin === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : connection.origin);
-    if (ID.test(connection.orgId) && ID.test(connection.appId)) documentationUrl = `${origin}/w/${connection.orgId}/${connection.appId}/placements`;
-  } catch { /* no link for an origin the plugin cannot connect to */ }
+  // No link for an origin the plugin can't connect to, or IDs consoleLink refuses (the same rules as before).
+  try { documentationUrl = consoleLink({ origin: connection.origin === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : connection.origin,
+    orgId: connection.orgId, appId: connection.appId }, 'placements'); } catch { /* description only */ }
   return { description, documentationUrl };
 }

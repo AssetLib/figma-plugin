@@ -9,9 +9,9 @@ import type { Connection, InsertLink, Preferences } from './shared/index.js';
 import { DISCONNECTED, DISCONNECTED_REFUSED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { UiMessage } from './shared/protocol.js';
 import { currentFileKey, linkFile } from './main/identity.js';
-import { discardDrops, discardPlaceholder, drop, dropPending, insert, renameRelinked, retireUndo, retireUndoOnEdit, writeMarker } from './main/insert.js';
+import { discardDrops, discardPlaceholder, drop, dropPending, insert, renameRelinked, retireUndo, writeMarker } from './main/insert.js';
 import { clearPairing, loadPairing, pageHints, parsePairing, savePairing, takeTurn } from './main/pairing.js';
-import { describeNode, nodeLink, reportSelection, selectedNode, storeTarget, writeLink } from './main/selection.js';
+import { describeNode, nodeLink, reportSelection, selectedNode, selectionStale, storeTarget, writeLink } from './main/selection.js';
 import type { StoredTarget } from './main/selection.js';
 import { SELECTION_MOVED, main, post } from './main/state.js';
 
@@ -418,30 +418,18 @@ figma.on('selectionchange', () => {
   void initialized.then(reportSelection);
 });
 
-// A resize or rename on the canvas fires no selectionchange, so the selected node's changes are watched on its page,
-// as are edits to the layers a fill's Undo would take back.
-let nodeChangeTimer: ReturnType<typeof setTimeout> | null = null;
-let watchedPage: PageNode | null = null;
-function onNodeChange(event: NodeChangeEvent): void {
-  retireUndoOnEdit(event);
-  if (nodeChangeTimer !== null) return;
-  const node = selectedNode();
-  if (!node || !event.nodeChanges.some(change => change.type === 'PROPERTY_CHANGE' && change.id === node.id)) return;
-  // A drag resizes many times a second; one report per 150 ms keeps the size current.
-  nodeChangeTimer = setTimeout(() => { nodeChangeTimer = null; void initialized.then(reportSelection); }, 150);
-}
-function watchCurrentPage(): void {
-  // A page that was just deleted may throw here; that must not stop the new page being watched.
-  try { watchedPage?.off('nodechange', onNodeChange); } catch { /* its listener went with it */ }
-  try {
-    watchedPage = figma.currentPage;
-    watchedPage.on('nodechange', onNodeChange);
-  } catch { watchedPage = null; /* Sizes then refresh on the next selection change. */ }
-}
-watchCurrentPage();
-figma.on('currentpagechange', () => {
-  // The filled layers are out of sight, and edits on the new page aren't watched for the toast.
+// Figma desktop sends a plugin no event for the person's own edit that keeps the selection (October 14, 2026: a page's
+// nodechange never runs for it, and documentchange needs every page loaded), so main checks the canvas every 250 ms.
+setInterval(() => {
+  // An insert or an export reports the selection itself when it ends.
+  if (main.importing || main.exporting) return;
+  try { if (!selectionStale()) return; } catch { return; /* a page going away: its own event reports */ }
+  // The one selected layer changed on the canvas. With a fill's toast up, it is the filled layer, and Undo would take this back.
   retireUndo();
-  watchCurrentPage();
+  void initialized.then(reportSelection);
+}, 250);
+figma.on('currentpagechange', () => {
+  // The filled layers are out of sight.
+  retireUndo();
   void initialized.then(reportSelection);
 });

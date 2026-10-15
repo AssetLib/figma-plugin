@@ -2,7 +2,7 @@
 // the token form (one-click Connect's secondary path, connect.ts) and its GET /api/token step, the connection test,
 // Disconnect, and the chip's label.
 import {
-  DEVELOPMENT_ORIGIN, OLDER_CONSOLE, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink,
+  DEVELOPMENT_ORIGIN, OLDER_CONSOLE, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink, consolePageOrigin,
   fieldError, mapNetworkError, normalizeConsoleOrigin,
   parsePlacements, parseTokenIdentity, PRODUCTION_ORIGIN, reconnectText, refusalCode, tokenPrefix, validateConnection,
 } from '../shared/index.js';
@@ -201,7 +201,7 @@ export function renderConnection(): void {
   element('token-prefix').textContent = !connection ? ''
     : [connection.workspaceName, browser ? connection.connectedAs && `Connected as ${connection.connectedAs}` : `Connected with token ${tokenPrefix(connection.token)}`]
       .filter(Boolean).join(' · ');
-  element<HTMLAnchorElement>('open-console').href = connection ? consoleLink(connection, 'overview') : `${chosenOrigin()}/`;
+  element<HTMLAnchorElement>('open-console').href = connection ? consoleLink(connection, 'overview') : `${consolePageOrigin(chosenOrigin())}/`;
   idFields.hidden = !idsShown();
   // The account's own controls exist only with a connection (ui.html also hides the account block on the first run);
   // a Connect request waiting for approval takes their place.

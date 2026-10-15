@@ -9,7 +9,7 @@ import type { CanvasTarget, Connection, InsertLink, InsertMode, StoredLink } fro
 import { dropRequestId, isAssetlibDrop, parseDropMetadata, toastText } from '../shared/protocol.js';
 import type { DropMetadata, InsertDestination, UiMessage } from '../shared/protocol.js';
 import { describeNode, dropStoredTargets, hasImagePaint, inComponent, insertTarget, nodeLink, reportSelection, writeLink } from './selection.js';
-import { SELECTION_MOVED, main, post } from './state.js';
+import { LINK_KEY, SELECTION_MOVED, main, post } from './state.js';
 
 // A transcoded 2048 px PNG fits.
 const MAX_INSERT_BYTES = 24 * 1024 * 1024;
@@ -28,10 +28,6 @@ export function notLinked(count: number): string {
   return `Filled. Figma didn’t let ${count === 1 ? 'one layer' : `${count} layers`} be linked, so Sync isn’t available for ${count === 1 ? 'it' : 'them'}.`;
 }
 export const NOT_UNDONE = 'Not undone. These layers changed after the fill.';
-// What a fill or replace itself changes on its layers: the image (which detaches a fill style; a frame's fills are also
-// its backgrounds), the link, a component's marker, and a relinked layer's name; a filled component's instances follow
-// its fills and name. Figma reports any other local change as a later edit, which Undo would take back instead.
-const FILL_CHANGES = new Set<string>(['fills', 'backgrounds', 'fillStyleId', 'pluginData', 'description', 'documentationLinks', 'name']);
 
 type InsertMessage = Extract<UiMessage, { type: 'insert' }>;
 type Frame = { width: number; height: number };
@@ -41,31 +37,27 @@ type PendingDrop = { node: SceneNode; placeholder: boolean; generation: number }
 type Paintable = SceneNode & MinimalFillsMixin;
 // relinked: existing layers whose link now names the chosen cell.
 type Inserted = { node: SceneNode; mode: InsertMode; linked: boolean; notice: string; undo: SceneNode[] | null; relinked: string[] };
-// A filled layer as the fill left it: its paints, its name, and a component's description.
-type Filled = { node: SceneNode; fills: string; name: string; description: string | null };
+// A filled layer, and what the fill left on it (`snapshot`).
+type Filled = { node: SceneNode; state: string };
 
-// The toast whose Undo can still take back the last fill or replace, and the layers it filled. A selection change, a
-// page change, another plugin edit, or a later local edit on the page retires it.
+// The toast whose Undo can still take back the last fill or replace. A selection change, a page change, another plugin
+// edit, or a change main's canvas check finds on the one selected layer retires it.
 let undoToast: NotificationHandler | null = null;
-let undoIds = new Set<string>();
 export function retireUndo(): void {
   undoToast?.cancel();
   undoToast = null;
-  undoIds = new Set();
 }
-/**
- * A later local edit on the page is what Undo would now take back, so the toast goes: a layer made or removed, or any
- * change beyond the fill's own (a filled layer moved; another layer renamed, hidden, locked, or recoloured). Only an
- * instance, or a layer inside one, may report the fill's own properties, as a filled component's instances follow it.
- */
-export function retireUndoOnEdit(event: NodeChangeEvent): void {
-  if (!undoToast) return;
-  const fillOnly = (change: NodeChange) => change.type === 'PROPERTY_CHANGE' && change.properties.every(property => FILL_CHANGES.has(property))
-    && (undoIds.has(change.id) || insideInstance(change.id) || change.node?.type === 'INSTANCE');
-  if (event.nodeChanges.some(change => change.origin !== 'REMOTE' && !fillOnly(change))) retireUndo();
-}
-function snapshot(node: SceneNode): Filled {
-  return { node, fills: 'fills' in node ? JSON.stringify(node.fills) : '', name: node.name, description: node.type === 'COMPONENT' ? node.description : null };
+// What a person may change on a filled layer after the fill, besides its parent, its children, and a component's
+// description. Undo would take that change back instead of the fill, so it runs only while every filled layer matches.
+// Figma tells a plugin of no edit that keeps the selection, so another layer's edit, or one not listed, is not seen.
+const KEPT = ['fills', 'name', 'x', 'y', 'rotation', 'relativeTransform', 'width', 'height', 'visible', 'locked', 'opacity', 'blendMode', 'isMask',
+  'strokes', 'strokeWeight', 'strokeTopWeight', 'strokeRightWeight', 'strokeBottomWeight', 'strokeLeftWeight', 'effects',
+  'cornerRadius', 'topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius',
+  'constraints', 'clipsContent', 'layoutSizingHorizontal', 'layoutSizingVertical'];
+function snapshot(node: SceneNode): string {
+  const read = (key: string): unknown => { try { return key in node ? (node as unknown as Record<string, unknown>)[key] : null; } catch { return null; } };
+  return JSON.stringify([node.parent?.id ?? null, 'children' in node ? node.children.length : 0, node.type === 'COMPONENT' ? node.description : null,
+    (() => { try { return node.getPluginData(LINK_KEY); } catch { return null; } })(), ...KEPT.map(read)]);
 }
 
 /**
@@ -225,25 +217,19 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
 }
 
 /** A fill's toast takes it back with Undo, but only while the fill is still the last change to its layers. */
-function notifyUndo(notice: string, layers: SceneNode[]): void {
-  const filled = layers.map(snapshot);
+function notifyUndo(notice: string, filled: Filled[]): void {
   const toast = figma.notify(toastText(notice), { timeout: 6000, button: { text: 'Undo', action: () => {
     // A retired toast is gone; a click that raced its removal takes nothing back.
     if (undoToast !== toast) return;
     undoToast = null;
-    undoIds = new Set();
     // After another edit to these layers, Undo would take back that edit instead.
-    const unchanged = (layer: Filled) => {
-      const now = snapshot(layer.node);
-      return now.fills === layer.fills && now.name === layer.name && now.description === layer.description;
-    };
-    if (!filled.every(layer => !layer.node.removed && unchanged(layer))) { figma.notify(NOT_UNDONE); return; }
+    const unchanged = (layer: Filled) => { try { return !layer.node.removed && snapshot(layer.node) === layer.state; } catch { return false; } };
+    if (!filled.every(unchanged)) { figma.notify(NOT_UNDONE); return; }
     figma.triggerUndo();
     // Undo puts back the layers' earlier link too, which no selection change reports.
     void reportSelection();
   } } });
   undoToast = toast;
-  undoIds = new Set(layers.map(node => node.id));
 }
 
 /** The checks every insert passes: no insert or export running, the current connection, bytes Figma can use, a valid size and link. */
@@ -271,10 +257,11 @@ async function apply(message: InsertMessage, config: Connection, edit: (hash: st
     let image: Image;
     try { image = figma.createImage(message.bytes); } catch { throw new Error('Figma could not read this image. Refresh and try again.'); }
     const result = edit(image.hash);
+    const filled = result.undo ? result.undo.map(node => ({ node, state: snapshot(node) })) : null;
     // One undo step for the whole insert (and a drop's placeholder, made without a commit of its own).
     figma.commitUndo();
     await dropStoredTargets(config, result.relinked);
-    if (result.undo) notifyUndo(result.notice, result.undo);
+    if (filled) notifyUndo(result.notice, filled);
     else figma.notify(toastText(result.notice));
     post({ type: 'inserted', requestId: message.requestId, connectionGeneration: main.connectionGeneration, node: describeNode(result.node),
       linked: result.linked, mode: result.mode, notice: result.notice });

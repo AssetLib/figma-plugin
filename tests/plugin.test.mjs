@@ -1105,61 +1105,92 @@ test('match-ratio resizes height and reports the new selection', async () => {
   assert.deepEqual(stuck.undoCommits, [], 'a failed resize commits nothing');
 });
 
-test('nodechange on the selected node refreshes its size', async () => {
+test('a canvas edit to the selected layer reaches the Sync bar at the next check, with no event from Figma', async () => {
   const app = harness();
   await settle();
+  assert.equal(app.intervals.size, 1);
+  assert.equal([...app.intervals.values()][0].delay, 250);
   assert.equal(off(app, 'sync'), false);
   const reports = () => app.mainMessages.filter(message => message.type === 'selection').length;
   const before = reports();
+  app.tick();
+  await settle();
+  assert.equal(reports(), before, 'an unchanged canvas needs no report');
   const live = app.figma.currentPage.selection[0];
   live.height = 400;
-  for (let i = 0; i < 3; i++) app.nodeChange([{ type: 'PROPERTY_CHANGE', id: node.id, properties: ['height'] }]);
   await settle();
-  assert.equal(reports(), before, 'a burst of changes waits for the throttle');
-  assert.equal([...app.timers.values()].filter(timer => timer.delay === 150).length, 1, 'one report per 150 ms');
-  app.fireTimers(150);
+  assert.equal(reports(), before, 'Figma sent no event for the edit');
+  app.tick();
   await settle();
   assert.equal(reports(), before + 1);
   assert.deepEqual([lastSelection(app).node.width, lastSelection(app).node.height], [1000, 400]);
   assert.equal(app.element('aspect-warning').hidden, false, 'the gate follows the canvas without a new selection');
   assert.equal(off(app, 'sync'), true);
+  app.tick();
+  await settle();
+  assert.equal(reports(), before + 1);
 
-  // The listener follows the current page.
-  const first = app.figma.currentPage;
+  live.name = 'Renamed artwork';
+  app.tick();
+  await settle();
+  assert.equal(reports(), before + 2);
+  assert.equal(lastSelection(app).node.name, 'Renamed artwork');
+
   const second = app.changePage([{ ...node, width: 1000, height: 1000 }]);
   await settle();
-  assert.equal(first.listeners.size, 0);
-  assert.equal(second.listeners.size, 1);
   second.selection[0].height = 500;
-  app.nodeChange([{ type: 'PROPERTY_CHANGE', id: node.id, properties: ['height'] }]);
-  app.fireTimers(150);
+  app.tick();
   await settle();
   assert.equal(lastSelection(app).node.height, 500);
-
-  // A page whose off() throws (one just deleted, say) does not stop the next page being watched.
-  second.off = () => { throw new Error('The node does not exist'); };
-  const third = app.changePage([{ ...node, width: 1000, height: 1000 }]);
-  await settle();
-  assert.equal(third.listeners.size, 1);
-  third.selection[0].height = 600;
-  app.nodeChange([{ type: 'PROPERTY_CHANGE', id: node.id, properties: ['height'] }]);
-  app.fireTimers(150);
-  await settle();
-  assert.equal(lastSelection(app).node.height, 600);
 });
 
-test('nodechange on another node is ignored', async () => {
+test('with no layer or several selected, the canvas check reads nothing', async () => {
+  const app = harness({ selection: [node, { ...node, id: '12:35', name: 'Other' }] });
+  await settle();
+  const page = app.figma.currentPage;
+  let reads = 0;
+  let value = page.selection;
+  Object.defineProperty(page, 'selection', { configurable: true, get() { reads += 1; return value; }, set(v) { value = v; } });
+  const reports = () => app.mainMessages.filter(message => message.type === 'selection').length;
+  for (const selection of [[], page.children]) {
+    app.select(selection);
+    await settle();
+    reads = 0;
+    const before = reports();
+    app.tick(); app.tick();
+    await settle();
+    assert.equal(reads, 0);
+    assert.equal(reports(), before);
+  }
+  app.select([page.children[0]]);
+  await settle();
+  reads = 0;
+  app.tick();
+  assert.equal(reads, 1);
+});
+
+test('a report in flight is not repeated by the check, and one started for a newer canvas wins', async () => {
   const app = harness();
   await settle();
-  const before = app.mainMessages.filter(message => message.type === 'selection').length;
-  app.nodeChange([{ type: 'PROPERTY_CHANGE', id: '77:1', properties: ['width'] }, { type: 'CREATE', id: node.id }]);
+  const reports = () => app.mainMessages.filter(message => message.type === 'selection').length;
+  app.delayTargetReads();
+  app.figma.currentPage.selection[0].height = 400;
+  app.selectionChanged(); await flush();
+  assert.equal(app.pendingReads.length, 1);
+  app.tick(); await flush(); app.tick(); await flush();
+  assert.equal(app.pendingReads.length, 1, 'the in-flight report already covers the changed canvas');
+  app.figma.currentPage.selection[0].height = 500;
+  app.tick(); await flush();
+  assert.equal(app.pendingReads.length, 2);
+  const before = reports();
+  app.resumeTargetReads();
+  for (const read of app.pendingReads) read.resolve(clone(rememberedA));
   await settle();
-  assert.equal([...app.timers.values()].filter(timer => timer.delay === 150).length, 0, 'nothing is scheduled');
-  assert.equal(app.mainMessages.filter(message => message.type === 'selection').length, before);
-  app.select([]);
+  assert.equal(reports(), before + 1);
+  assert.equal(lastSelection(app).node.height, 500);
+  app.tick();
   await settle();
-  app.nodeChange([{ type: 'PROPERTY_CHANGE', id: node.id, properties: ['width'] }]);
-  assert.equal([...app.timers.values()].filter(timer => timer.delay === 150).length, 0, 'a deselected node is not watched');
+  assert.equal(reports(), before + 1);
 });
 
 test('401 then 200 clears needs-attention, and nothing opens by itself', async () => {
@@ -2978,6 +3009,29 @@ test('Fill appends a visible image above hidden images and its Undo checks every
   }
 });
 
+test('an image swap on the one filled layer retires the fill’s Undo at the next canvas check', async () => {
+  const coast = libraryAsset(7, 'Coast', 400, 200);
+  const app = harness({ remembered: null, console: library([coast]), selection: [
+    { id: '51:5', name: 'Photo', type: 'RECTANGLE', width: 200, height: 100,
+      fills: [{ type: 'IMAGE', imageHash: 'previous', scaleMode: 'FILL' }] },
+  ] });
+  await openInsert(app, { keep: true });
+  app.element('browse-images').dispatch('click');
+  await settle();
+  tilesOf(app)[0].dispatch('click');
+  await choose(app);
+  const layer = app.figma.currentPage.selection[0];
+  assert.equal(layer.getPluginData(LINK_KEY), '', 'the library image keeps the layer unlinked');
+  const toast = app.notifications.at(-1);
+  assert.equal(toast.options.button.text, 'Undo');
+  app.tick(); await settle();
+  assert.equal(toast.cancelled, false, 'the unchanged image keeps Undo available');
+
+  layer.fills = [{ type: 'IMAGE', imageHash: 'previous', scaleMode: 'FILL' }];
+  app.tick(); await settle();
+  assert.equal(toast.cancelled, true, 'a fill-panel change or canvas Cmd+Z retires Undo even with no link or size change');
+});
+
 test('a drop onto an image frame replaces its visible image below a hidden paint', async () => {
   const photo = { type: 'IMAGE', imageHash: 'visible', scaleMode: 'CROP', imageTransform: [[0.8, 0, 0.1], [0, 0.8, 0.1]], visible: true };
   const hidden = { type: 'IMAGE', imageHash: 'hidden', scaleMode: 'FIT', visible: false };
@@ -3007,7 +3061,8 @@ test('fill appends an image paint when none exists', async () => {
 });
 
 test('three shapes fill and link each with its own id', async () => {
-  const shapes = [{ id: '52:1', name: 'One', type: 'RECTANGLE', width: 100, height: 60, fills: [] }, { id: '52:2', name: 'Two', type: 'STAR', width: 180, height: 180, fills: [] },
+  const shapes = [{ id: '52:1', name: 'One', type: 'RECTANGLE', width: 100, height: 60, fills: [], cornerRadius: Symbol('mixed'), topLeftRadius: 16 },
+    { id: '52:2', name: 'Two', type: 'STAR', width: 180, height: 180, fills: [] },
     { id: '52:3', name: 'Three', type: 'BOOLEAN_OPERATION', width: 120, height: 90, fills: [solid] }];
   const app = await canvas(shapes);
   assert.equal(app.element('insert').textContent, 'Fill 3 layers');
@@ -3046,34 +3101,41 @@ test('three shapes fill and link each with its own id', async () => {
   await settle();
   assert.equal(toast.cancelled, true);
 
-  // So does a later local edit, which Undo would take back instead: to a filled layer (moved, say), or to any other layer
-  // on the page (hidden or locked in the layers panel, which leaves the selection as it was). The fill's own changes, an
-  // instance following a filled component, and other people's edits keep it.
-  const edited = await canvas(shapes);
-  await choose(edited);
-  const editedToast = edited.notifications.at(-1);
-  edited.nodeChange([{ type: 'PROPERTY_CHANGE', id: '52:1', origin: 'LOCAL', properties: ['fills', 'fillStyleId', 'pluginData'] },
-    { type: 'PROPERTY_CHANGE', id: '52:2', origin: 'REMOTE', properties: ['x'] }, { type: 'PROPERTY_CHANGE', id: '99:1', origin: 'REMOTE', properties: ['visible'] },
-    { type: 'PROPERTY_CHANGE', id: '98:1', origin: 'LOCAL', properties: ['fills'], node: { type: 'INSTANCE' } },
-    { type: 'PROPERTY_CHANGE', id: 'I98:1;52:9', origin: 'LOCAL', properties: ['fills', 'backgrounds'] }]);
-  assert.equal(editedToast.cancelled, false);
-  edited.nodeChange([{ type: 'PROPERTY_CHANGE', id: '52:3', origin: 'LOCAL', properties: ['x', 'relativeTransform'] }]);
-  assert.equal(editedToast.cancelled, true);
-  for (const change of [{ type: 'PROPERTY_CHANGE', id: '99:1', origin: 'LOCAL', properties: ['visible'] },
-    { type: 'PROPERTY_CHANGE', id: '99:1', origin: 'LOCAL', properties: ['locked'] }, { type: 'PROPERTY_CHANGE', id: '99:1', origin: 'LOCAL', properties: ['fills'] },
-    { type: 'CREATE', id: '99:2', origin: 'LOCAL' }]) {
-    const elsewhere = await canvas(shapes);
-    await choose(elsewhere);
-    const pending = elsewhere.notifications.at(-1);
-    elsewhere.nodeChange([change]);
-    assert.equal(pending.cancelled, true, `${change.type} ${change.properties ?? ''} on another layer retires the toast`);
-    pending.options.button.action();
-    assert.equal(elsewhere.undoTriggers.length, 0, 'its Undo can no longer take back the other edit');
+  // With no Figma event for these edits, Undo checks every filled layer when clicked.
+  for (const [name, edit] of [
+    ['moved', layers => { layers[2].x = 40; }],
+    ['resized', layers => { layers[1].width = 200; }],
+    ['rotated', layers => { layers[0].rotation = 15; }],
+    ['hidden', layers => { layers[0].visible = false; }],
+    ['locked', layers => { layers[0].locked = true; }],
+    ['faded', layers => { layers[0].opacity = 0.5; }],
+    ['shadowed', layers => { layers[0].effects = [{ type: 'DROP_SHADOW' }]; }],
+    ['one mixed corner restyled', layers => { layers[0].topLeftRadius = 24; }],
+    ['renamed', layers => { layers[0].name = 'Renamed'; }],
+    ['moved into a group', layers => { layers[0].parent = { id: '90:1', type: 'GROUP' }; }],
+    ['deleted', layers => { layers[1].remove(); }],
+  ]) {
+    const edited = await canvas(shapes);
+    await choose(edited);
+    edit(edited.figma.currentPage.selection);
+    edited.notifications.at(-1).options.button.action();
+    assert.deepEqual(edited.undoTriggers, [], name);
+    assert.equal(edited.notices.at(-1), 'Not undone. These layers changed after the fill.', name);
   }
-  const removed = await canvas(shapes);
-  await choose(removed);
-  removed.nodeChange([{ type: 'DELETE', id: '52:2', origin: 'LOCAL' }]);
-  assert.equal(removed.notifications.at(-1).cancelled, true);
+
+  // With one filled layer selected, the check retires the toast when what the panel shows changes.
+  const solo = await canvas([{ id: '52:4', name: 'Solo', type: 'RECTANGLE', width: 100, height: 60, fills: [] }]);
+  await choose(solo);
+  const soloToast = solo.notifications.at(-1);
+  solo.tick(); await settle();
+  assert.equal(soloToast.cancelled, false);
+  solo.figma.currentPage.selection[0].x = 10;
+  solo.tick();
+  assert.equal(soloToast.cancelled, false, 'a move changes nothing the panel shows; Undo itself refuses it');
+  solo.figma.currentPage.selection[0].width = 200;
+  solo.tick(); await settle();
+  assert.equal(soloToast.cancelled, true);
+  assert.equal(lastSelection(solo).node.width, 200);
 
   // An edit to another paint keeps the image, but Undo would take back that edit, so Undo doesn't run.
   const repainted = await canvas(shapes);
@@ -3099,6 +3161,50 @@ test('three shapes fill and link each with its own id', async () => {
   assert.equal(partial.notifications.at(-1).message, 'Filled 2 of 3 layers with home.card. Figma couldn’t fill the other one.');
   assert.deepEqual(partial.figma.currentPage.selection.map(layer => linkOf(layer)?.nodeId ?? null), ['52:1', null, '52:3']);
   assert.equal(partial.undoCommits.length, 1);
+});
+
+test('a relinked layer refuses fill Undo when only its previous link is restored', async () => {
+  let time = 100000;
+  const app = harness({ remembered: null, console: canvasConsole(), now: () => time });
+  const layer = await insertHeroCell(app);
+  const previous = layer.getPluginData(LINK_KEY);
+  time += 1000;
+  await choose(app);
+  const fills = clone(layer.fills);
+  assert.notEqual(layer.getPluginData(LINK_KEY), previous, 'even the same placement gets a fresh link time');
+  const toast = app.notifications.at(-1);
+
+  layer.setPluginData(LINK_KEY, previous);
+  assert.deepEqual(clone(layer.fills), fills, 'restoring only the link leaves every paint unchanged');
+  toast.options.button.action();
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.');
+});
+
+test('an edit while a relinked fill waits for stored-target deletion makes its Undo refuse', async () => {
+  const app = harness({ remembered: null, console: canvasConsole() });
+  const layer = await insertHeroCell(app);
+  const deleting = deferred();
+  const removed = [];
+  const storage = app.figma.clientStorage;
+  const remove = storage.deleteAsync.bind(storage);
+  storage.deleteAsync = async key => { removed.push(key); await deleting.promise; await remove(key); };
+  const noticesBefore = app.notifications.length;
+  rowFor(app, card.key).dispatch('click');
+  await choose(app);
+  assert.deepEqual(removed, [storageKey(connection, layer.id)], 'the fill is waiting inside target deletion');
+  assert.equal(linkOf(layer).placementKey, card.key, 'the layer is already relinked');
+  assert.equal(app.undoCommits.length, 2, 'the fill was committed before storage completed');
+  assert.equal(app.notifications.length, noticesBefore, 'the fill toast waits for storage');
+
+  layer.width += 1;
+  deleting.resolve();
+  await settle();
+  const toast = app.notifications.at(-1);
+  assert.equal(toast.options.button.text, 'Undo');
+  toast.options.button.action();
+  assert.deepEqual(app.undoTriggers, []);
+  assert.equal(app.notices.at(-1), 'Not undone. These layers changed after the fill.');
 });
 
 test('text nodes are skipped', async () => {
@@ -4317,6 +4423,25 @@ test('openExternal refuses URLs outside the allowlist', async () => {
   const sources = await Promise.all(['src/code.ts', ...(await readdir(new URL('../src/main/', import.meta.url))).map(name => `src/main/${name}`)]
     .map(path => readFile(new URL(`../${path}`, import.meta.url), 'utf8')));
   assert.equal(sources.join('\n').match(/openExternal\(/g)?.length, 1);
+});
+
+test('a development console’s pages open on 127.0.0.1, where it signs people in, while its requests stay on localhost', async () => {
+  const dev = { ...connection, origin: 'http://localhost:3100' };
+  const app = harness({ saved: dev });
+  await settle();
+  assert.ok(app.requests.length > 0);
+  assert.ok(app.requests.every(request => request.url.startsWith('http://localhost:3100/')));
+  assert.equal(app.element('open-console').href, 'http://127.0.0.1:3100/w/org-one/app-a/overview');
+  app.postToMain({ type: 'notify', text: 'Sent', button: { text: 'Review', url: 'http://127.0.0.1:3100/w/org-one/app-a/releases' } });
+  app.postToMain({ type: 'notify', text: 'Sent', button: { text: 'Review', url: 'http://localhost:3100/w/org-one/app-a/releases' } });
+  await settle();
+  assert.equal(app.notifications.at(-1).options, undefined);
+  app.notifications.at(-2).options.button.action();
+  assert.deepEqual(app.externalUrls, ['http://127.0.0.1:3100/w/org-one/app-a/releases']);
+
+  const inserted = await canvas([], { saved: dev });
+  await choose(inserted);
+  assert.deepEqual(clone(inserted.frames.at(-1).documentationLinks), [{ uri: 'http://127.0.0.1:3100/w/org-one/app-a/placements' }]);
 });
 
 // ---- A.8: the window size ----
@@ -6283,6 +6408,29 @@ test('Batch 3: Update replaces Production art in place, keeps crop and link envi
   assert.equal(app.notifications.at(-1).options.button.text, 'Undo');
   app.notifications.at(-1).options.button.action(); await settle();
   assert.equal(app.undoTriggers.length, 1);
+});
+
+test('Batch 3: a canvas Cmd+Z of an Update offers Update again without a new selection, and retires its toast', async () => {
+  const app = batch3({ prefs: { tab: 'insert' } }); await settle();
+  for (const cell of app.console.artwork.placements[0].cells) cell.production = cellArt(armArt, null, null);
+  app.advance(60000); app.focusWindow(); await settle();
+  assert.equal(app.element('sync-meta').textContent, 'Production has different art now');
+  const before = { fills: clone(app.layer.fills), link: app.layer.getPluginData(LINK_KEY) };
+  app.element('sync-update').dispatch('click'); await settle();
+  assert.equal(linkOf(app.layer).assetId, armArt);
+  const toast = app.notifications.at(-1);
+  assert.equal(toast.message, 'Updated Hero artwork with the latest Production art');
+
+  // Figma's canvas Undo restores the paints and link without selectionchange.
+  app.layer.fills = before.fills;
+  app.layer.setPluginData(LINK_KEY, before.link);
+  app.tick(); await settle();
+  assert.equal(lastSelection(app).link.assetId, baseArt);
+  assert.equal(app.element('sync-update').hidden, false);
+  assert.equal(app.element('sync-meta').textContent, 'Production has different art now');
+  assert.equal(toast.cancelled, true);
+  toast.options.button.action();
+  assert.equal(app.undoTriggers.length, 0);
 });
 
 test('Batch 3: Update alone says Updating while every conflicting action waits and the Insert footer keeps its label', async () => {

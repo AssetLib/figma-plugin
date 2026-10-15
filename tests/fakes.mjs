@@ -396,6 +396,7 @@ export function createHarness({
   const identities = new Map();
   const intersections = intersectionObservers();
   const timers = new Map();
+  const intervals = new Map();
   // `store`: client storage shared with another harness, as every window of a plugin shares it.
   const store = sharedStore ?? new Map(storage.map(([key, value]) => [key, clone(value)]));
   const events = new Map();
@@ -469,11 +470,9 @@ export function createHarness({
     if (children) item.children = children.map(child => makeNode(child, item));
     return item;
   };
-  // A page with nodechange listeners, as PageNode.on and off. Its children are the given nodes plus created frames.
+  // A page: its selection, and its children (the given nodes plus created frames).
   const makePage = nodes => {
-    const listeners = new Set();
-    const page = { type: 'PAGE', selection: nodes, children: [...nodes], listeners, on(type, callback) { if (type === 'nodechange') listeners.add(callback); },
-      off(type, callback) { if (type === 'nodechange') listeners.delete(callback); },
+    const page = { type: 'PAGE', selection: nodes, children: [...nodes],
       // As PageNode.findAllWithCriteria: by types, and by plugin data keys that are set.
       findAllWithCriteria({ types, pluginData } = {}) {
         const found = [];
@@ -568,8 +567,11 @@ export function createHarness({
       show() { uiShown.shows.push(uiResizes.length); },
     },
   };
-  // Main and the UI share the fake timers; fireTimers(delay) runs either side's.
-  vm.runInNewContext(mainSource, { figma, __html__: '', setTimeout: window.setTimeout, clearTimeout: window.clearTimeout, ...clock }, { filename: 'code.bundle.js' });
+  // Main and the UI share the fake timeouts. Main's intervals are kept apart, so timer assertions and fireTimers/fireDue never run them.
+  vm.runInNewContext(mainSource, { figma, __html__: '', setTimeout: window.setTimeout, clearTimeout: window.clearTimeout,
+    setInterval(callback, delay) { timerId += 1; intervals.set(timerId, { callback, delay }); return timerId; },
+    clearInterval(id) { intervals.delete(id); },
+    ...clock }, { filename: 'code.bundle.js' });
   function canvas() {
     const item = {
       width: 0, height: 0,
@@ -623,7 +625,7 @@ export function createHarness({
     },
   }, { filename: 'ui.bundle.js' });
   return {
-    figma, document, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers,
+    figma, document, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers, intervals,
     canvases, resizes, undoCommits, notifications, undoTriggers, externalUrls, uiResizes, uiShown, relaunches, pluginDrops, window,
     observers: intersections.observers, setVisible: intersections.setVisible,
     activeElement: () => focusState.active,
@@ -657,8 +659,6 @@ export function createHarness({
     focusWindow() { windowListeners.get('focus')?.({ type: 'focus' }); },
     /** The page is shown or hidden (document.visibilityState), with its visibilitychange event. */
     setVisibility(value) { document.visibilityState = value; documentListeners.get('visibilitychange')?.({ type: 'visibilitychange' }); },
-    /** Fires the current page's nodechange listeners. */
-    nodeChange(nodeChanges) { for (const listener of [...figma.currentPage.listeners]) listener({ nodeChanges }); },
     /** Switches to a new page holding `nodes` (plain specs), as Figma's currentpagechange. */
     changePage(nodes = []) { figma.currentPage = makePage(nodes.map(spec => makeNode(spec))); events.get('currentpagechange')(); return figma.currentPage; },
     drafts: () => requests.filter(request => request.method === 'POST'),
@@ -672,6 +672,8 @@ export function createHarness({
     select(nodes) { figma.currentPage.selection = nodes; events.get('selectionchange')(); },
     // A message as if the UI had posted it, for messages the UI itself never sends.
     postToMain(message) { parent.postMessage({ pluginMessage: message }); },
+    /** Runs each of main's intervals once (its 250 ms canvas check). */
+    tick() { for (const { callback } of [...intervals.values()]) callback(); },
     fireTimers(delay) {
       for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback(); }
     },

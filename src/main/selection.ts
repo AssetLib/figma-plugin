@@ -3,7 +3,7 @@ import {
   LEGACY_PRODUCTION_ORIGIN, NO_AREA, PRODUCTION_ORIGIN, classifyInsertTarget, insideInstance, linkInApp, parseStoredLink, syncDescription,
 } from '../shared/index.js';
 import type { CanvasTarget, Connection, InsertLink, NodeSelection, StoredLink } from '../shared/index.js';
-import type { RememberedTarget, SelectedLink } from '../shared/protocol.js';
+import type { RememberedTarget, SelectedLink, SelectionState } from '../shared/protocol.js';
 import { currentFileKey, fileIdentity, markDocument } from './identity.js';
 import { LINK_KEY, main, post } from './state.js';
 
@@ -11,6 +11,8 @@ import { LINK_KEY, main, post } from './state.js';
 export type StoredTarget = Omit<RememberedTarget, 'fileKey' | 'insertedFrom'> & { fileKey: string };
 
 let selectionRevision = 0;
+// The canvas part of the last report started, while it showed exactly one layer (null otherwise). The canvas check compares it.
+let reported: string | null = null;
 // Layers a fill or replace relinked in this run whose earlier stored targets aren't deleted yet: the file key wasn't
 // known, or storage failed. Until they are, reportSelection ignores those targets, so the link names the cell.
 const staleTargets = new Set<string>();
@@ -124,18 +126,33 @@ export function insertTarget(nodes: readonly SceneNode[], config: Connection | n
     children: 'children' in node ? node.children.length : 0, image: hasImagePaint(node), linked: one && nodeLink(node, config) !== null, inComponent: one && inComponent(node) })));
 }
 
+type CanvasView = Omit<SelectionState, 'remembered'>;
+/** What a selection report shows of the canvas, read at once: everything but the target client storage remembers. */
+function canvasView(config: Connection | null): { node: SceneNode | null; view: CanvasView } {
+  const selection = figma.currentPage.selection;
+  const node = selection.length === 1 ? selection[0] ?? null : null;
+  const { fileKey, source, name } = fileIdentity();
+  const reason = !node ? (selection.length === 0 ? 'Select a frame or layer to send.' : 'Select one layer. Sending several at once isn’t supported yet.')
+    : node.width <= 0 || node.height <= 0 ? NO_AREA : null;
+  return { node, view: { node: node ? describeNode(node) : null, reason, fileKey, insertTarget: insertTarget(selection, config),
+    link: node ? selectedLink(node, config) : null, file: { source, name } } };
+}
+
+/** The visible image paints' hashes on a layer, compared by the canvas check (never posted): an image swap changes nothing else it reads. */
+function imageHashes(node: SceneNode | null): (string | null)[] {
+  if (!node || !('fills' in node) || !Array.isArray(node.fills)) return [];
+  return (node.fills as readonly Paint[]).filter(paint => paint.type === 'IMAGE' && paint.visible !== false).map(paint => (paint as ImagePaint).imageHash);
+}
+
 export async function reportSelection(): Promise<void> {
   const revision = ++selectionRevision;
   // Client storage can resolve after a different app or token has been saved.
   const generation = main.connectionGeneration;
   const config = main.connection;
-  const node = selectedNode();
-  const { fileKey, source, name } = fileIdentity();
-  const target = insertTarget(figma.currentPage.selection, config);
-  let reason: string | null = null;
+  const { node, view } = canvasView(config);
+  reported = node ? JSON.stringify([generation, view, imageHashes(node)]) : null;
+  const { fileKey } = view;
   let remembered: RememberedTarget | null = null;
-  if (!node) reason = figma.currentPage.selection.length === 0 ? 'Select a frame or layer to send.' : 'Select one layer. Sending several at once isn’t supported yet.';
-  else if (node.width <= 0 || node.height <= 0) reason = NO_AREA;
   if (node && fileKey && config && staleTargets.has(staleKey(config, node.id))) await deleteTargets(config, fileKey, node.id);
   else if (node && fileKey && config) {
     try {
@@ -152,6 +169,12 @@ export async function reportSelection(): Promise<void> {
       state: link.state, appearance: link.appearance, arm: link.arm, insertedFrom: { environment: link.environment, assetId: link.assetId } };
   }
   if (revision !== selectionRevision || generation !== main.connectionGeneration) return;
-  post({ type: 'selection', connectionGeneration: generation, selection: { node: node ? describeNode(node) : null, reason, fileKey, remembered, insertTarget: target,
-    link: node ? selectedLink(node, config) : null, file: { source, name } } });
+  post({ type: 'selection', connectionGeneration: generation, selection: { ...view, remembered } });
+}
+
+/** True when the one selected layer no longer shows what the last report did: a canvas edit Figma sent the plugin no event for. */
+export function selectionStale(): boolean {
+  if (reported === null) return false;
+  const { node, view } = canvasView(main.connection);
+  return node !== null && JSON.stringify([main.connectionGeneration, view, imageHashes(node)]) !== reported;
 }
