@@ -14,7 +14,8 @@ const dev = watching || args.has('--dev');
 // Connect recovery, explanations, Update from Assetlib, the Send picker.
 // Raised on October 14, 2026: phase 1: cell strip and In this file.
 const MAX_UI_BYTES = 196_000;
-const MAX_MAIN_BYTES = 48_000;
+// Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
+const MAX_MAIN_BYTES = 50_000;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const templateUrl = new URL('../src/ui.html', import.meta.url);
 const marker = '<!-- ASSETLIB_SCRIPT -->';

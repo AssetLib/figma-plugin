@@ -7634,7 +7634,7 @@ test('phase 1 placement chips distinguish behind, current, copies, absence and p
   layer.remove(); app.postToMain({ type: 'scan-file', requestId: 8002, allPages: true }); await settle();
   assert.equal(chip().textContent, 'Not in this file'); assert.equal(chip().className, 'tag quiet');
 });
-test('phase 1 local placement instances edit their main component with one commit and guarded Undo', async () => {
+test('phase 1 local placement instances edit their main component in one undo step', async () => {
   for (const image of [true, false]) {
     const component = linkedSpec('50:1', { name: placement.key, fills: image ? [{ type: 'IMAGE', imageHash: 'old', scaleMode: 'FIT' }] : [] });
     const instance = { ...node, id: '50:2', type: 'INSTANCE', name: 'Hero instance', main: '50:1', fills: [{ type: 'IMAGE', imageHash: 'instance', scaleMode: 'FILL' }] };
@@ -7647,7 +7647,8 @@ test('phase 1 local placement instances edit their main component with one commi
     assert.equal(topImage(main), 'hash-1'); assert.equal(topImage(selected), 'instance'); assert.equal(selected.getPluginData(LINK_KEY), '');
     assert.equal(linkOf(main).arm, 'b'); assert.match(main.description, /Assetlib placement hero.artwork/);
     assert.equal(app.undoCommits.length, 1); assert.match(app.notices.at(-1), /main component.*instances follow/);
-    app.notifications.at(-1).options.button.action(); assert.equal(app.undoTriggers.length, 1);
+    // Undo watches the selected layers, and the main isn't selected: Cmd+Z takes the one step back instead.
+    assert.equal(app.notifications.at(-1).options?.button, undefined);
   }
 });
 test('phase 1 remote mains insert beside and mixed fills skip placement instances', async () => {
