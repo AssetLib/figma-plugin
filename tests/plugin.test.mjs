@@ -6995,3 +6995,32 @@ test('Cmd+Enter keeps the status line while an Update runs', async () => {
   assert.equal(app.element('status').textContent, running);
   gate.resolve(); await settle();
 });
+
+test('a title reveal survives a failed first quiet read when the full load that follows succeeds', async () => {
+  const gate = deferred();
+  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: gate } } });
+  let failing = Infinity;
+  Object.defineProperty(app.console.statuses, 'artwork', { configurable: true, enumerable: true, get: () => (artworkReads(app).length <= failing ? 500 : undefined) });
+  await settle();
+  app.element('sync-title').dispatch('click'); await settle();
+  failing = artworkReads(app).length;
+  gate.resolve(); await settle();
+  assert.ok(artworkReads(app).length > failing, 'the full load follows the failed quiet read');
+  assert.equal(app.element('insert-appearance').value, 'dark');
+  assert.equal(app.activeElement(), rowFor(app, placement.key));
+});
+
+test('an artwork read that ends unseen is read again for a link that still needs it', async () => {
+  const app = batch3({ prefs: { tab: 'insert' } }); await settle();
+  const fresh = clone(lastSelection(app));
+  fresh.node.id = '99:1'; fresh.remembered.nodeId = '99:1'; fresh.insertTarget.nodeIds = ['99:1'];
+  const gate = deferred(); app.console.gates.artwork = gate;
+  app.advance(1000);
+  app.deliver({ type: 'selection', connectionGeneration: 0, selection: fresh }); await settle();
+  app.element('insert-refresh').dispatch('click'); await settle();
+  const before = artworkReads(app).length;
+  app.element('browse-images').dispatch('click'); await settle();
+  assert.ok(artworkReads(app).length > before, 'the abandoned full load is replaced by a quiet read');
+  gate.resolve(); await settle();
+  assert.match(app.element('sync-meta').textContent, /in Production \(release 12\)/);
+});

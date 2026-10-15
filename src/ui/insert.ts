@@ -511,6 +511,11 @@ export function noteLinkSeen(): void {
 function artworkRequested(from: number): void {
   for (const [key, seen] of seenLinks) if (from >= seen) checkedLinks.add(key);
 }
+/** A read that ended unseen (aborted, superseded, or another generation's) leaves its links to be read again. */
+function artworkDropped(): void {
+  for (const [key, seen] of seenLinks) if (artworkFrom === null || seen > artworkFrom) checkedLinks.delete(key);
+  noteLinkSeen();
+}
 /** New art for an image-only layer in the environment its link names. */
 export function linkUpdate(): { art: CellArtwork; asset: LibraryAsset; environment: EnvironmentName; placement: PlacementArtwork } | null {
   const link = currentLink();
@@ -824,9 +829,10 @@ async function loadArtworkQuietly(): Promise<void> {
   const from = Date.now(), attention = state.attentionCount;
   quietFrom = from;
   artworkRequested(from);
+  let dropped = false;
   try {
     const result = await send(config, { path: 'placements/artwork', retry: false, channel: 'artwork' });
-    if (generation !== state.connectionGeneration || ticket !== quietTicket || result.kind === 'aborted') return;
+    if (generation !== state.connectionGeneration || ticket !== quietTicket || result.kind === 'aborted') { dropped = true; return; }
     if (result.status !== 200) {
       if (await replacedElsewhere(config, generation, result)) return;
       if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true);
@@ -839,7 +845,7 @@ async function loadArtworkQuietly(): Promise<void> {
     if (ticket === quietTicket) {
       quietLoading = false;
       quietFrom = null;
-      if (generation === state.connectionGeneration) { artworkFinishedAt = Date.now(); finishReveal(); }
+      if (generation === state.connectionGeneration) artworkFinishedAt = Date.now();
       if (!artwork) {
         scheduleRender(true);
         // The person opened Placements while its first quiet read waited. A normal list load can now show a failure;
@@ -847,7 +853,10 @@ async function loadArtworkQuietly(): Promise<void> {
         if (generation === state.connectionGeneration && !state.ops.connecting && !listError
           && state.prefs.tab === 'insert' && state.prefs.browse === 'placements' && state.ops.loadingList !== 'placements') void loadArtwork();
       }
+      // A full load that runs (or just started) finishes a pending reveal itself.
+      if (generation === state.connectionGeneration && state.ops.loadingList !== 'placements') finishReveal();
     }
+    if (dropped) artworkDropped();
   }
 }
 
@@ -931,7 +940,7 @@ async function loadArtwork(): Promise<void> {
   try {
     // A new list load or a connection change aborts this one; whoever replaced it owns the list.
     const result = await send(config, { path: 'placements/artwork', channel: 'list' });
-    if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
+    if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') { artworkDropped(); return; }
     if (result.status !== 200) {
       if (await replacedElsewhere(config, generation, result)) return;
       if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true);
