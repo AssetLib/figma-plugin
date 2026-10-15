@@ -1484,6 +1484,8 @@ test('footer, chip, grid, and tile details fit at 420 px', async () => {
     assert.equal(await page.evaluate(`document.getElementById('insert-meta').title === document.getElementById('insert-meta').textContent`), true, 'the full meta is available on hover');
     assert.equal(await page.evaluate(`document.querySelectorAll('#insert-cells [role=radio][tabindex="0"]').length`), 1);
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('insert-cells')).gap`), '8px');
+    // Six cell columns overflow 420 px and scroll; the state names keep their own column.
+    assert.ok(await page.evaluate(`document.querySelector('#insert-cells .cell-state').getBoundingClientRect().width >= 48`), 'state names keep their column');
   } finally { await page.close(); }
   // The images empty state sits where the placements' does.
   const top = async options => {

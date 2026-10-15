@@ -23,7 +23,7 @@ export function renderCells(placement: PlacementArtwork | null, cell: CellCoordi
       const stateColumn = states.length > 1;
       const manyArms = new Set(columns.map(column => column.arm)).size > 1;
       const manyAppearances = new Set(columns.map(column => column.appearance)).size > 1;
-      strip.style.gridTemplateColumns = `${stateColumn ? 'minmax(0, 64px) ' : ''}repeat(${columns.length}, minmax(64px, 1fr))`;
+      strip.style.gridTemplateColumns = `${stateColumn ? '64px ' : ''}repeat(${columns.length}, minmax(64px, 1fr))`;
       const header = (text: string, state = false) => { const item = document.createElement('span'); item.className = state ? 'cell-header cell-state' : 'cell-header'; item.textContent = text; item.title = text; item.setAttribute('aria-hidden', 'true'); return item; };
       if (columns.length > 1) {
         if (stateColumn) strip.append(header(''));

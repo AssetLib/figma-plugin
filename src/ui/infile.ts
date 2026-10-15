@@ -99,8 +99,9 @@ export function fileRows(query: string, artwork: ArtworkResponse | null, wire: (
       const meta = [entry.placementKey, placement ? cellAxes(placement, entry) : [entry.state, entry.appearance && appearanceLabel(entry.appearance), entry.arm].filter(Boolean).join(' · '), environmentLabel(entry.environment)].filter(Boolean).join(' · ');
       text.append(node('span', 'name', entry.name), node('span', 'meta', meta)); row.append(box, text); row.title = `${entry.name} · ${meta}`;
       if (artwork) {
-        const word = !cell ? 'Removed' : entry.kind === 'copy' ? 'Copy' : changedArt(artwork, entry) ? 'Behind' : 'Current';
+        const word = !cell ? 'Removed' : entry.instance ? 'Instance' : entry.kind === 'copy' ? 'Copy' : changedArt(artwork, entry) ? 'Behind' : 'Current';
         const chip = node('span', word === 'Behind' ? 'tag behind' : 'tag', word);
+        if (word === 'Instance') chip.title = 'An instance of a linked component. It follows its main component, so change the main to change it.';
         if (word === 'Copy') chip.title = 'A copy of a linked layer. Copies aren’t linked; select it and Send it to a cell to link it.';
         row.append(chip);
       }

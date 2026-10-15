@@ -26,7 +26,7 @@ export function scanLinks(requestId?: number): Promise<void> {
             entries.push({ nodeId: node.id, name: node.name, pageId: page.id, pageName: page.name,
               frameId: frame === node ? null : frame.id, frameName: frame === node ? null : frame.name,
               kind: link.nodeId === node.id ? 'linked' : 'copy', placementKey, state, appearance, arm, environment, assetId,
-              image: hasImagePaint(node), children: 'children' in node ? node.children.length : 0 });
+              image: hasImagePaint(node), children: 'children' in node ? node.children.length : 0, instance: node.type === 'INSTANCE' });
           } catch { /* A removed or unreadable layer is skipped. */ }
         }
       } catch { /* A page Figma cannot load is skipped. */ }

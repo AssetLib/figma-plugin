@@ -7773,3 +7773,13 @@ test('phase 1 a scan reply from an older connection ends its request, so Refresh
   app.element('insert-refresh').click(); await settle();
   assert.equal(scans().length, before + 1, 'the dropped reply no longer blocks a new scan');
 });
+test('phase 1 an instance reads its main’s link, so In this file names it an Instance, and Send labels placements by ratio', async () => {
+  const instance = { ...linkedSpec('55:2'), type: 'INSTANCE', main: '55:1', pluginData: linkedSpec('55:1').pluginData };
+  const app = harness({ remembered: null, prefs: { tab: 'insert', browse: 'file' }, selection: [linkedSpec('55:1'), instance] }); await openInsert(app, { keep: true });
+  assert.deepEqual(fileIndex(app).entries.map(entry => [entry.nodeId, entry.kind, entry.instance]), [['55:1', 'linked', false], ['55:2', 'copy', true]]);
+  const chip = descendants(rowFor(app, '55:2')).find(item => /^tag/.test(item.className));
+  assert.equal(chip.textContent, 'Instance'); assert.match(chip.title, /follows its main component/);
+  const send = harness({ remembered: null }); await settle();
+  const option = [...send.element('placement').options].find(item => item.value === placement.key);
+  assert.equal(option.textContent, `${placement.key} · 1:1`); assert.equal(option.title, `${placement.key} · reference 1000 × 1000`);
+});

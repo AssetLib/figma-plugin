@@ -2,7 +2,7 @@
 // the Sync bar (syncbar.ts) shows on both tabs from what `syncBar()` says about the selection.
 import {
   MAX_EXPORT_EDGE, EXPORT_FAILED, DRAFT_MAY_HAVE_ARRIVED, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
-  consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel,
+  consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel, ratioName,
   reconnectText, refusalCode, sameCoordinate, sizeLabel, tokenRefused, validUuid, validateBinding,
 } from '../shared/index.js';
 import type { Appearance, CellBinding, CellCoordinate, Connection, DraftResult, EnvironmentName, InsertLink, PairingHint, Placement } from '../shared/index.js';
@@ -170,7 +170,10 @@ function buildPlacementOptions(): void {
   for (const item of state.placements) {
     let group = groups.get(item.screen);
     if (!group) { group = document.createElement('optgroup'); group.label = item.screen; groups.set(item.screen, group); }
-    (node && !aspectMismatch(node, item) ? fits : group).append(new Option(`${item.key} · ${item.width} × ${item.height}`, item.key));
+    // The ratio is what a frame must match; the reference size is secondary detail, on hover.
+    const option = new Option(`${item.key} · ${ratioName(item.width, item.height)}`, item.key);
+    option.title = `${item.key} · reference ${item.width} × ${item.height}`;
+    (node && !aspectMismatch(node, item) ? fits : group).append(option);
   }
   placementPicker.replaceChildren(new Option(state.placements.length ? CHOOSE_PLACEMENT : 'No placements yet', ''),
     ...(fits.children.length ? [fits] : []), ...[...groups.values()].filter(group => group.children.length));
