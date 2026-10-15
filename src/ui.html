@@ -66,7 +66,8 @@
     .primary[aria-disabled="true"], .primary:disabled { background: var(--bg-disabled); color: var(--text-disabled); cursor: default; }
     /* A running action keeps its ink, with a spinner, so it never reads as an unavailable one. */
     .primary[aria-busy="true"] { background: color-mix(in srgb, var(--text) 80%, var(--bg)); color: var(--bg); cursor: progress; }
-    .primary[aria-busy="true"]::before { content: ''; flex: none; width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid currentColor;
+    .text-action[aria-busy="true"] { background: color-mix(in srgb, var(--text) 80%, var(--bg)); color: var(--bg); cursor: progress; text-decoration: none; padding: 0 6px; }
+    .primary[aria-busy="true"]::before, .text-action[aria-busy="true"]::before { content: ''; flex: none; width: 12px; height: 12px; box-sizing: border-box; border: 1.5px solid currentColor;
       border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
     button[aria-disabled="true"]:not(.primary), button:disabled:not(.primary), input:disabled, select:disabled { color: var(--text-disabled); cursor: default; }
     .secondary[aria-disabled="true"]:hover, .secondary:disabled:hover { background: var(--bg-secondary); }
@@ -249,6 +250,9 @@
     .pickers:not(:has(> :not([hidden]))) { display: none; }
     .picker { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--al-text-meta); white-space: nowrap; }
     .picker select { width: auto; max-width: 140px; height: 24px; padding: 0 2px; color: var(--text); }
+    .current-art { display: flex; align-items: center; gap: 8px; }
+    .current-art .thumb { flex: none; }
+    .current-art p { min-width: 0; }
     .result { display: grid; gap: 4px; }
     .result details summary { cursor: pointer; width: max-content; }
     .result ul { margin: 4px 0 0; padding-left: 16px; }
@@ -315,7 +319,7 @@
       #pairing-spinner { display: none; }
       .spinner, #insert-refresh[data-busy="true"] svg { animation: none; }
       /* The running label ends in "…" already. */
-      .primary[aria-busy="true"]::before { display: none !important; }
+      .primary[aria-busy="true"]::before, .text-action[aria-busy="true"]::before { display: none !important; }
       .spinner { border: 0; width: auto; height: auto; } .spinner::after { content: '…'; }
     }
     /* The Environment dropdown, in place of its radios in a narrow window. */
@@ -488,6 +492,7 @@
           <label id="appearance-label" class="picker" hidden>Appearance<select id="appearance"></select></label>
           <label id="arm-label" class="picker" hidden>A/B arm<select id="arm"></select></label>
         </div>
+        <div id="send-current" class="current-art" hidden><span id="send-current-preview" class="thumb"><img id="send-current-thumb" alt=""></span><p id="send-current-text" class="meta"></p></div>
         <button id="send-plain" class="text-action" type="button" hidden>Send as a new image instead</button>
         <p id="export-note" class="meta"></p>
         <p id="send-relink" class="meta" hidden></p>
@@ -533,7 +538,7 @@
         </div>
         <button id="insert" class="primary" type="button" aria-disabled="true">Insert</button>
       </div>
-      <div class="footer-note"><p id="insert-note" hidden></p><button id="insert-fit-scale" class="text-action" type="button" hidden></button><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new layer</button></div>
+      <div class="footer-note"><p id="insert-note" hidden></p><button id="insert-send-here" class="text-action" type="button" hidden>Send selected layer here</button><button id="insert-fit-scale" class="text-action" type="button" hidden></button><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new layer</button></div>
     </footer>
     <footer id="send-bar" class="footer" hidden>
       <div class="footer-actions"><button id="send" class="primary" type="button" aria-disabled="true">Send to draft</button></div>

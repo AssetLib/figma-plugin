@@ -422,7 +422,8 @@ test('artwork parses contracts, cells, and environments, ignoring rendition urls
   assert.equal(artworkAsset(parsed, { assetId: '7f2b3c4d-3333-4abc-8def-0123456789ab', via: { arm: null, appearance: null } }), null, 'a missing asset is unavailable');
   assert.equal(artworkAsset(parsed, null), null);
   assert.deepEqual(baseCoordinate(family), { state: 'empty', appearance: null, arm: null });
-  assert.equal(findCell(parsed.placements[0], { state: null, appearance: null, arm: null }), null, 'a stateful placement has no null state');
+  assert.equal(findCell(parsed.placements[0], { state: null, appearance: null, arm: null }),
+    findCell(parsed.placements[0], baseCoordinate(family)), 'an omitted state finds the declared default');
   assert.deepEqual(parseArtwork(artworkPayload({ environments: { staging: null, production: null }, placements: [], assets: {} })).placements, []);
 });
 
@@ -1002,4 +1003,22 @@ test('a refused Figma connection’s code names why, and Connect again says it',
 test('introSeen keeps only a boolean preference', () => {
   for (const introSeen of [true, false]) assert.deepEqual(parsePreferences({ introSeen }), { ...defaultPreferences(), introSeen });
   for (const introSeen of [null, 1, 'true', {}, []]) assert.deepEqual(parsePreferences({ introSeen }), defaultPreferences());
+});
+
+test('Batch 4 R3: findCell treats null state as the placement default state', () => {
+  const cell = { state: 'old', appearance: null, arm: null, draft: null, staging: null, production: null };
+  assert.equal(findCell({ defaultState: 'old', cells: [cell] }, { state: null, appearance: null, arm: null }), cell);
+  assert.equal(findCell({ defaultState: 'old', cells: [cell] }, { state: 'new', appearance: null, arm: null }), null);
+});
+
+test('the plugin menu opens the remembered tab, Insert, or Send and keeps both relaunch buttons', async () => {
+  const manifest = JSON.parse(await readText('manifest.json'));
+  assert.deepEqual(manifest.menu, [
+    { name: 'Open Assetlib', command: 'open' }, { separator: true },
+    { name: 'Insert artwork…', command: 'insert' }, { name: 'Send selection to draft…', command: 'send' },
+  ]);
+  assert.deepEqual(manifest.relaunchButtons, [
+    { command: 'sync', name: 'Sync to Assetlib' }, { command: 'open', name: 'Open Assetlib' },
+  ]);
+  assert.equal(manifest.id, '1690264758934826227');
 });

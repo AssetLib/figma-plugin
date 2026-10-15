@@ -7,8 +7,8 @@ import { applyConnection, failConnection, initConnection, loadPlacements, needsA
 import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
 import { abortAll } from './http.js';
 import {
-  applyPreferences, connectionKept, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
-  refreshArtworkIfStale, renderInsertControls, renderList, resetInsert, rowFor, savePreferences,
+  applyPreferences, connectionKept, draftArtState, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
+  refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, resetInsert, rowFor, savePreferences,
 } from './insert.js';
 import { applyFileUrl, applySelection, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { actionsBlocked, state } from './state.js';
@@ -19,6 +19,7 @@ const app = element('app');
 const tabSend = element<HTMLButtonElement>('tab-send');
 const tabInsert = element<HTMLButtonElement>('tab-insert');
 const searchInput = element<HTMLInputElement>('insert-search');
+let menuCommand: 'insert' | 'send' | null = null;
 
 function render(): void {
   // Until main's first connection message (which also brings the preferences) the connection is unknown, not absent:
@@ -40,6 +41,7 @@ function render(): void {
   renderConnection();
   renderConnect();
   renderSend(problemInSettings());
+  renderSendCurrent();
   renderInsertControls();
   renderInsertBar();
   renderSyncBar();
@@ -62,6 +64,8 @@ function onConnection(message: Extract<MainMessage, { type: 'connection' }>): vo
   resetInsert();
   // A Connect request's connection arrived, or main holds a request to resume.
   applyPairing(message);
+  // Main sends launch before the saved preferences. Apply the requested tab only after those preferences arrived.
+  if (menuCommand) { const command = menuCommand; menuCommand = null; launch(command); }
   if (!state.connection) {
     state.ops.connecting = false;
     scheduleRender();
@@ -116,7 +120,7 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
       break;
     case 'file-saved': fileSaved(message); break;
     case 'file-mismatch': fileMismatch(message); break;
-    case 'launch': launched(); break;
+    case 'launch': launch(message.command); break;
     case 'exported': void sendExport(message); break;
     case 'remembered': remembered(message); break;
     case 'inserted': inserted(message); break;
@@ -136,6 +140,12 @@ function setTab(next: typeof state.prefs.tab): void {
   scheduleRender();
   enterInsert();
   if (next === 'send') ensureArtwork();
+}
+function launch(command: Extract<MainMessage, { type: 'launch' }>['command']): void {
+  if (command === 'sync') { launched(); return; }
+  if (!state.preferencesLoaded) { menuCommand = command; return; }
+  setTab(command);
+  if (command === 'insert' && state.connection) focusSearch();
 }
 tabSend.addEventListener('click', () => setTab('send'));
 tabInsert.addEventListener('click', () => setTab('insert'));
@@ -225,7 +235,7 @@ element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
 initConnect();
 const showSend = () => setTab('send');
-initSend({ refused: () => needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true) });
+initSend({ refused: () => needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState });
 initSyncBar({ showSend, showInsert: () => setTab('insert') });
 initInsert(() => { setTab('send'); tabSend.focus(); });
 post({ type: 'init' });

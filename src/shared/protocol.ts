@@ -117,7 +117,7 @@ export type MainMessage =
   // The pasted link's file name (`slug`) isn't this file's (`name`); nothing was saved.
   | { type: 'file-mismatch'; requestId: number; slug: string; name: string }
   // The plugin was opened from a linked layer's Sync to Assetlib button in the properties panel.
-  | { type: 'launch'; command: 'sync' }
+  | { type: 'launch'; command: 'sync' | 'insert' | 'send' }
   | { type: 'exported'; requestId: number; node: NodeSelection; fileKey: string; settings: ExportSettings; bytes: Uint8Array }
   | { type: 'remembered'; requestId: number }
   // `node` is the new frame, or the first layer filled; `notice` is main's toast, which the UI repeats in its status region.

@@ -1,8 +1,8 @@
 // The Insert tab: placements by screen and the image library, the cell pickers, Insert, and dragging rows and tiles onto the canvas.
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, changedArt, consoleLink,
-  environmentLabel, fillRendition, findCell, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
-  placementMeta, pngSize, reconnectText, refusalCode, renditionPath, tokenRefused,
+  environmentLabel, fillRendition, findCell, insideInstance, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
+  placementMeta, pngSize, reconnectText, refusalCode, renditionPath, sameCoordinate, tokenRefused,
 } from '../shared/index.js';
 import type {
   Appearance, ArtworkResponse, CanvasTarget, CellArtwork, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
@@ -17,7 +17,7 @@ import {
 } from './dom.js';
 import { readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
-import { bindingLabel, syncBar } from './send.js';
+import { bindingLabel, prefillSend, sendChoice, syncBar } from './send.js';
 import { NEW_FRAME, actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, refusedToken, state } from './state.js';
 import type { ReadFailure } from './state.js';
 import { releaseListImages, resetThumbnails, retryFailedThumbnails, showThumbnail, thumbnailFrame } from './thumbnails.js';
@@ -194,14 +194,16 @@ function modeNote(canvas: CanvasTarget, target: InsertTarget): string {
   const old = state.selection.link?.kind === 'linked' ? state.selection.link : null;
   let note = '';
   if (canvas.mode === 'replace' && old) {
-    const same = !target.link || (target.link.placementKey === old.placementKey && target.link.state === old.state
-      && target.link.appearance === old.appearance && target.link.arm === old.arm);
+    const placement = state.placements.find(item => item.key === old.placementKey);
+    const same = !target.link || (target.link.placementKey === old.placementKey && placement && sameCoordinate(placement, target.link, old));
     note = same ? `Replaces the image in ${canvas.name}. It stays linked to ${label(old)}.`
       : `Replaces the image in ${canvas.name} and relinks it from ${label(old)} to ${cell}.`;
   } else if (canvas.mode === 'fill') {
-    note = canvas.count === 1 ? `Puts this image in ${canvas.name}${cell ? ` and links it to ${cell}` : ''}. Its size and position stay.`
-      : `Puts this image in ${canvas.count} layers${cell ? ` and links each to ${cell}` : ''}.`;
-    if (canvas.skipped) note += ` ${canvas.skipped} other selected layer${canvas.skipped === 1 ? '' : 's'} can’t show an image and stay as they are.`;
+    const linked = cell ? canvas.nodeIds.filter(id => !insideInstance(id)).length : 0;
+    note = canvas.count === 1 ? `Puts this image in ${canvas.name}${linked ? ` and links it to ${cell}` : ''}. Its size and position stay.`
+      : `Puts this image in ${canvas.count} layers${linked ? ` and links ${linked === canvas.count ? 'each' : linked} to ${cell}` : ''}.`;
+    if (canvas.skipped) note += canvas.skipped === 1 ? ' 1 other selected layer can’t show an image and stays as it is.'
+      : ` ${canvas.skipped} other selected layers can’t show an image and stay as they are.`;
   } else if (canvas.mode === 'into') note = `Adds a new layer inside ${canvas.name}.`;
   else if (canvas.beside) note = 'Adds a new layer beside the selection.';
   return note;
@@ -232,7 +234,8 @@ function insertTarget(choice = selected): InsertTarget | null {
     if (placement.states?.length && picked.states.length <= 1) parts.push(cell.state ?? placement.defaultState ?? 'default');
     if (placement.variants?.appearance?.length && picked.appearances.length <= 1) parts.push(appearanceLabel(cell.appearance));
     if (placement.variants?.arm?.length && picked.arms.length <= 1) parts.push(cell.arm ?? 'Control');
-    const target: InsertTarget = { title: placement.key, meta: parts.join(' · '), note: `No image in ${label} for this cell. Choose another cell or environment.`,
+    const target: InsertTarget = { title: placement.key, meta: parts.join(' · '), note: shown === 'draft' ? 'No image in Draft for this cell yet.'
+      : `No image in ${label} for this cell. Sending puts it in Draft.`,
       noteLink: null, name: layerName(placement, cell), asset, ready: false, frame, link: null, empty: !art,
       component: Boolean(state.connection && placementMarker(state.connection, placement.key, frame)) };
     if (!art) return target;
@@ -332,6 +335,14 @@ type Tag = { word: string; title: string; blocking: boolean };
 function owns(art: CellArtwork | null, cell: CellCoordinate): boolean {
   return art !== null && art.via.arm === cell.arm && art.via.appearance === cell.appearance;
 }
+/** Only artwork from this connection may describe a destination or linked layer. */
+function currentPlacement(key: string): PlacementArtwork | null {
+  return artworkGeneration === state.connectionGeneration ? artwork?.placements.find(item => item.key === key) ?? null : null;
+}
+function currentCell(key: string, coordinate: CellCoordinate) {
+  const placement = currentPlacement(key);
+  return placement ? findCell(placement, coordinate) : null;
+}
 function axesLabel(placement: PlacementArtwork, cell: CellCoordinate): string {
   return [cell.arm, cell.appearance ?? (cell.arm ? 'Any' : null), placement.states && cell.state !== placement.defaultState ? cell.state : null]
     .filter(part => part !== null).join(' · ') || 'Any';
@@ -350,7 +361,7 @@ function rowTag(placement: PlacementArtwork): Tag | null {
     const own = placement.cells.filter(cell => owns(cell.draft, cell));
     if (own.some(cell => !cell.production)) return { word: 'New in Draft', title: 'Draft has art that isn’t in Production yet. It goes out when someone publishes.', blocking: false };
     const changed = own.filter(cell => cell.draft!.assetId !== cell.production?.assetId);
-    if (changed.length) return { word: 'Changed in Draft', title: `Draft differs from Production in ${changed.length} cells: ${listed(changed.map(cell => axesLabel(placement, cell)))}`, blocking: false };
+    if (changed.length) return { word: 'Changed in Draft', title: `Draft differs from Production in ${changed.length} cell${changed.length === 1 ? '' : 's'}: ${listed(changed.map(cell => axesLabel(placement, cell)))}`, blocking: false };
   }
   const inherited = placement.cells.filter(cell => cell !== base && cell[shown] !== null && !owns(cell[shown], cell));
   return inherited.length ? { word: `${inherited.length} of ${placement.cells.length} inherit`,
@@ -358,9 +369,28 @@ function rowTag(placement: PlacementArtwork): Tag | null {
 }
 /** Prefer another cell without its own Draft art, including one showing inherited art. */
 export function otherCell(key: string, cell: CellCoordinate): CellCoordinate | null {
-  if (!artwork || artworkGeneration !== state.connectionGeneration) return null;
-  const others = artwork.placements.find(item => item.key === key)?.cells.filter(item => item.state !== cell.state || item.appearance !== cell.appearance || item.arm !== cell.arm) ?? [];
+  const placement = currentPlacement(key);
+  const others = placement?.cells.filter(item => !sameCoordinate(placement, item, cell)) ?? [];
   return others.find(item => !owns(item.draft, item)) ?? others[0] ?? null;
+}
+
+/** Draft availability for Send's picker labels; no suffix until this connection's artwork is known. */
+export function draftArtState(key: string, coordinate: CellCoordinate): 'own' | 'inherits' | 'empty' | null {
+  const cell = currentCell(key, coordinate);
+  return !cell ? null : !cell.draft ? 'empty' : owns(cell.draft, cell) ? 'own' : 'inherits';
+}
+
+/** The chosen Send cell's current Draft art, loaded whenever the form shows it. */
+export function renderSendCurrent(): void {
+  const choice = sendChoice();
+  const cell = choice && currentCell(choice.placementKey, choice.cell);
+  const current = element('send-current');
+  current.hidden = state.prefs.tab !== 'send' || !state.connection || !cell;
+  const art = cell?.draft ?? null;
+  element('send-current-preview').className = art ? 'thumb' : 'thumb slot';
+  element('send-current-text').textContent = !art ? 'Nothing in Draft yet' : owns(art, cell!) ? 'Now in Draft'
+    : `Now in Draft: inherits ${art.via.arm ?? 'Control'} · ${appearanceLabel(art.via.appearance)} art`;
+  showThumbnail(element<HTMLImageElement>('send-current-thumb'), current.hidden || !artwork ? null : artworkAsset(artwork, art));
 }
 
 function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HTMLElement {
@@ -442,16 +472,16 @@ export function rowFor(key: string): HTMLElement | null { return rows.get(key) ?
 export function linkedArt(placementKey: string, cell: CellCoordinate, assetId: string | null, environment: EnvironmentName = 'draft'): LibraryAsset | null {
   if (!artwork || artworkGeneration !== state.connectionGeneration) return null;
   if (assetId && artwork.assets[assetId]) return artwork.assets[assetId] ?? null;
-  const placement = artwork.placements.find(item => item.key === placementKey);
-  return placement ? artworkAsset(artwork, findCell(placement, cell)?.[environment] ?? null) : null;
+  return artworkAsset(artwork, currentCell(placementKey, cell)?.[environment] ?? null);
 }
 
 /** The layer's own link only when Sync follows that same cell on this device. */
 function currentLink(): SelectedLink | null {
   if (!hasCurrentSelection()) return null;
   const { link, remembered } = state.selection;
-  if (link?.kind !== 'linked' || !remembered || link.placementKey !== remembered.placementKey || link.state !== remembered.state
-    || link.appearance !== remembered.appearance || link.arm !== remembered.arm) return null;
+  const placement = link && state.placements.find(item => item.key === link.placementKey);
+  if (link?.kind !== 'linked' || !remembered || !placement || link.placementKey !== remembered.placementKey
+    || !sameCoordinate(placement, link, remembered)) return null;
   return link;
 }
 /** New art for an image-only layer in the environment its link names. */
@@ -465,9 +495,7 @@ export function linkUpdate(): { art: CellArtwork; asset: LibraryAsset; environme
 }
 /** A cell with no art says so; a sent layer with contents can only replace different Draft art by syncing. */
 export function linkArtworkMeta(link: SelectedLink): string | null {
-  if (!artwork || artworkGeneration !== state.connectionGeneration) return null;
-  const placement = artwork.placements.find(item => item.key === link.placementKey);
-  const cell = placement && findCell(placement, link);
+  const cell = currentCell(link.placementKey, link);
   if (!cell) return null;
   const art = cell[link.environment];
   if (!art) return `${environmentLabel(link.environment)} no longer has art for this cell.`;
@@ -476,17 +504,15 @@ export function linkArtworkMeta(link: SelectedLink): string | null {
 }
 /** Where this layer's image is published, with Production taking precedence over Staging and Draft. */
 export function linkStatus(link: InsertLink, coordinate: CellCoordinate = link): string | null {
-  if (!artwork || artworkGeneration !== state.connectionGeneration) return null;
-  const placement = artwork.placements.find(item => item.key === link.placementKey);
-  const cell = placement && findCell(placement, coordinate);
+  const cell = currentCell(link.placementKey, coordinate);
   if (!cell) return null;
-  if (cell.production?.assetId === link.assetId && artwork.environments.production) return `in Production (release ${artwork.environments.production.sequence})`;
+  if (cell.production?.assetId === link.assetId && artwork?.environments.production) return `in Production (release ${artwork.environments.production.sequence})`;
   if (cell.staging?.assetId === link.assetId) return 'in Staging, not in Production';
   return cell.draft?.assetId === link.assetId ? 'in Draft, not published' : null;
 }
 /** Only artwork supplies a placement page's id; before it loads, the bar keeps the image page. */
 export function slotIdOf(key: string): string | null {
-  return artworkGeneration === state.connectionGeneration ? artwork?.placements.find(item => item.key === key)?.slotId ?? null : null;
+  return currentPlacement(key)?.slotId ?? null;
 }
 
 /** Reveal the linked cell in Insert; a pending reveal is completed once its artwork arrives. */
@@ -503,7 +529,7 @@ export function revealPlacement(key: string, cell: CellCoordinate, environment: 
   const query = currentQuery().toLowerCase();
   if (query && !key.toLowerCase().includes(query) && !placement.screen.toLowerCase().includes(query)) clearSearch();
   if (published(environment)) setEnvironment(environment);
-  const shownCell = findCell(placement, cell) ? cell : baseCoordinate(placement);
+  const shownCell = findCell(placement, cell) ? { ...cell, state: cell.state ?? placement.defaultState } : baseCoordinate(placement);
   selected = { kind: 'placement', key, cell: shownCell };
   buildInsertPickers(placement, shownCell);
   activeKey = key;
@@ -677,6 +703,8 @@ export function renderInsertBar(): void {
   fit.textContent = width.fits ? `Use ${width.fits}×` : '';
   element('insert-note').textContent = note;
   element('insert-note').hidden = !note;
+  element('insert-send-here').hidden = !target?.empty || !hasCurrentSelection() || !state.selection.node || Boolean(state.selection.reason);
+  setUnavailable(element('insert-send-here'), actionsBlocked());
   const noteLink = element<HTMLAnchorElement>('insert-note-link');
   noteLink.hidden = !target?.noteLink;
   if (target?.noteLink) noteLink.href = target.noteLink;
@@ -742,7 +770,7 @@ function acceptArtwork(payload: unknown, generation: number): void {
   if (selected?.kind === 'placement') {
     if (!placement) selected = null;
     else {
-      const cell = findCell(placement, selected.cell) ? selected.cell : baseCoordinate(placement);
+      const cell = findCell(placement, selected.cell) ? { ...selected.cell, state: selected.cell.state ?? placement.defaultState } : baseCoordinate(placement);
       selected = { ...selected, cell };
       buildInsertPickers(placement, cell);
     }
@@ -1351,7 +1379,15 @@ export function initInsert(goToSend: () => void): void {
   element('insert-fit-scale').addEventListener('click', () => {
     const target = insertTarget();
     const fits = target?.ready ? widthHint(target.frame, canvasTarget(target)).fits : undefined;
-    if (fits) setScale(fits);
+    if (fits) { setScale(fits); flushRender(); element(`scale-${fits}`).focus(); }
+  });
+  element('insert-send-here').addEventListener('click', () => {
+    if (actionsBlocked() || selected?.kind !== 'placement' || !insertTarget()?.empty || !hasCurrentSelection() || !state.selection.node || state.selection.reason) return;
+    const choice = { placementKey: selected.key, ...selected.cell };
+    goToSend();
+    prefillSend(choice, true);
+    flushRender();
+    element('send').focus();
   });
   element('browse-placements').addEventListener('click', () => setBrowse('placements'));
   element('browse-images').addEventListener('click', () => setBrowse('images'));

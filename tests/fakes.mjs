@@ -94,6 +94,7 @@ export class Element {
   }
   get isConnected() { return this.static || Boolean(this.parentElement?.isConnected); }
   get tagName() { return this.tag.toUpperCase(); }
+  get options() { return descendants(this).filter(item => item instanceof Option); }
   // A static element's parent comes from staticParents; a created or moved one's from parentElement.
   contains(other) {
     for (let item = other; item; item = item.parentElement ?? item.staticParent?.() ?? null) if (item === this) return true;
@@ -112,7 +113,7 @@ export class Element {
     for (const child of this.children) if (child.parentElement === this) child.parentElement = null;
     for (const child of children) child.parentElement = this;
     this.children = children;
-    if (selects.includes(this.id)) this.value = children[0]?.value ?? '';
+    if (selects.includes(this.id)) this.value = this.options[0]?.value ?? '';
   }
   // Appending moves a child, as in the DOM, so tests can see where the UI placed it. A string is text, added to textContent.
   append(...children) {

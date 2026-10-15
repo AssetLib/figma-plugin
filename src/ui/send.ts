@@ -3,9 +3,9 @@
 import {
   DRAFT_MAY_HAVE_ARRIVED, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, cellOptions, chooseExportSettings,
   consoleLink, environmentLabel, mapHttpError, mapNetworkError, mapTimeoutError, matchedHeight, parseDraftResponse, parsePngDimensions, ratioLabel,
-  reconnectText, refusalCode, sizeLabel, tokenRefused, validUuid, validateBinding,
+  reconnectText, refusalCode, sameCoordinate, sizeLabel, tokenRefused, validUuid, validateBinding,
 } from '../shared/index.js';
-import type { Appearance, CellBinding, Connection, DraftResult, EnvironmentName, InsertLink, PairingHint, Placement } from '../shared/index.js';
+import type { Appearance, CellBinding, CellCoordinate, Connection, DraftResult, EnvironmentName, InsertLink, PairingHint, Placement } from '../shared/index.js';
 import { CONNECTION_REPLACED } from '../shared/protocol.js';
 import type { MainMessage, RememberedTarget } from '../shared/protocol.js';
 import {
@@ -27,7 +27,7 @@ const fileUrl = element<HTMLInputElement>('file-url');
 const CHOOSE_PLACEMENT = 'Choose placement…';
 export const VIEW_ONLY = 'This file is view-only, so the link lasts until you close the plugin.';
 
-let pending: { id: number; connection: Connection; generation: number | null; placement: Placement; bind: CellBinding; rebind: boolean; result: DraftResult | null } | null = null;
+let pending: { id: number; connection: Connection; generation: number | null; placement: Placement; bind: CellBinding; rebind: boolean; plain: boolean; result: DraftResult | null } | null = null;
 // The request id of the last Match ratio, so its error is shown.
 let pendingMatch: number | null = null;
 // The file link being saved: its request id and the link, for Use anyway.
@@ -35,7 +35,7 @@ let pendingFile: { id: number; url: string } | null = null;
 // The file link form shows: a Send or Sync found no file key, or Change was chosen.
 let fileAsked = false;
 // The Send or Sync that asked for the file link, which runs once the file is linked if the layer is still selected.
-let afterFile: { rebind: boolean; nodeId: string } | null = null;
+let afterFile: { rebind: boolean; nodeId: string; plain: boolean } | null = null;
 // Main said the pasted link names another file; Use anyway saves it regardless.
 let mismatch: { url: string; slug: string; name: string } | null = null;
 // Leaves the Send tab in front (main.ts), for the file link a Sync from the Insert tab asks for.
@@ -44,7 +44,10 @@ let showSend: () => void = () => {};
 let reconnect: () => void = () => {};
 let refused: () => void = () => {};
 let artworkChanged: () => void = () => {};
+let draftArtState: (key: string, cell: CellCoordinate) => 'own' | 'inherits' | 'empty' | null = () => null;
 let selectionIdentity = '';
+// Send here is an explicit upload even when that empty cell is the layer's current link.
+let explicitSend = false;
 // The connection generation the placement picker was filled for; a choice never carries over to another connection.
 let pickerGeneration: number | null = null;
 
@@ -52,6 +55,7 @@ export function clearRememberedSelection(): void {
   state.selection = { ...state.selection, remembered: null };
   state.selectionGeneration = null;
   selectionIdentity = '';
+  explicitSend = false;
 }
 function chosenPlacement(): Placement | undefined { return state.placements.find(item => item.key === placementPicker.value); }
 function chosenBinding(placement: Placement): CellBinding {
@@ -77,12 +81,12 @@ function pickedDiffers(): boolean {
   if (!remembered || !placementPicker.value) return false;
   try { return !placement || !sameCell(chosenBinding(placement), remembered.bind); } catch { return true; }
 }
-export function sendHidden(): boolean { return rememberedBinding() !== null && !pickedDiffers(); }
-export function sendOtherCell(): boolean { return state.prefs.tab === 'send' && pickedDiffers(); }
+export function sendHidden(): boolean { return !explicitSend && rememberedBinding() !== null && !pickedDiffers(); }
+export function sendOtherCell(): boolean { return state.prefs.tab === 'send' && (explicitSend || pickedDiffers()); }
 export function announceSyncTarget(): void {
   const remembered = rememberedBinding();
   const placement = chosenPlacement();
-  if (remembered && placement) {
+  if (!actionsBlocked() && remembered && placement) {
     try { setStatus(`${COMMAND}+Enter syncs ${bindingLabel(remembered.bind)}. Choose Send to draft to send to ${bindingLabel(chosenBinding(placement))}.`); } catch { /* invalid picker */ }
   }
 }
@@ -90,19 +94,19 @@ export function otherDeclaredCell(placement: Placement | undefined, cell: Pick<C
   if (!placement) return null;
   const options = cellOptions(placement);
   for (const state of options.states) for (const appearance of options.appearances) for (const arm of options.arms) {
-    if (state !== cell.state || appearance !== cell.appearance || arm !== cell.arm) return { state, appearance, arm };
+    if (!sameCoordinate(placement, { state, appearance, arm }, cell)) return { state, appearance, arm };
   }
   return null;
 }
-function setOptions(picker: HTMLSelectElement, values: (string | null)[], label: (value: string | null) => string): void {
-  picker.replaceChildren(...values.map(value => new Option(label(value), value ?? '')));
+function setOptions(picker: HTMLSelectElement, values: (string | null)[]): void {
+  picker.replaceChildren(...values.map(value => new Option('', value ?? '')));
 }
 function updateCellPickers(bind?: CellBinding): void {
   const placement = chosenPlacement();
   const options = placement ? cellOptions(placement) : { states: [null], appearances: [null], arms: [null] };
-  setOptions(statePicker, options.states, value => value ?? (placement?.defaultState ? `Default (${placement.defaultState})` : 'Default'));
-  setOptions(appearancePicker, options.appearances, value => appearanceLabel(value as Appearance | null));
-  setOptions(armPicker, options.arms, value => value ?? 'Control');
+  setOptions(statePicker, options.states);
+  setOptions(appearancePicker, options.appearances);
+  setOptions(armPicker, options.arms);
   if (bind) {
     statePicker.value = bind.state ?? '';
     appearancePicker.value = bind.appearance ?? '';
@@ -111,7 +115,32 @@ function updateCellPickers(bind?: CellBinding): void {
   element('state-label').hidden = options.states.length <= 1;
   element('appearance-label').hidden = options.appearances.length <= 1;
   element('arm-label').hidden = options.arms.length <= 1;
+  labelCellPickers();
   scheduleRender();
+}
+/** Each option describes the Draft cell it would choose with the other two pickers kept as they are. */
+function labelCellPickers(): void {
+  const placement = chosenPlacement();
+  if (!placement) return;
+  const cell: CellCoordinate = { state: statePicker.value || null, appearance: (appearancePicker.value || null) as Appearance | null, arm: armPicker.value || null };
+  for (const [axis, picker] of [['state', statePicker], ['appearance', appearancePicker], ['arm', armPicker]] as const) {
+    for (const option of Array.from(picker.options)) {
+      const value = option.value || null;
+      const art = draftArtState(placement.key, { ...cell, [axis]: value });
+      const label = axis === 'state' ? value ?? (placement.defaultState ? `Default (${placement.defaultState})` : 'Default')
+        : axis === 'appearance' ? appearanceLabel(value as Appearance | null) : value ?? 'Control';
+      option.textContent = label + (art === 'empty' ? ' (not set)' : art === 'inherits' ? ' (inherits)' : '');
+    }
+  }
+}
+
+/** The current Send destination, for the preview owned by Insert's artwork and thumbnail modules. */
+export function sendChoice(): { placementKey: string; cell: CellCoordinate } | null {
+  const placement = chosenPlacement();
+  if (!placement) return null;
+  try {
+    return { placementKey: placement.key, cell: chosenBinding(placement) };
+  } catch { return null; }
 }
 function selectRemembered(): void {
   const target = rememberedBinding();
@@ -124,13 +153,26 @@ export function showPlacements(list: Placement[]): void {
   state.placementsLoaded = true;
   const chosen = pickerGeneration === state.connectionGeneration ? placementPicker.value : '';
   pickerGeneration = state.connectionGeneration;
-  placementPicker.replaceChildren(...(list.length
-    ? [new Option(CHOOSE_PLACEMENT, ''), ...list.map(item => new Option(`${item.key} · ${item.width} × ${item.height}`, item.key))]
-    : [new Option('No placements yet', '')]));
+  buildPlacementOptions();
   // A placement chosen before the list reloaded on this connection stays chosen while it exists.
   if (list.some(item => item.key === chosen)) placementPicker.value = chosen;
   updateCellPickers();
   selectRemembered();
+}
+function buildPlacementOptions(): void {
+  const chosen = placementPicker.value;
+  const groups = new Map<string, HTMLOptGroupElement>();
+  const fits = document.createElement('optgroup');
+  fits.label = 'Fits this layer';
+  const node = hasCurrentSelection() && !state.selection.reason ? state.selection.node : null;
+  for (const item of state.placements) {
+    let group = groups.get(item.screen);
+    if (!group) { group = document.createElement('optgroup'); group.label = item.screen; groups.set(item.screen, group); }
+    (node && !aspectMismatch(node, item) ? fits : group).append(new Option(`${item.key} · ${item.width} × ${item.height}`, item.key));
+  }
+  placementPicker.replaceChildren(new Option(state.placements.length ? CHOOSE_PLACEMENT : 'No placements yet', ''),
+    ...(fits.children.length ? [fits] : []), ...[...groups.values()].filter(group => group.children.length));
+  if (state.placements.some(item => item.key === chosen)) placementPicker.value = chosen;
 }
 /** No placements, with `text` in the picker saying why. */
 export function clearPlacements(text: string): void {
@@ -230,8 +272,7 @@ export function syncBar(): SyncBar | null {
       return { kind: 'removed', key, cell: state.placements.some(item => item.key === key) };
     }
     const placement = target?.placement ?? null;
-    const sameCell = link?.kind === 'linked' && link.placementKey === key && link.state === remembered.state && link.appearance === remembered.appearance
-      && link.arm === remembered.arm;
+    const sameCell = link?.kind === 'linked' && link.placementKey === key && sameCoordinate(placement ?? { defaultState: null }, link, remembered);
     const environment = sameCell ? link.environment : remembered.insertedFrom?.environment ?? 'draft';
     const meta = [...cellLabel(placement, remembered), remembered.insertedFrom ? `${environmentLabel(environment)} art` : 'sent to Draft'].join(' · ');
     const detail = target ? `${bindingLabel(target.bind)}. Sync sends this layer to that cell in Draft and replaces draft references to its earlier sends.` : meta;
@@ -261,9 +302,10 @@ export function matchRatio(placement: Placement): void {
 }
 
 /** Choose the copy's destination, for a Send without rebind. */
-export function prefillSend(link: Pick<InsertLink, 'placementKey' | 'state' | 'appearance' | 'arm'>): void {
+export function prefillSend(link: Pick<InsertLink, 'placementKey' | 'state' | 'appearance' | 'arm'>, explicit = false): void {
   const placement = state.placements.find(item => item.key === link.placementKey);
   if (!placement) return;
+  explicitSend = explicit;
   placementPicker.value = placement.key;
   let bind: CellBinding | undefined;
   try { bind = validateBinding(placement, { slotKey: placement.key, state: link.state, appearance: link.appearance, arm: link.arm }); } catch { bind = undefined; }
@@ -271,6 +313,7 @@ export function prefillSend(link: Pick<InsertLink, 'placementKey' | 'state' | 'a
 }
 /** A removed target's Send elsewhere…: nothing chosen, so the person picks a placement. */
 export function sendElsewhere(): void {
+  explicitSend = false;
   placementPicker.value = '';
   updateCellPickers();
 }
@@ -285,6 +328,7 @@ function sendProblemShown(inSettings: boolean): ReadProblem | null {
 let problemShown = false;
 
 export function renderSend(inSettings: boolean): void {
+  labelCellPickers();
   const problem = sendProblemShown(inSettings);
   problemShown = Boolean(problem);
   sendProblem.hidden = !problem;
@@ -329,15 +373,18 @@ export function renderSend(inSettings: boolean): void {
   // A usable link or remembered target makes the Sync bar's Sync the expected action.
   sendButton.className = sendHidden() || state.testFailure !== null || state.tokenRefused ? 'secondary' : 'primary';
   const plain = element('send-plain');
-  plain.hidden = !sendHidden();
-  setUnavailable(plain, !actionPlacement(false));
+  const plainBusy = state.ops.sending && pending?.plain === true;
+  plain.hidden = !sendHidden() && !plainBusy;
+  setUnavailable(plain, !plainBusy && !actionPlacement(false));
   let pickedLabel = '';
   try { if (placement) pickedLabel = bindingLabel(chosenBinding(placement)); } catch { /* a stale picker has no valid cell to name */ }
   plain.title = pickedLabel ? `Uploads this layer to ${pickedLabel}’s draft without replacing your earlier sends in other cells.` : '';
   const relink = element('send-relink');
   relink.hidden = !pickedDiffers() || Boolean(gate) || !pickedLabel;
   relink.textContent = !relink.hidden ? `Sends this layer to the draft of ${pickedLabel} and links it there. Until then it stays linked to ${bindingLabel(rememberedBinding()!.bind)}.` : '';
-  setBusy(sendButton, state.ops.sending ? 'Sending…' : 'Send to draft', state.ops.sending);
+  const sending = state.ops.sending && !plainBusy;
+  setBusy(sendButton, sending ? 'Sending…' : 'Send to draft', sending);
+  setBusy(plain, plainBusy ? 'Sending…' : 'Send as a new image instead', plainBusy);
   // A result says where the draft went; the footnote about drafts would repeat it.
   element('send-footnote').hidden = !element('result').hidden;
 }
@@ -359,13 +406,14 @@ export function applySelection(message: Extract<MainMessage, { type: 'selection'
   state.selection = message.selection;
   const { selection } = state;
   const identity = JSON.stringify([selection.fileKey, selection.node?.id, selection.remembered]);
-  if (identity !== selectionIdentity) { selectionIdentity = identity; selectRemembered(); }
+  if (identity !== selectionIdentity) { selectionIdentity = identity; explicitSend = false; if (state.placementsLoaded) buildPlacementOptions(); selectRemembered(); }
   scheduleRender();
 }
 
 export function applyFileUrl(url: string): void { element<HTMLInputElement>('file-url').value = url; }
 
-const sameCell = (a: CellBinding, b: CellBinding) => a.slotKey === b.slotKey && a.state === b.state && a.appearance === b.appearance && a.arm === b.arm;
+const sameCell = (a: CellBinding, b: CellBinding) => a.slotKey === b.slotKey
+  && sameCoordinate(state.placements.find(item => item.key === a.slotKey) ?? { defaultState: null }, a, b);
 function link(text: string, href: string): HTMLAnchorElement {
   const anchor = document.createElement('a');
   anchor.className = 'text-action';
@@ -415,6 +463,7 @@ function showResult(result: DraftResult, config: Connection, bind: CellBinding):
 
 function endSend(): void {
   pending = null;
+  explicitSend = false;
   state.ops.sending = false;
   state.ops.syncing = false;
   scheduleRender();
@@ -424,9 +473,9 @@ function endSend(): void {
  * No file key yet: the Send tab asks for the file's link, once per document, and the Send or Sync runs when it is linked.
  * Figma gives only private and development plugins the file key, so a Community plugin asks here.
  */
-function askForFile(rebind: boolean, nodeId: string): void {
+function askForFile(rebind: boolean, nodeId: string, plain: boolean): void {
   fileAsked = true;
-  afterFile = { rebind, nodeId };
+  afterFile = { rebind, nodeId, plain };
   showSend();
   scheduleRender();
   flushRender();
@@ -434,17 +483,17 @@ function askForFile(rebind: boolean, nodeId: string): void {
   setStatus('Link this file once so Assetlib can trace art back to it.');
 }
 
-function beginSend(rebind: boolean): void {
+function beginSend(rebind: boolean, plain = false): void {
   const { node, fileKey } = state.selection;
   // An unavailable button (aria-disabled keeps it clickable) does nothing; its look and the ratio callout say why.
   const placement = actionPlacement(rebind);
   if (!placement || !state.connection || !node) return;
-  if (!fileKey) { askForFile(rebind, node.id); return; }
+  if (!fileKey) { askForFile(rebind, node.id, plain); return; }
   clearError();
   try {
     const remembered = rebind ? rememberedBinding() : null;
     const bind = remembered?.bind ?? chosenBinding(placement);
-    pending = { id: nextRequestId(), connection: { ...state.connection }, generation: state.connectionGeneration, placement, bind, rebind, result: null };
+    pending = { id: nextRequestId(), connection: { ...state.connection }, generation: state.connectionGeneration, placement, bind, rebind, plain, result: null };
     element('result').hidden = true;
     state.ops[rebind ? 'syncing' : 'sending'] = true;
     setStatus('Exporting selected artwork…');
@@ -534,7 +583,7 @@ export function fileSaved(message: Extract<MainMessage, { type: 'file-saved' }>)
   flushRender();
   // The form is gone: focus goes back to the action that asked for it, or to the file line.
   if (inForm) element(next ? (next.rebind ? 'sync' : sendHidden() ? 'send-plain' : 'send') : 'file-change').focus();
-  if (next && state.selection.node?.id === next.nodeId) beginSend(next.rebind);
+  if (next && state.selection.node?.id === next.nodeId) beginSend(next.rebind, next.plain);
 }
 
 /** Main found that the link names another file: the form says so, and Use anyway saves it regardless. */
@@ -571,11 +620,13 @@ export function failSend(requestId: number, message: string): boolean {
   return true;
 }
 
-export function initSend(actions: { refused: () => void; retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void; artworkChanged: () => void }): void {
+export function initSend(actions: { refused: () => void; retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void; artworkChanged: () => void;
+  draftArtState: typeof draftArtState }): void {
   showSend = actions.showSend;
   reconnect = actions.reconnect;
   refused = actions.refused;
   artworkChanged = actions.artworkChanged;
+  draftArtState = actions.draftArtState;
   element('send-retry').addEventListener('click', () => { if (!actionsBlocked()) actions.retry(); });
   element('send-token').addEventListener('click', () => {
     if (sendProblemShown(false)?.action === 'reconnect') actions.reconnect(); else actions.updateToken();
@@ -596,9 +647,9 @@ export function initSend(actions: { refused: () => void; retry: () => void; upda
     flushRender();
     fileUrl.focus();
   });
-  placementPicker.addEventListener('change', () => updateCellPickers());
+  placementPicker.addEventListener('change', () => { explicitSend = false; updateCellPickers(); });
   sendButton.addEventListener('click', () => beginSend(false));
-  element('send-plain').addEventListener('click', () => beginSend(false));
-  for (const picker of [statePicker, appearancePicker, armPicker]) picker.addEventListener('change', () => scheduleRender());
+  element('send-plain').addEventListener('click', () => beginSend(false, true));
+  for (const picker of [statePicker, appearancePicker, armPicker]) picker.addEventListener('change', () => { explicitSend = false; scheduleRender(); });
   matchRatioButton.addEventListener('click', () => { const placement = sendRatioPlacement(); if (placement) matchRatio(placement); });
 }

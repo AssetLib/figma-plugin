@@ -198,7 +198,9 @@ function installFakes(config) {
     if (config.declared && i === 0) {
       const cells = [];
       for (const state of ['welcome', 'return']) for (const appearance of [null, 'light', 'dark']) for (const arm of [null, 'b']) {
-        cells.push({ state, appearance, arm, draft, staging: null, production: draft });
+        // Named cells may be null while the other variants inherit Control · Any, as the console reports them.
+        const empty = config.unsetCells?.some(cell => cell.key === key && cell.state === state && cell.appearance === appearance && cell.arm === arm);
+        cells.push({ state, appearance, arm, draft: empty ? null : draft, staging: null, production: draft });
       }
       return { key, screen, width, height, states: ['welcome', 'return'], defaultState: 'welcome', variants: { appearance: ['light', 'dark'], arm: ['b'] },
         origin: 'declared', cells };
@@ -227,6 +229,8 @@ function installFakes(config) {
     window.setTimeout = (callback, delay, ...rest) => original(callback, delay >= 20000 ? 300 : delay, ...rest);
   }
   const log = [];
+  // A held route completes only when the test releases it, so pending-state assertions do not race a wall-clock delay.
+  const held = new Map();
   const delays = { placements: 10, artwork: 10, assets: 10, rendition: 10, drafts: 10, token: 10, start: 10, claim: 10, cancel: 10, current: 10, ...config.delays };
   const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   function respond(route, path, init) {
@@ -294,12 +298,15 @@ function installFakes(config) {
     if (signal?.aborted) { abort(); return; }
     // config.failures lists routes that fail as a network error (an older console's missing CORS headers, say).
     if ((route === 'token' && config.tokenAuthFails && init.headers?.Authorization) || config.failures?.includes(route)) { setTimeout(() => { entry.done = true; reject(new TypeError('Failed to fetch')); }, delays[route] ?? 10); return; }
-    const onAbort = () => { clearTimeout(timer); abort(); };
-    const timer = setTimeout(() => {
+    const onAbort = () => { clearTimeout(timer); held.get(route)?.delete(complete); abort(); };
+    const complete = () => {
+      held.get(route)?.delete(complete);
       signal?.removeEventListener('abort', onAbort);
       entry.done = true;
       resolve(respond(route, path, init));
-    }, delays[route] ?? 10);
+    };
+    const timer = config.hold?.includes(route) ? null : setTimeout(complete, delays[route] ?? 10);
+    if (timer === null) { if (!held.has(route)) held.set(route, new Set()); held.get(route).add(complete); }
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 
@@ -328,15 +335,18 @@ function installFakes(config) {
   function handle(message) {
     received.push(message.type);
     switch (message.type) {
-      case 'init':
-        // config.command: opened from a relaunch button (sync), as code.ts says before the connection.
-        if (config.command) reply({ type: 'launch', command: config.command });
+      case 'init': {
+        // Main reports actionable menu or relaunch commands before the connection; Open preserves the remembered tab.
+        if (['sync', 'insert', 'send'].includes(config.command)) reply({ type: 'launch', command: config.command });
         // delays.connection: main's client storage reads take that long before the connection message.
-        setTimeout(() => {
+        const connected = () => {
           reply(connection());
           reply(selection());
-        }, delays.connection ?? 0);
+        };
+        if (config.hold?.includes('connection')) { held.set('connection', new Set([connected])); }
+        else setTimeout(connected, delays.connection ?? 0);
         break;
+      }
       case 'save-connection':
         // As code.ts does when client storage refuses the write: the error, then the selection again.
         if (config.refuseSave) {
@@ -432,6 +442,7 @@ function installFakes(config) {
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   // Tests may change `delays` mid-test; each request reads its route's delay when it starts.
   window.__harness = { log, received, notices, uuid, delays, targets, inserts, drops, insertDrops, resizes, saved, opened, artwork, inserted: () => frames,
+    release: route => { config.hold = config.hold?.filter(item => item !== route); const waiting = held.get(route); held.delete(route); for (const complete of waiting ?? []) complete(); },
     approve: () => { config.pairingStatus = 'approved'; },
     advance: ms => { clockOffset += ms; },
     select: value => { config.selection = value; reply(selection()); },
@@ -1115,6 +1126,14 @@ test('no overflow at 320×480, 420×720, 640×900', async () => {
     ['the open account panel', {}, async page => { await page.waitFor(`${rows} === 7`); await page.click('#settings-summary'); }],
     ['Send with the ratio gate', { preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: 'abc123', remembered } },
       async page => { await page.waitFor(shown('aspect-warning')); }],
+    ['Send with grouped placements and current Draft art', { declared: true, preferences: { tab: 'send' },
+      selection: { node: { ...tall, height: 520 }, reason: null, fileKey: 'abc123', remembered: null } }, async page => {
+      await page.waitFor(`document.getElementById('placement').options.length > 1`);
+      await page.evaluate(choose('placement', 'onboarding.hero')); await page.evaluate(choose('appearance', 'dark'));
+      await page.waitFor(shown('send-current'));
+    }],
+    ['an empty cell with Send selected layer here', { unset: ['home.tile'], selection: { ...DEFAULTS.selection, node: { ...tall, height: 390 }, reason: null } },
+      async page => { await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.tile"]'); await page.waitFor(shown('insert-send-here')); }],
     // A Sync's Details name other cells by key, and keys run up to 120 characters with no spaces.
     ['Sync’s Details with a long placement key', longRebound,
       async page => { await page.click('#sync'); await page.waitFor(shown('result')); await page.click('#result summary'); }],
@@ -1622,7 +1641,7 @@ test('Enter inserts', async () => {
     // Enter on a row Insert can't use inserts nothing and says why, as the footer does.
     await page.click('#insert-list .placement[data-key="home.tile"]');
     await page.press('Enter');
-    assert.equal(await page.evaluate(textOf('status')), 'No image in Draft for this cell. Choose another cell or environment.');
+    assert.equal(await page.evaluate(textOf('status')), 'No image in Draft for this cell yet.');
     assert.equal(await page.evaluate('__harness.inserted()'), 3);
   } finally { await page.close(); }
 
@@ -2097,6 +2116,8 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
   const pickBanner = async page => {
     await page.waitFor(`document.getElementById('placement').options.length > 1`, { message: 'the placements' });
     await page.evaluate(choose('placement', 'home.banner'));
+    await page.waitFor(shown('send-current'));
+    await page.waitFor(`document.getElementById('send-current-thumb').src.startsWith('data:image/')`);
   };
   const submit = text => async page => {
     await page.click('#use-token'); await page.click('#token'); await page.type(text); await page.press('Enter'); await page.waitFor(shown('connection-error'));
@@ -2129,6 +2150,8 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['insert-selected-pickers', { declared: true, placements: 30 }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
     ['insert-scale-3x', {}, async page => { await ready(page); await page.click('#insert-list .placement[data-key="onboarding.hero"]'); await page.click('#scale-3'); }],
     ['insert-not-set', { unset: ['home.tile'] }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.tile"]'); }],
+    ['insert-send-here', { unset: ['home.tile'], selection: { node: { ...node, height: 390 }, reason: null, fileKey: 'abc123', remembered: null } },
+      async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.tile"]'); await page.waitFor(shown('insert-send-here')); }],
     ['insert-needs-reupload', { legacy: ['settings.empty'] }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="settings.empty"]'); }],
     ['insert-error', { statuses: { rendition: 404 } }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); await page.click('#insert'); await page.waitFor(shown('error')); }],
     ['insert-production', { preferences: { environment: 'production' } }, ready],
@@ -2169,6 +2192,16 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
     ['send-no-selection', { preferences: { tab: 'send' } }],
     ['send-several', { preferences: { tab: 'send' }, selection: { node: null, reason: 'Select one layer. Sending several at once isn’t supported yet.', fileKey: 'abc123', remembered: null } }],
     ['send-selection', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner],
+    ['send-inherited', { declared: true, preferences: { tab: 'send' }, selection: { node: { ...node, height: 520 }, reason: null, fileKey: 'abc123', remembered: null } }, async page => {
+      await page.waitFor(`document.getElementById('placement').options.length > 1`);
+      await page.evaluate(choose('placement', 'onboarding.hero')); await page.evaluate(choose('appearance', 'dark'));
+      await page.waitFor(`${textOf('send-current-text')} === 'Now in Draft: inherits Control · Any art'`);
+      await page.waitFor(`document.getElementById('send-current-thumb').src.startsWith('data:image/')`);
+    }],
+    ['send-not-set', { unset: ['home.banner'], preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null } }, async page => {
+      await page.waitFor(`document.getElementById('placement').options.length > 1`);
+      await page.evaluate(choose('placement', 'home.banner')); await page.waitFor(`${textOf('send-current-text')} === 'Nothing in Draft yet'`);
+    }],
     ['send-ratio-gate', { preferences: { tab: 'send' }, selection: { node: tall, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner],
     ['send-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, askForLink],
     ['send-file-mismatch', { preferences: { tab: 'send' }, fileName: 'Roam onboarding', selection: { node, reason: null, fileKey: null, remembered: null } },
@@ -2207,6 +2240,7 @@ test('screenshots of every state in both themes', { skip: shots ? false : 'set A
   const narrow = [['narrow-intro', { preferences: { introSeen: false } }, ready], ['narrow-first-run', { connection: null }], ['narrow-account-pasted', {}, async page => { await ready(page); await page.click('#settings-summary'); }], ['narrow-hint', {}, ready], ['narrow-list', { declared: true, placements: 30 },
     async page => { await ready(page); await page.click('#insert-list .placement[data-key="screen0.slot0"]'); }],
   ['narrow-file-link', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: null, remembered: null } }, askForLink],
+  ['narrow-send-selection', { preferences: { tab: 'send' }, selection: { node, reason: null, fileKey: 'abc123', remembered: null } }, pickBanner],
   ['narrow-sync-bar', { selection: linkedSelection(node) }, async page => { await ready(page); await page.click('#insert-list .placement[data-key="home.banner"]'); }],
   ['narrow-sync-bar-update', { changed: ['home.banner'], selection: linkedSelection(node) }, async page => { await ready(page); await page.waitFor(shown('sync-update')); }],
   ['narrow-sync-bar-ratio', { selection: linkedSelection(tall) }, async page => { await ready(page); await page.waitFor(shown('sync-match')); }],
@@ -2485,6 +2519,7 @@ test('mode notes and Use 3× fit at 320 and 420 px with one primary', async () =
       assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
       await page.click('#insert-fit-scale');
       await page.waitFor(`document.getElementById('scale-3').getAttribute('aria-checked') === 'true'`);
+      assert.equal(await page.focused(), 'scale-3', 'Use 3× hands focus to the scale it chose before hiding');
       assert.equal(await page.evaluate(`__harness.saved.at(-1).scale`), 3);
       assert.equal(await page.evaluate(textOf('insert-note')), `Adds a new layer inside ${longFrame}.`);
       assert.equal(await page.evaluate(batch2Fits), true);
@@ -2494,7 +2529,7 @@ test('mode notes and Use 3× fit at 320 and 420 px with one primary', async () =
       try {
         await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]');
         assert.equal(await page.evaluate(textOf('insert-note')), target.mode === 'fill'
-          ? 'Puts this image in 3 layers and links each to home.banner. 1 other selected layer can’t show an image and stay as they are.'
+          ? 'Puts this image in 3 layers and links each to home.banner. 1 other selected layer can’t show an image and stays as it is.'
           : 'Replaces the image in home.banner. It stays linked to home.banner.');
         assert.equal(await page.evaluate(batch2Fits), true);
         assert.deepEqual(await page.evaluate(inkPrimaries), ['insert']);
@@ -2508,20 +2543,36 @@ test('Send has one primary, a plain upload, and Cmd+Enter announces rather than 
   const key = 'screen0.slot0';
   const selection = { ...linkedSelection(node), remembered: { fileKey: 'abc123', nodeId: node.id, placementKey: key, state: 'welcome', appearance: 'light', arm: null },
     link: { ...linkedSelection(node).link, placementKey: key, state: 'welcome', appearance: 'light', assetId: '00000000-0000-4000-8000-000000010000' } };
-  const page = await openUi({ declared: true, placements: 30, preferences: { tab: 'send' }, selection, delays: { drafts: 200 } });
+  const page = await openUi({ declared: true, placements: 30, preferences: { tab: 'send' }, selection, hold: ['drafts'] });
   try {
     await page.waitFor(shown('send-plain'));
     assert.equal(await page.evaluate(shown('send-bar')), false);
     assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
     await page.click('#send-plain');
     await page.waitFor(`__harness.log.filter(entry => entry.route === 'drafts').length === 1`);
-    await page.waitFor(`!document.getElementById('send').hasAttribute('aria-busy')`);
+    await page.waitFor(`document.getElementById('send-plain').getAttribute('aria-busy') === 'true'`);
+    await page.evaluate(`Promise.all(document.getAnimations().filter(animation => animation instanceof CSSTransition).map(animation => animation.finished.catch(() => {})))`);
+    assert.deepEqual(await page.evaluate(`(() => { const b = document.getElementById('send-plain'); const style = getComputedStyle(b);
+      const ink = document.createElement('span'); ink.style.backgroundColor = 'color-mix(in srgb, var(--text) 80%, var(--bg))'; ink.style.color = 'var(--bg)'; b.appendChild(ink);
+      const sameInk = style.backgroundColor === getComputedStyle(ink).backgroundColor && style.color === getComputedStyle(ink).color; ink.remove();
+      return [b.textContent, b.getAttribute('aria-busy'), b.hasAttribute('aria-disabled'), b.disabled,
+        getComputedStyle(b, '::before').animationName, style.cursor, sameInk]; })()`),
+    ['Sending…', 'true', false, false, 'spin', 'progress', true], 'the plain upload owns its busy label, spinner, and ink');
+    await page.click('#send-plain');
+    assert.equal(await page.evaluate(`__harness.received.filter(type => type === 'export').length`), 1, 'a second click sends nothing');
+    const command = await page.evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`) ? 4 : 2;
+    await page.evaluate(choose('appearance', 'dark')); await page.frames();
+    const sendingStatus = await page.evaluate(textOf('status'));
+    await page.press('Enter', command); await page.frames();
+    assert.equal(await page.evaluate(textOf('status')), sendingStatus, 'Cmd+Enter with another cell picked keeps the running operation’s status');
+    await page.evaluate(choose('appearance', 'light'));
+    await page.evaluate(`__harness.release('drafts')`);
+    await page.waitFor(`!document.getElementById('send-plain').hasAttribute('aria-busy')`);
     assert.equal(await page.evaluate(`JSON.parse(__harness.log.filter(entry => entry.route === 'drafts').at(-1).body).rebind`), false);
     await page.evaluate(choose('appearance', 'dark')); await page.frames();
     assert.equal(await page.evaluate(shown('send-bar')), true);
     assert.deepEqual(await page.evaluate(inkPrimaries), ['send']);
     assert.equal(await page.evaluate(textOf('send-relink')), `Sends this layer to the draft of ${key} · welcome · Dark · Control and links it there. Until then it stays linked to ${key} · welcome · Light · Control.`);
-    const command = await page.evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`) ? 4 : 2;
     await page.press('Enter', command);
     assert.match(await page.evaluate(textOf('status')), /Enter syncs screen0.slot0 · welcome · Light · Control\. Choose Send to draft to send to screen0.slot0 · welcome · Dark · Control\.$/);
     assert.equal(await page.evaluate(`__harness.received.filter(type => type === 'export').length`), 1);
@@ -2532,6 +2583,7 @@ test('Send has one primary, a plain upload, and Cmd+Enter announces rather than 
     assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
     await page.press('Enter', command);
     await page.waitFor(`__harness.received.filter(type => type === 'export').length === 2`);
+    await page.waitFor(`__harness.log.filter(entry => entry.route === 'drafts').length === 2`);
     assert.equal(await page.evaluate(`JSON.parse(__harness.log.filter(entry => entry.route === 'drafts').at(-1).body).rebind`), true);
   } finally { await page.close(); }
 });
@@ -2803,6 +2855,189 @@ test('Open in console uses the artwork placement ID only after artwork loads, ot
       assert.equal(await page.evaluate(`document.getElementById('sync-console').href`), slotIds
         ? 'https://console.assetlib.dev/w/org-one/app-a/placements/00000000-0000-4000-8000-000000030002'
         : `https://console.assetlib.dev/w/org-one/app-a/images/${bannerArt}`);
+    } finally { await page.close(); }
+  }
+});
+
+test('Send groups placements by screen, promotes fits once a layer is selected, and preserves the choice', async () => {
+  const page = await openUi({ preferences: { tab: 'send' } });
+  const groups = `[...document.querySelectorAll('#placement optgroup')].map(group => [group.label, [...group.children].map(option => option.value)])`;
+  try {
+    await page.waitFor(`document.getElementById('placement').options.length === 8`);
+    assert.deepEqual(await page.evaluate(groups), [
+      ['Onboarding', ['onboarding.hero', 'onboarding.footer']], ['Home', ['home.banner', 'home.promo', 'home.tile']], ['Settings', ['settings.header', 'settings.empty']],
+    ]);
+    await page.evaluate(choose('placement', 'home.promo'));
+    const node = { id: '40:1', name: 'home.banner', type: 'FRAME', width: 390, height: 160 };
+    await page.evaluate(`__harness.select(${JSON.stringify({ ...DEFAULTS.selection, node, reason: null })})`);
+    await page.waitFor(`document.querySelector('#placement optgroup')?.label === 'Fits this layer'`);
+    assert.deepEqual(await page.evaluate(groups), [
+      ['Fits this layer', ['home.banner']], ['Onboarding', ['onboarding.hero', 'onboarding.footer']],
+      ['Home', ['home.promo', 'home.tile']], ['Settings', ['settings.header', 'settings.empty']],
+    ]);
+    assert.equal(await page.evaluate(valueOf('placement')), 'home.promo', 'rebuilding the groups keeps the designer’s choice');
+    await page.evaluate(choose('placement', ''));
+    await page.evaluate(`__harness.select(${JSON.stringify({ ...DEFAULTS.selection, node: { ...node, id: '40:2' }, reason: null })})`);
+    await page.frames();
+    assert.equal(await page.evaluate(valueOf('placement')), '', 'the layer’s name never preselects a destination');
+    assert.equal(await page.evaluate(`document.getElementById('send-suggested')`), null);
+  } finally { await page.close(); }
+});
+
+test('Send cell suffixes and the current Draft preview distinguish own, inherited, null, and unknown art', async () => {
+  const node = { id: '40:1', name: 'Hero', type: 'FRAME', width: 390, height: 520 };
+  const page = await openUi({ declared: true, preferences: { tab: 'send' }, selection: { ...DEFAULTS.selection, node, reason: null },
+    unsetCells: [{ key: 'onboarding.hero', state: 'welcome', appearance: 'dark', arm: null }], hold: ['artwork'] });
+  const labels = id => `[...document.getElementById('${id}').options].map(option => [option.value, option.textContent])`;
+  try {
+    await page.waitFor(`document.getElementById('placement').options.length === 8`);
+    await page.evaluate(choose('placement', 'onboarding.hero')); await page.frames();
+    assert.equal(await page.evaluate(shown('send-current')), false, 'unknown artwork shows no current-art claim');
+    assert.equal(await page.evaluate(`${labels('appearance')}.some(([, label]) => label.endsWith(' (not set)') || label.endsWith(' (inherits)'))`), false);
+    await page.waitFor(`__harness.log.some(entry => entry.route === 'artwork')`);
+    await page.evaluate(`__harness.release('artwork')`);
+    await page.waitFor(`${textOf('send-current-text')} === 'Now in Draft'`);
+    await page.waitFor(`document.getElementById('send-current-thumb').src.startsWith('data:image/')`);
+    assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'rendition' && entry.url.includes('/00000000-0000-4000-8000-000000010000/'))`), true);
+    assert.deepEqual(await page.evaluate(labels('appearance')), [['', 'Any'], ['light', 'Light (inherits)'], ['dark', 'Dark (not set)']]);
+    assert.deepEqual(await page.evaluate(labels('arm')), [['', 'Control'], ['b', 'b (inherits)']]);
+    assert.deepEqual(await page.evaluate(`(() => { const r = document.getElementById('send-current-preview').getBoundingClientRect(); return [r.width, r.height]; })()`), [32, 32]);
+    assert.equal(await page.evaluate(`(() => { const form = document.querySelector('#panel-send .send-scroll');
+      return form.scrollHeight <= form.clientHeight + 1 && document.documentElement.scrollHeight === innerHeight; })()`), true, 'the common Send form fits 420 × 720 without scrolling');
+    await page.evaluate(choose('appearance', 'dark')); await page.frames();
+    assert.equal(await page.evaluate(textOf('send-current-text')), 'Nothing in Draft yet');
+    assert.equal(await page.evaluate(`document.getElementById('send-current-preview').className`), 'thumb slot');
+    assert.equal(await page.evaluate(`document.getElementById('send-current-thumb').hasAttribute('src')`), false);
+    await page.evaluate(choose('arm', 'b')); await page.frames();
+    assert.equal(await page.evaluate(textOf('send-current-text')), 'Now in Draft: inherits Control · Any art');
+    assert.equal(await page.evaluate(`${labels('state')}.every(([, label]) => label.endsWith(' (inherits)'))`), true, 'Default and its named state resolve to the same inherited cell');
+    await page.evaluate(choose('placement', '')); await page.frames();
+    assert.equal(await page.evaluate(shown('send-current')), false, 'clearing the placement hides its art');
+  } finally { await page.close(); }
+});
+
+test('an empty chosen cell offers Send selected layer here, while inherited art and no selection do not', async () => {
+  const node = { id: '40:1', name: 'Hero', type: 'FRAME', width: 390, height: 520 };
+  const page = await openUi({ declared: true, selection: { ...DEFAULTS.selection, node, reason: null },
+    unsetCells: [{ key: 'onboarding.hero', state: 'return', appearance: 'dark', arm: 'b' }] });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-list .placement[data-key="onboarding.hero"]');
+    await page.evaluate(choose('insert-appearance', 'dark')); await page.frames();
+    assert.equal(await page.evaluate(shown('insert-send-here')), false, 'inherited art is present');
+    await page.evaluate(choose('insert-state', 'return')); await page.evaluate(choose('insert-arm', 'b')); await page.frames();
+    assert.equal(await page.evaluate(textOf('insert-note')), 'No image in Draft for this cell yet.');
+    assert.equal(await page.evaluate(shown('insert-send-here')), true);
+    await page.click('#insert-send-here');
+    assert.equal(await page.evaluate(shown('panel-send')), true);
+    assert.deepEqual(await page.evaluate(`['placement', 'state', 'appearance', 'arm'].map(id => document.getElementById(id).value)`), ['onboarding.hero', 'return', 'dark', 'b']);
+    assert.equal(await page.focused(), 'send');
+    assert.equal(await page.evaluate(`__harness.received.includes('export')`), false, 'choosing the destination does not send');
+    assert.equal(await page.evaluate(textOf('send-current-text')), 'Nothing in Draft yet');
+  } finally { await page.close(); }
+  for (const environment of ['draft', 'production']) {
+    const empty = await openUi({ unset: ['home.tile'], preferences: { environment } });
+    try {
+      await empty.waitFor(`${rows} === 7`); await empty.click('#insert-list .placement[data-key="home.tile"]');
+      assert.equal(await empty.evaluate(shown('insert-send-here')), false);
+      assert.equal(await empty.evaluate(textOf('insert-note')), environment === 'draft' ? 'No image in Draft for this cell yet.'
+        : 'No image in Production for this cell. Sending puts it in Draft.');
+    } finally { await empty.close(); }
+  }
+});
+
+test('menu commands choose and remember Insert or Send; Open keeps the remembered tab and focus', async () => {
+  for (const command of ['open', 'insert', 'send']) {
+    const page = await openUi({ command, preferences: { tab: command === 'send' ? 'insert' : 'send' }, hold: ['connection'] });
+    try {
+      await page.waitFor(`__harness.received.includes('init')`);
+      if (command === 'open') await page.evaluate(`document.getElementById('tab-send').focus()`);
+      await page.evaluate(`__harness.release('connection')`);
+      const tab = command === 'insert' ? 'insert' : 'send';
+      await page.waitFor(`document.getElementById('tab-${tab}').getAttribute('aria-selected') === 'true'`);
+      await page.waitFor(`document.getElementById('placement').options.length === 8`); await page.frames();
+      assert.equal(await page.evaluate(shown(`panel-${tab}`)), true);
+      if (command === 'insert') assert.equal(await page.focused(), 'insert-search');
+      if (command === 'open') {
+        assert.equal(await page.focused(), 'tab-send');
+        assert.equal(await page.evaluate(`__harness.saved.length`), 0, 'Open does not save a tab change');
+      } else assert.equal(await page.evaluate(`__harness.saved.at(-1)?.tab`), tab);
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+    } finally { await page.close(); }
+  }
+  for (const command of ['open', 'insert', 'send', 'sync']) {
+    const page = await openUi({ command, connection: null });
+    try {
+      await page.waitFor(`document.getElementById('app').dataset.view === 'first-run'`);
+      assert.equal(await page.evaluate(`document.getElementById('settings').open`), true);
+      assert.equal(await page.evaluate(`document.getElementById('connect-browser').checkVisibility()`), true);
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+    } finally { await page.close(); }
+  }
+});
+
+test('Send selected layer here offers an explicit upload even when the empty cell is already linked', async () => {
+  const node = { id: '40:1', name: 'Banner art', type: 'FRAME', width: 390, height: 160 };
+  const selection = linkedSelection(node);
+  selection.link.environment = 'draft';
+  selection.remembered.insertedFrom.environment = 'draft';
+  const page = await openUi({ selection, unset: ['home.banner'] });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-list .placement[data-key="home.banner"]');
+    await page.waitFor(shown('insert-send-here'));
+    await page.click('#insert-send-here');
+    assert.equal(await page.evaluate(shown('panel-send')), true);
+    assert.equal(await page.evaluate(shown('send-bar')), true, 'the explicit action keeps its Send footer in view');
+    assert.equal(await page.evaluate(shown('send-plain')), false);
+    assert.equal(await page.evaluate(valueOf('placement')), 'home.banner');
+    assert.equal(await page.focused(), 'send');
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['send']);
+    assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+    await page.click('#send');
+    await page.waitFor(`__harness.log.some(entry => entry.route === 'drafts')`);
+    assert.equal(await page.evaluate(`JSON.parse(__harness.log.find(entry => entry.route === 'drafts').body).rebind`), false);
+  } finally { await page.close(); }
+});
+
+test('a null state resolves to the named default for Send, publication status, reveal, and Update', async () => {
+  const node = { id: '40:1', name: 'Hero', type: 'FRAME', width: 390, height: 520 };
+  const key = 'onboarding.hero';
+  const assetId = '00000000-0000-4000-8000-000000010000';
+  const selection = { ...linkedSelection(node), remembered: { fileKey: 'abc123', nodeId: node.id, placementKey: key, state: 'welcome', appearance: null, arm: null,
+    insertedFrom: { environment: 'draft', assetId } }, link: { ...linkedSelection(node).link, placementKey: key, state: null, environment: 'draft', assetId } };
+  const page = await openUi({ declared: true, selection, preferences: { tab: 'send' } });
+  try {
+    await page.waitFor(`${textOf('sync-meta')}.includes('in Production (release 4)')`);
+    await page.evaluate(choose('state', '')); await page.frames();
+    assert.equal(await page.evaluate(shown('send-bar')), false, 'Default (welcome) and welcome name one cell');
+    assert.deepEqual(await page.evaluate(inkPrimaries), ['sync']);
+    const command = await page.evaluate(`/Mac|iPhone|iPad/.test(navigator.platform)`) ? 4 : 2;
+    await page.press('Enter', command);
+    await page.waitFor(shown('result'));
+    assert.equal(await page.evaluate(`JSON.parse(__harness.log.find(entry => entry.route === 'drafts').body).rebind`), true, 'Cmd+Enter still syncs the linked cell');
+    await page.click('#sync-title');
+    await page.waitFor(`${rows} === 7`);
+    assert.equal(await page.evaluate(valueOf('insert-state')), 'welcome');
+    assert.deepEqual(await page.evaluate(chosenKeys), [key]);
+    assert.doesNotMatch(await page.evaluate(textOf('insert-note')), /links it to .*Until|instead/);
+    await page.evaluate(`__harness.replaceArt('${key}', 'draft', 21000); ${refreshArtworkOnFocus}`);
+    await page.waitFor(shown('sync-update'));
+    assert.equal(await page.evaluate(textOf('sync-meta')), 'Draft has different art now');
+    assert.equal(await page.evaluate(`document.getElementById('sync-thumb').hasAttribute('data-sha')`), true);
+  } finally { await page.close(); }
+});
+
+test('fill notes make no blanket link claim for layers inside instances', async () => {
+  for (const nodeIds of [['I1:1;2:1', 'I1:1;2:2'], ['41:1', 'I1:1;2:1']]) {
+    const target = { mode: 'fill', label: 'Fill 2 layers', count: 2, nodeIds, containerWidth: 120 };
+    const page = await openUi(canvasSelection(target));
+    try {
+      await page.waitFor(`${rows} === 7`); await page.click('#insert-list .placement[data-key="home.banner"]');
+      const note = await page.evaluate(textOf('insert-note'));
+      assert.match(note, /Puts this image in 2 layers/);
+      assert.doesNotMatch(note, /links each|links them|links both|links (?:the )?2 layers/);
+      if (nodeIds.every(id => id.includes(';'))) assert.doesNotMatch(note, /and links|will be linked/);
     } finally { await page.close(); }
   }
 });

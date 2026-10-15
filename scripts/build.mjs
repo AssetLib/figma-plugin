@@ -33,7 +33,8 @@ const options = {
   sourcemap: dev ? 'inline' : false,
 };
 const main = { ...options, entryPoints: ['src/code.ts'], outfile: 'dist/code.js' };
-const ui = { ...options, entryPoints: ['src/ui/main.ts'], outfile: 'dist/ui.js', write: false };
+// The HTML is UTF-8 already; keep UI copy in UTF-8 rather than expanding punctuation into JavaScript escapes.
+const ui = { ...options, charset: 'utf8', entryPoints: ['src/ui/main.ts'], outfile: 'dist/ui.js', write: false };
 
 const uiUrl = new URL('../dist/ui.html', import.meta.url);
 
@@ -45,6 +46,9 @@ function compact(template) {
   return template
     .replace(/<style>[\s\S]*?<\/style>/, style => style.replace(/\/\*[\s\S]*?\*\//g, comment => comment === fontMarker ? comment : ''))
     .replace(/<!--[\s\S]*?-->/g, comment => comment === marker ? comment : '')
+    // HTML permits unquoted attribute values without spaces or delimiters. Keep a self-closing tag's final quotes
+    // so its slash cannot become part of the value; CSS and the script are handled separately.
+    .replace(/<[A-Za-z][^>]*>/g, tag => tag.replace(/(\s[\w:-]+=)"([^\s"'`=<>]+)"(?=\s|>)/g, '$1$2'))
     .replace(/\n[ \t]*/g, '\n').replace(/\n{2,}/g, '\n');
 }
 
@@ -98,5 +102,5 @@ if (watching) {
     throw new Error(`dist/code.js would be ${kb(mainSize)}, over the ${kb(MAX_MAIN_BYTES)} budget; it was not written.`);
   }
   const size = await writeUi(built.outputFiles[0].text);
-  console.log(`Built dist/code.js (${kb(mainSize)}) and dist/ui.html (${kb(size)}${dev ? ', development' : ''}).`);
+  console.log(`Built dist/code.js (${mainSize.toLocaleString('en-US')} bytes) and dist/ui.html (${size.toLocaleString('en-US')} bytes${dev ? ', development' : ''}).`);
 }

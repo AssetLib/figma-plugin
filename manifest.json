@@ -9,6 +9,12 @@
   "ui": "dist/ui.html",
   "documentAccess": "dynamic-page",
   "enablePrivatePluginApi": true,
+  "menu": [
+    { "name": "Open Assetlib", "command": "open" },
+    { "separator": true },
+    { "name": "Insert artwork…", "command": "insert" },
+    { "name": "Send selection to draft…", "command": "send" }
+  ],
   "relaunchButtons": [
     { "command": "sync", "name": "Sync to Assetlib" },
     { "command": "open", "name": "Open Assetlib" }

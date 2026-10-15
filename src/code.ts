@@ -104,8 +104,8 @@ async function handleMessage(message: UiMessage): Promise<void> {
   await initialized;
   switch (message.type) {
     case 'init':
-      // Opened from a linked layer's Sync to Assetlib button: the UI focuses the Sync bar. It never syncs by itself.
-      if (figma.command === 'sync') post({ type: 'launch', command: 'sync' });
+      // Menu commands choose a tab; Sync to Assetlib focuses the bar. No command sends by itself.
+      if (figma.command === 'sync' || figma.command === 'insert' || figma.command === 'send') post({ type: 'launch', command: figma.command });
       postConnection();
       await reportSelection();
       break;

@@ -224,8 +224,13 @@ export function thumbnailRendition(asset: Pick<LibraryAsset, 'renditions'>): Ren
   return null;
 }
 
-export function findCell(placement: Pick<PlacementArtwork, 'cells'>, coordinate: CellCoordinate): ArtworkCell | null {
-  return placement.cells.find(cell => cell.state === coordinate.state && cell.appearance === coordinate.appearance && cell.arm === coordinate.arm) ?? null;
+/** An omitted state names the placement's default state, including in links written by Send. */
+export function sameCoordinate(placement: Pick<Placement, 'defaultState'>, a: CellCoordinate, b: CellCoordinate): boolean {
+  return (a.state ?? placement.defaultState) === (b.state ?? placement.defaultState) && a.appearance === b.appearance && a.arm === b.arm;
+}
+
+export function findCell(placement: Pick<PlacementArtwork, 'cells' | 'defaultState'>, coordinate: CellCoordinate): ArtworkCell | null {
+  return placement.cells.find(cell => sameCoordinate(placement, cell, coordinate)) ?? null;
 }
 
 /** The linked cell's current art in its environment, when it differs from the layer's, inherited art included. */

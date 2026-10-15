@@ -443,7 +443,7 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
   assert.equal(tagsOf('travel.coast')[0].title, 'No image in Draft for this cell.');
   assert.equal(descendants(rowFor(app, 'travel.coast')).find(item => /thumb/.test(item.className ?? '')).className, 'thumb slot', 'an empty slot, not a preview');
   assert.deepEqual(tags('travel.ridge'), ['Changed in Draft']);
-  assert.equal(tagsOf('travel.ridge')[0].title, 'Draft differs from Production in 1 cells: Any');
+  assert.equal(tagsOf('travel.ridge')[0].title, 'Draft differs from Production in 1 cell: Any');
   assert.deepEqual(tags('tasks.gone'), ['Unavailable'], 'the console did not return the image');
   assert.equal(tagsOf('tasks.gone')[0].className, 'tag blocking');
   assert.deepEqual(tags('tasks.legacy'), ['Needs re-upload'], 'an image without prepared versions');
@@ -474,7 +474,7 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
 
   rowFor(app, 'tasks.empty').dispatch('click');
   pick(app, 'insert-state', 'new');
-  assert.equal(app.element('insert-note').textContent, 'No image in Draft for this cell. Choose another cell or environment.');
+  assert.equal(app.element('insert-note').textContent, 'No image in Draft for this cell yet.');
   assert.equal(app.element('insert-preview').className, 'thumb slot', 'the footer shows the same empty slot as a Not set row');
   assert.equal(off(app, 'insert'), true);
   rowFor(app, 'tasks.solo').dispatch('click');
@@ -2842,7 +2842,7 @@ test('the Send tab shows the layer as a designer reads it, and the export as a P
   assert.equal(app.element('selection-meta').textContent, '390 × 390', 'whole pixels, no node ID or type');
   pick(app, 'placement', placement.key);
   assert.equal(app.element('export-note').textContent, 'Exports 1000 × 998 PNG');
-  assert.deepEqual(app.element('appearance').children.map(option => option.textContent), ['Any', 'Light', 'Dark']);
+  assert.deepEqual(app.element('appearance').children.map(option => option.textContent), ['Any', 'Light (inherits)', 'Dark (inherits)']);
   app.select([]);
   await settle();
   assert.equal(app.element('selection-name').textContent, 'Select a frame or layer to send.');
@@ -5818,7 +5818,7 @@ test('Insert notes describe fill, skipped layers, replace links, and the smalles
   tilesOf(app)[0].dispatch('click');
   assert.equal(app.element('insert-note').textContent, 'Replaces the image in Layer 81:1. It stays linked to home.card.');
   const many = await canvas([shape('82:1'), shape('82:2'), shape('82:3'), shape('82:4', 'TEXT')]);
-  assert.equal(many.element('insert-note').textContent, 'Puts this image in 3 layers and links each to home.card. 1 other selected layer can’t show an image and stay as they are.');
+  assert.equal(many.element('insert-note').textContent, 'Puts this image in 3 layers and links each to home.card. 1 other selected layer can’t show an image and stays as it is.');
   const into = await canvas([{ ...shape('83:1', 'FRAME'), name: 'Home', width: 400, children: [shape('83:2')] }]);
   assert.equal(into.element('insert-note').textContent, 'Adds a new layer inside Home. Wider than “Home” (400 px).');
   assert.match(into.element('insert-meta').textContent, /^→ 1200 × 800 · Draft/);
@@ -5852,7 +5852,7 @@ test('inherited tags count via families, exclude null and own art, and yield to 
   single.cells[1].draft = cellArt(baseArt, null, 'dark');
   app.element('insert-refresh').dispatch('click'); await settle();
   assert.equal(tag().textContent, 'Changed in Draft');
-  assert.equal(tag().title, 'Draft differs from Production in 1 cells: dark');
+  assert.equal(tag().title, 'Draft differs from Production in 1 cell: dark');
   single.cells[1].production = null;
   app.element('insert-refresh').dispatch('click'); await settle();
   assert.equal(tag().textContent, 'New in Draft');
@@ -6353,4 +6353,313 @@ test('Batch 3: a missing linked asset previews its own environment, and a remove
   const removed = batch3({ console: { placements: [] } }); await settle();
   assert.equal(removed.element('sync-title').disabled, true);
   assert.equal(removed.element('sync-update').hidden, true);
+});
+
+test('a stale tokenless probe leaves Disconnect Undo’s connection test busy', async () => {
+  const probe = deferred(), connectionTest = deferred();
+  let reconnecting = false, probing = false;
+  const consoleState = { placements: [clone(placement)], artwork: artwork(), library: [], renditions: renditionsServed() };
+  const respond = fakeConsole(consoleState);
+  const app = harness({ fetch: async (url, options, request) => {
+    if (url.endsWith('/api/token') && options.headers?.Authorization === `Bearer ${tok('replacement')}`) throw new TypeError('network');
+    if (url.endsWith('/api/token') && !options.headers?.Authorization) { probing = true; await probe.promise; }
+    if (url.endsWith('/placements') && reconnecting) await connectionTest.promise;
+    return respond(url, options, request);
+  } });
+  await settle();
+  app.element('disconnect').dispatch('click'); await settle();
+  const undo = app.notifications.at(-1).options.button.action;
+  app.element('use-token').dispatch('click');
+  app.element('token').value = tok('replacement');
+  app.element('connection-form').dispatch('submit'); await settle();
+  assert.equal(probing, true);
+  reconnecting = true; undo(); await settle();
+  assert.equal(app.element('status').textContent, 'Testing connection…');
+  assert.equal(app.element('connect').getAttribute('aria-busy'), 'true');
+  probe.resolve(); await settle();
+  assert.equal(app.element('status').textContent, 'Testing connection…');
+  assert.equal(app.element('connect').getAttribute('aria-busy'), 'true', 'the stale probe must not clear the successor’s connecting operation');
+  assert.equal(off(app, 'insert'), true);
+  assert.equal(off(app, 'send'), true);
+  connectionTest.resolve(); await settle();
+  assert.equal(app.element('connect').getAttribute('aria-busy'), null);
+  assert.match(app.element('status').textContent, /^Connected\./);
+});
+
+// Batch 4 review regressions: operation ownership and default-state coordinates.
+test('Batch 4 R2: a plain Send owns the busy label and remains available-looking until it finishes', async () => {
+  const app = harness({ console: { draft: boundDraft } }); await settle();
+  const gate = app.delayExport();
+  app.element('send-plain').dispatch('click'); await settle();
+  assert.equal(app.element('send-plain').textContent, 'Sending…');
+  assert.equal(app.element('send-plain').getAttribute('aria-busy'), 'true');
+  assert.equal(off(app, 'send-plain'), false);
+  assert.equal(app.element('send').getAttribute('aria-busy'), null);
+  app.element('send-plain').dispatch('click'); await settle();
+  assert.equal(app.exportMessages().length, 1);
+  gate.resolve(); await settle();
+  assert.equal(app.element('send-plain').textContent, 'Send as a new image instead');
+  assert.equal(app.element('send-plain').getAttribute('aria-busy'), null);
+});
+
+test('Batch 4 R3: a Default-state Send finds its named artwork cell for publication status and Update', async () => {
+  const data = artwork();
+  const app = harness({ remembered: null, selection: [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'original', scaleMode: 'FILL' }] }],
+    console: { artwork: data, draft: body => {
+      data.placements[0].cells.find(cell => cell.state === 'old' && cell.appearance === null && cell.arm === null).draft = cellArt(sentArt, null, null);
+      return boundDraft(body);
+    } } });
+  await settle(); pick(app, 'placement', placement.key);
+  app.element('send').dispatch('click'); await settle();
+  assert.equal(app.drafts()[0].body.bind.state, null);
+  assert.equal(JSON.parse(app.figma.currentPage.selection[0].getPluginData(LINK_KEY)).state, null);
+  assert.equal(app.element('sync-meta').textContent, 'old · Any · Control · in Draft, not published');
+  data.placements[0].cells.find(cell => cell.state === 'old' && cell.appearance === null && cell.arm === null).draft = cellArt(armArt, null, null);
+  app.element('tab-insert').dispatch('click'); app.element('insert-refresh').dispatch('click'); await settle();
+  assert.equal(app.element('sync-update').hidden, false);
+  assert.equal(app.element('sync-meta').textContent, 'Draft has different art now');
+});
+
+test('Batch 4 R3: choosing Default for the linked default state keeps Sync primary and Cmd+Enter syncs', async () => {
+  const app = harness({ console: { draft: boundDraft } }); await settle();
+  pick(app, 'state', '');
+  assert.equal(app.element('send-bar').hidden, true);
+  assert.equal(app.element('sync').className, 'primary');
+  app.keydown({ key: 'Enter', metaKey: true }); await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(app.drafts()[0].body.rebind, true);
+});
+
+test('Batch 4 R5: Cmd+Enter on another picked cell keeps a running operation status', async () => {
+  const app = harness({ console: { draft: boundDraft } }); await settle();
+  const gate = app.delayExport();
+  app.element('sync').dispatch('click'); await settle();
+  pick(app, 'appearance', 'dark');
+  const status = app.element('status').textContent;
+  assert.equal(status, 'Exporting selected artwork…');
+  app.keydown({ key: 'Enter', metaKey: true });
+  assert.equal(app.element('status').textContent, status);
+  gate.resolve(); await settle();
+});
+
+// Batch 4 review regressions: fill copy and focus must describe the edit Figma can make.
+test('Batch 4 R4: fills inside instances make no link claim, and a mixed fill names only linkable layers', async () => {
+  const shape = id => ({ id, name: 'Shape', type: 'RECTANGLE', width: 100, height: 80, fills: [] });
+  const single = await canvas([shape('I1;1:1')]);
+  assert.equal(single.element('insert-note').textContent, 'Puts this image in Shape. Its size and position stay.');
+  const all = await canvas([shape('I1;1:1'), shape('I1;1:2')]);
+  assert.equal(all.element('insert-note').textContent, 'Puts this image in 2 layers.');
+  const mixed = await canvas([shape('I1;1:1'), shape('1:2')]);
+  assert.equal(mixed.element('insert-note').textContent, 'Puts this image in 2 layers and links 1 to home.card.');
+});
+
+test('Batch 4 R6: Use fitting scale leaves focus on the selected scale after its action hides', async () => {
+  const app = await canvas([{ id: '94:1', name: 'Home', type: 'FRAME', width: 400, height: 800,
+    children: [{ id: '94:2', name: 'Child', type: 'RECTANGLE', width: 40, height: 40 }] }]);
+  app.element('insert-fit-scale').focus();
+  app.element('insert-fit-scale').dispatch('click');
+  assert.equal(app.element('insert-fit-scale').hidden, true);
+  assert.equal(app.element('scale-3').getAttribute('aria-checked'), 'true');
+  assert.equal(app.activeElement(), app.element('scale-3'));
+});
+
+test('Batch 4 R7: one differing cell and one skipped layer use singular copy', async () => {
+  const p = { ...placement, states: null, defaultState: null, variants: { appearance: ['dark'] }, cells: [
+    { state: null, appearance: null, arm: null, draft: cellArt(baseArt, null, null), staging: null, production: cellArt(baseArt, null, null) },
+    { state: null, appearance: 'dark', arm: null, draft: cellArt(armArt, null, 'dark'), staging: null, production: cellArt(baseArt, null, 'dark') },
+  ] };
+  const app = harness({ remembered: null, console: { placements: [p], artwork: { ...artwork(), placements: [p],
+    environments: { staging: null, production: { sequence: 1, createdAt: '2026-10-14T00:00:00.000Z' } } } } });
+  await openInsert(app);
+  const tag = descendants(rowFor(app, p.key)).find(item => item.className === 'tag');
+  assert.equal(tag.title, 'Draft differs from Production in 1 cell: dark');
+  const fill = await canvas([{ ...node, type: 'RECTANGLE' }, { ...node, id: '95:2', type: 'TEXT' }]);
+  assert.match(fill.element('insert-note').textContent, /1 other selected layer can’t show an image and stays as it is\.$/);
+});
+
+test('menu commands remember Insert or Send; Open keeps the saved tab and focus', async () => {
+  for (const tab of ['send', 'insert']) {
+    const ordinary = harness({ prefs: { tab } }); await settle();
+    const open = harness({ command: 'open', prefs: { tab } }); await settle();
+    assert.equal(open.element(`tab-${tab}`).getAttribute('aria-selected'), 'true');
+    assert.equal(open.activeElement()?.id, ordinary.activeElement()?.id, 'Open changes no focus');
+    assert.equal(open.mainMessages.some(message => message.type === 'launch'), false);
+    assert.equal(open.exportMessages().length, 0);
+  }
+  for (const command of ['insert', 'send']) {
+    const app = harness({ command, prefs: { tab: command === 'send' ? 'insert' : 'send' } });
+    await settle();
+    assert.deepEqual(app.mainMessages.filter(message => message.type === 'launch'), [{ type: 'launch', command }]);
+    assert.equal(app.element(`tab-${command}`).getAttribute('aria-selected'), 'true');
+    assert.equal(app.storage.get('assetlib.preferences.v1').tab, command);
+    if (command === 'insert') assert.equal(app.activeElement(), app.element('insert-search'));
+    assert.equal(app.exportMessages().length, 0, 'menu commands do not send');
+  }
+});
+
+test('every menu or Sync launch without a connection shows the first-run screen', async () => {
+  for (const command of ['open', 'insert', 'send', 'sync']) {
+    const app = harness({ command, saved: null }); await settle();
+    assert.equal(app.element('app').getAttribute('data-view'), 'first-run', command);
+    assert.equal(app.element('panel-send').hidden, true);
+    assert.equal(app.element('panel-insert').hidden, true);
+    assert.equal(app.element('settings').open, true);
+    assert.equal(app.exportMessages().length, 0);
+    assert.notEqual(app.activeElement(), app.element('insert-search'));
+  }
+});
+
+test('Batch 4: Send shows own, inherited, and null Draft art only after artwork loads', async () => {
+  const data = artwork();
+  data.placements[0].cells.find(cell => cell.state === 'old' && cell.appearance === 'dark' && cell.arm === 'c').draft = null;
+  const app = harness({ remembered: null, console: { artwork: data, gates: { artwork: deferred() } } });
+  app.setVisible(() => false);
+  await settle();
+  pick(app, 'placement', placement.key);
+  pick(app, 'state', 'old'); pick(app, 'appearance', 'light'); pick(app, 'arm', 'b');
+  assert.equal(app.element('send-current').hidden, true);
+  app.console.gates.artwork.resolve(); await settle();
+  assert.equal(app.element('send-current').hidden, false);
+  assert.equal(app.element('send-current-text').textContent, 'Now in Draft');
+  assert.equal(app.element('send-current-preview').className, 'thumb');
+  assert.ok(app.requests.some(request => request.route === 'rendition' && request.url.endsWith(sha(13))), 'current art loads its preview outside the scrolling list');
+  assert.ok(app.element('send-current-thumb').src.startsWith('data:image/webp'));
+  pick(app, 'appearance', 'dark'); await settle();
+  assert.equal(app.element('send-current-text').textContent, 'Now in Draft: inherits Control · Any art');
+  pick(app, 'arm', 'c'); await settle();
+  assert.equal(app.element('send-current-text').textContent, 'Nothing in Draft yet');
+  assert.equal(app.element('send-current-preview').className, 'thumb slot');
+  assert.equal(app.element('send-current-thumb').getAttribute('src'), null);
+  pick(app, 'placement', '');
+  assert.equal(app.element('send-current').hidden, true);
+});
+
+test('Batch 4: an empty shown cell offers Send selected layer here with the exact destination', async () => {
+  const data = artwork();
+  data.environments.production = { sequence: 2, createdAt: '2026-10-14T00:00:00.000Z' };
+  data.placements[0].cells.find(cell => cell.state === 'new' && cell.appearance === 'dark' && cell.arm === 'c').draft = null;
+  const app = harness({ remembered: null, console: { artwork: data } });
+  await openInsert(app, { keep: true });
+  rowFor(app, placement.key).dispatch('click');
+  pick(app, 'insert-state', 'new'); pick(app, 'insert-appearance', 'dark'); pick(app, 'insert-arm', 'c');
+  assert.equal(app.element('insert-note').textContent, 'No image in Draft for this cell yet.');
+  assert.equal(app.element('insert-send-here').hidden, false);
+  app.element('insert-send-here').dispatch('click');
+  assert.equal(app.element('tab-send').getAttribute('aria-selected'), 'true');
+  assert.equal(app.element('placement').value, placement.key);
+  assert.equal(app.element('state').value, 'new');
+  assert.equal(app.element('appearance').value, 'dark');
+  assert.equal(app.element('arm').value, 'c');
+  assert.equal(app.activeElement(), app.element('send'));
+  app.element('tab-insert').dispatch('click');
+  app.element('env-production').dispatch('click');
+  assert.equal(app.element('insert-note').textContent, 'No image in Production for this cell. Sending puts it in Draft.');
+  assert.equal(app.element('insert-send-here').hidden, false);
+  app.select([]); await settle();
+  assert.equal(app.element('insert-send-here').hidden, true);
+  assert.equal(app.element('insert-note').textContent, 'No image in Production for this cell. Sending puts it in Draft.');
+  app.select([{ ...node, width: 0 }]); await settle();
+  assert.equal(app.element('insert-send-here').hidden, true, 'a layer without visible export area is not offered');
+  app.select([node]); await settle();
+  app.element('env-draft').dispatch('click'); pick(app, 'insert-arm', 'b');
+  assert.equal(app.element('insert-send-here').hidden, true, 'inherited art is present, never an empty cell');
+});
+
+test('Batch 4 R3: Insert keeps the link for null default state and copy Send excludes that same cell', async () => {
+  const app = batch3({ link: { state: null }, prefs: { tab: 'insert' } });
+  await settle();
+  rowFor(app, placement.key).dispatch('click');
+  assert.equal(app.element('insert-state').value, 'old');
+  assert.equal(app.element('insert-note').textContent, 'Replaces the image in Hero artwork. It stays linked to hero.artwork · old · Any · Control.');
+  const p = { ...placement, variants: null };
+  const data = { ...artwork(), placements: [{ ...p, cells: [
+    { state: 'old', appearance: null, arm: null, draft: cellArt(baseArt, null, null), staging: null, production: null },
+    { state: 'new', appearance: null, arm: null, draft: null, staging: null, production: null },
+  ] }] };
+  const copy = batch3({ link: { state: null }, layer: { id: '99:1' }, console: { placements: [p], artwork: data } });
+  await settle();
+  copy.element('sync-send').dispatch('click');
+  assert.equal(copy.element('state').value, 'new', 'the named default cell is the copy’s original, not another empty cell');
+});
+
+test('Batch 4 R3: revealing a null-state sent link picks the named default state in Insert', async () => {
+  const app = batch3({ link: { state: null } }); await settle();
+  app.element('sync-title').dispatch('click');
+  assert.equal(app.element('insert-state').value, 'old');
+  assert.equal(app.element('insert-appearance').value, '');
+  assert.equal(app.element('insert-arm').value, '');
+  assert.equal(app.activeElement(), rowFor(app, placement.key));
+  app.element('insert-refresh').dispatch('click'); await settle();
+  assert.equal(app.element('insert-state').value, 'old', 'a refresh keeps the canonical cell state');
+});
+
+test('Batch 4 4.1: Send groups placements by screen and fits first, preserving a choice when the selection changes', async () => {
+  const banner = { ...placement, key: 'home.banner', width: 1170, height: 480 };
+  const catalog = [banner, { ...placement, key: 'travel.coast', screen: 'Travel' }, placement,
+    { ...placement, key: 'travel.detail', screen: 'Travel' }, { ...placement, key: 'onboarding.hero', screen: 'Onboarding' }];
+  const app = harness({ remembered: null, selection: [{ ...node, name: 'home.banner', width: 390, height: 160 }], console: { placements: catalog } });
+  await settle();
+  const groups = () => app.element('placement').children.filter(child => child.tagName === 'OPTGROUP');
+  assert.deepEqual(groups().map(group => group.label), ['Fits this layer', 'Home', 'Travel', 'Onboarding']);
+  assert.deepEqual(groups().map(group => group.children.map(option => option.value)),
+    [['home.banner'], ['hero.artwork'], ['travel.coast', 'travel.detail'], ['onboarding.hero']]);
+  assert.equal(app.element('placement').value, '', 'the layer name never chooses a destination');
+  pick(app, 'placement', 'travel.coast');
+  pick(app, 'state', 'new'); pick(app, 'appearance', 'dark'); pick(app, 'arm', 'c');
+  app.select([]); await settle();
+  assert.deepEqual(groups().map(group => group.label), ['Home', 'Travel', 'Onboarding']);
+  assert.equal(app.element('placement').value, 'travel.coast');
+  assert.deepEqual(['state', 'appearance', 'arm'].map(id => app.element(id).value), ['new', 'dark', 'c']);
+  app.select([{ ...node, id: '71:1', width: 390, height: 160 }]); await settle();
+  assert.equal(groups()[0].label, 'Fits this layer');
+  assert.equal(app.element('placement').value, 'travel.coast');
+  const remembered = harness(); await settle();
+  assert.equal(remembered.element('placement').value, placement.key);
+  assert.equal(remembered.element('state').value, rememberedA.state);
+});
+
+test('Batch 4 4.1: Send cell suffixes distinguish own, inherited and null Draft art and refresh with each axis', async () => {
+  const data = artwork();
+  for (const cell of data.placements[0].cells) {
+    if (cell.state === 'old' && cell.arm === 'b' && cell.appearance === 'dark') cell.draft = null;
+    if (cell.state === 'new' && cell.arm === 'b' && cell.appearance === 'light') cell.draft = null;
+  }
+  const gate = deferred();
+  const app = harness({ console: { artwork: data, gates: { artwork: gate } } }); await settle();
+  const label = (id, value) => app.element(id).options.find(option => option.value === value).textContent;
+  assert.equal(label('appearance', 'dark'), 'Dark', 'unknown artwork has no suffix');
+  gate.resolve(); await settle();
+  assert.equal(label('state', ''), 'Default (old)');
+  assert.equal(label('state', 'new'), 'new (not set)');
+  assert.equal(label('appearance', 'light'), 'Light');
+  assert.equal(label('appearance', 'dark'), 'Dark (not set)');
+  assert.equal(label('appearance', ''), 'Any (inherits)');
+  assert.equal(label('arm', 'c'), 'c (inherits)');
+  pick(app, 'arm', '');
+  assert.equal(label('appearance', 'dark'), 'Dark (inherits)');
+  assert.equal(label('appearance', ''), 'Any');
+  pick(app, 'appearance', '');
+  assert.equal(label('state', 'new'), 'new');
+});
+
+test('Batch 4: Send here keeps an explicit Send visible when the empty cell is already linked', async () => {
+  const data = artwork();
+  data.placements[0].cells.find(cell => cell.state === 'old' && cell.appearance === null && cell.arm === null).draft = null;
+  const app = batch3({ environment: 'draft', prefs: { tab: 'insert' }, console: { artwork: data } });
+  await settle();
+  rowFor(app, placement.key).dispatch('click');
+  assert.equal(app.element('insert-send-here').hidden, false);
+  app.element('insert-send-here').dispatch('click');
+  assert.equal(app.element('send-bar').hidden, false);
+  assert.equal(app.element('send').className, 'primary');
+  assert.equal(app.element('send-plain').hidden, true);
+  assert.equal(app.element('sync').className, 'secondary');
+  assert.equal(app.activeElement(), app.element('send'));
+  app.keydown({ key: 'Enter', metaKey: true }); await settle();
+  assert.equal(app.exportMessages().length, 0, 'Cmd+Enter does not turn the explicit Send into a Sync');
+  assert.equal(app.drafts().length, 0);
+  app.element('send').dispatch('click'); await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(app.drafts()[0].body.rebind, false);
+  assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: null, arm: null });
 });

@@ -613,7 +613,7 @@ async function identifyToken(chosen: string, value: string): Promise<Connection 
       state.ops.connecting = true;
       scheduleRender();
       const answers = await consoleAnswers(chosen);
-      if (ticket !== identifyTicket) return null;
+      if (ticket !== identifyTicket) { superseded = true; return null; }
       state.ops.connecting = false;
       scheduleRender();
       if (!answers) { setStatus(''); showConnectionError(mapNetworkError(chosen), null, 'form'); return null; }
