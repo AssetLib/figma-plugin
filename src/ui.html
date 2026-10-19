@@ -73,7 +73,7 @@
     .secondary[aria-disabled="true"]:hover, .secondary:disabled:hover { background: var(--bg-secondary); }
 
     /* Fields. */
-    input:not([type="search"]), select { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid transparent; border-radius: 5px;
+    input, select { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid transparent; border-radius: 5px;
       background: var(--bg-secondary); font-size: 12px; line-height: 16px; }
     input::placeholder { color: var(--al-text-meta); opacity: 1; }
     input:hover:not(:focus-visible), select:hover:not(:focus-visible) { border-color: var(--border); }
@@ -380,6 +380,7 @@
       <summary id="settings-summary" class="chip" title="Connection">
         <span id="chip-warning" class="chip-warning" hidden></span>
         <span id="account-name" class="chip-name">Connection</span>
+        <span id="chip-console" title="Separate staging console" hidden>Staging</span>
         <span id="connection-label" class="visually-hidden"></span>
         <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3"/></svg>
       </summary>
@@ -391,7 +392,7 @@
             <text x="38" y="25" font-family="'Instrument Sans', system-ui, sans-serif" font-size="27" font-weight="600" letter-spacing="-1.2" fill="currentColor">assetlib</text>
           </svg>
           <h1 id="first-run-title" class="headline">Your app’s images, in Figma</h1>
-          <p id="first-run-text">Insert your app’s placement art onto the canvas, and send frames back as drafts. The plugin can’t publish; nothing goes live until someone publishes in Assetlib.</p>
+          <p id="first-run-text">Bring app artwork into Figma. Send edits as drafts; publish in Assetlib.</p>
         </div>
         <div id="account" class="account">
           <p id="account-title" class="title"></p>
@@ -418,16 +419,16 @@
         </div>
         <!-- How a Connect request ended, or a browser that didn't open. -->
         <p id="pairing-note" class="info" tabindex="-1" hidden></p>
-        <label id="origin-field" class="field">Console<select id="origin"><option value="https://console.assetlib.dev">console.assetlib.dev</option><option value="http://localhost:3100">localhost:3100 (development)</option></select></label>
+        <label id="origin-field" class="field">Console<select id="origin"><option value="https://console.assetlib.dev">console.assetlib.dev</option><option value="https://assetlib-billing-staging.vercel.app">Staging console</option><option value="http://localhost:3100">localhost:3100 (development)</option></select></label>
         <div id="browser-path" class="browser-path">
           <button id="connect-browser" class="primary wide" type="button">Connect to Assetlib</button>
-          <p id="browser-help" class="help">Your browser opens so you can sign in and approve. You need edit access (editor, publisher, or owner) in your team’s Assetlib workspace; a workspace owner can invite you or change your role.</p>
+          <p id="browser-help" class="help">Approve in your browser. You need editor, publisher, or owner access.</p>
           <button id="use-token" class="text-action" type="button">Use a token instead</button>
         </div>
         <p id="origin-line" class="meta">Assetlib at <span id="origin-host"></span> · <button id="origin-change" class="text-action" type="button">Change</button></p>
         <form id="connection-form" class="connection-form" novalidate>
           <label class="field">Draft token<input id="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="alk_…" aria-describedby="token-help connection-error"></label>
-          <p id="token-help" class="help">Only a workspace owner can create one: Assetlib console › Settings › Tokens › Draft token. Not a Figma token.</p>
+          <p id="token-help" class="help">Ask a workspace owner for an Assetlib Draft token: Settings › Tokens. Not a Figma token.</p>
           <!-- Under the token field, and above the ID fields an older console's notice introduces. -->
           <p id="connection-error" class="error" tabindex="-1" hidden></p>
           <div id="id-fields" class="pair" hidden>
@@ -436,7 +437,7 @@
           </div>
           <button id="connect" class="secondary wide" type="submit">Connect with token</button>
         </form>
-        <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a>
+        <a id="guide-link" class="text-action guide" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">Figma guide</a>
       </div>
     </details>
 
@@ -470,7 +471,7 @@
       <div id="file-scope" class="meta" hidden>This page only. <button id="file-all" class="text-action" type="button">Include all pages</button></div>
       <p id="file-limit" class="meta" hidden>Showing the first 2,000 linked layers.</p>
       <div id="list-region" class="list-region">
-        <div id="intro" class="info intro" hidden><p>Placements are the image slots your app’s code declares. Each has cells for its states, appearances, and A/B arms. Draft holds unpublished art, and Send and Sync change it. Staging and Production show what someone published, and stay unavailable until a release exists.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">How the Figma plugin works</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
+        <div id="intro" class="info intro" hidden><p>Placements come from app code. Send and Sync update Draft. Choose an environment to view published art.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">Figma guide</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
         <div id="insert-list"></div>
         <div id="image-grid" class="grid" hidden></div>
         <button id="images-more" class="secondary" type="button" hidden>Load more</button>
@@ -504,6 +505,7 @@
         <div id="file-line" class="file-line" hidden><p class="meta"><span id="file-name"></span> · <button id="file-change" class="text-action" type="button">Change</button></p><p id="file-session" class="meta" hidden></p></div>
         <!-- Why Send has no placements: the connection test failed. Shown here only while the connection settings are closed. -->
         <div id="send-problem" class="error" tabindex="-1" hidden><p id="send-problem-text"></p><button id="send-retry" class="secondary small" type="button" hidden>Try again</button><button id="send-token" class="secondary small" type="button" hidden>Update token</button></div>
+        <label id="placement-search-field" class="field">Find placement<input id="placement-search" type="search" placeholder="Search by key or screen" autocomplete="off" spellcheck="false"></label>
         <label class="field">Placement<select id="placement" disabled><option value="">Choose placement…</option></select></label>
         <div class="pickers">
           <label id="state-label" class="picker" hidden>State<select id="state"></select></label>
@@ -516,7 +518,7 @@
         <p id="send-relink" class="meta" hidden></p>
         <div id="aspect-warning" class="notice" hidden><p id="aspect-text"></p><button id="match-ratio" class="secondary small" type="button">Match ratio</button></div>
         <div id="result" class="result" hidden></div>
-        <p id="send-footnote" class="meta">Drafts don’t go live until someone publishes in the Assetlib console.</p>
+        <p id="send-footnote" class="meta">Publish separately in Assetlib.</p>
       </div>
     </main>
 

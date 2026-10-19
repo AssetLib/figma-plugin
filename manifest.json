@@ -25,6 +25,7 @@
       "https://assetlib-console.vercel.app"
     ],
     "devAllowedDomains": [
+      "https://assetlib-billing-staging.vercel.app",
       "http://localhost:3100"
     ],
     "reasoning": "Reads images from, and sends exported artwork to, the Assetlib console you connect."

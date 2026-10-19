@@ -2,6 +2,7 @@ import type { Connection, TokenIdentity } from './types.js';
 import { isRecord, validFileKey, validSha256, validUuid } from './validation.js';
 
 export const PRODUCTION_ORIGIN = 'https://console.assetlib.dev';
+export const STAGING_ORIGIN = 'https://assetlib-billing-staging.vercel.app';
 export const DEVELOPMENT_ORIGIN = 'http://localhost:3100';
 // The console's earlier production host. It still accepts app tokens, so a
 // connection saved with it moves to PRODUCTION_ORIGIN on load with the same token.
@@ -21,8 +22,8 @@ export function connectionErrorField(error: unknown): ConnectionField | null {
 
 export function normalizeConsoleOrigin(value: string): string {
   const origin = trimOrigin(value);
-  if (origin !== PRODUCTION_ORIGIN && origin !== DEVELOPMENT_ORIGIN) {
-    throw fieldError(`Choose ${PRODUCTION_ORIGIN} or ${DEVELOPMENT_ORIGIN} as the console.`, 'origin');
+  if (origin !== PRODUCTION_ORIGIN && origin !== STAGING_ORIGIN && origin !== DEVELOPMENT_ORIGIN) {
+    throw fieldError('Choose a listed Assetlib console.', 'origin');
   }
   return origin;
 }

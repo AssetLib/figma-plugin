@@ -53,7 +53,7 @@ export function pngSizeOf(bytes) {
 const selects = ['placement', 'state', 'appearance', 'arm'];
 // Tags of ui.html elements the UI tells apart: text fields and selects (focus there is never taken), and the settings.
 const staticTags = {
-  input: ['org-id', 'app-id', 'token', 'file-url', 'insert-search'], select: [...selects, 'origin'],
+  input: ['placement-search', 'org-id', 'app-id', 'token', 'file-url', 'insert-search'], select: [...selects, 'origin'],
   details: ['settings'], summary: ['settings-summary'], form: ['connection-form', 'file-form'],
   a: ['open-console', 'insert-empty-link', 'insert-note-link', 'sync-console'],
 };

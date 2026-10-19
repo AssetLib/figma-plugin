@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
+  MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, STAGING_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
   apiUrl, artworkAsset, aspectMismatch, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
   cellOptions, changedArt, chooseExportSettings, ratioName, insertSize, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
   insertRendition, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
@@ -44,14 +44,36 @@ test('file URL fallback accepts both file and design links and excludes non-Figm
   }
 });
 
-test('connection origin is limited to the production and development origins', () => {
+test('staging origin stays isolated in saved connections, requests, links and markers', () => {
+  const origin = 'https://assetlib-billing-staging.vercel.app';
+  const config = { origin, orgId: 'org-one', appId: 'app-a', token: 'draft_secret' };
+  assert.equal(normalizeConsoleOrigin(origin), origin);
+  assert.deepEqual(loadSavedConnection(config), config);
+  assert.equal(tokenUrl(origin), `${origin}/api/token`);
+  assert.equal(appUrl(config, 'drafts'), `${origin}/api/apps/org-one/app-a/drafts`);
+  assert.equal(consoleLink(config, 'overview'), `${origin}/w/org-one/app-a/overview`);
+  assert.equal(placementMarker(config, 'a', placement).documentationUrl, `${origin}/w/org-one/app-a/placements`);
+  const writeKey = `alw_${'w'.repeat(43)}`;
+  assert.equal(connectPageUrl(origin, writeKey), `${origin}/connect/figma#${writeKey}`);
+  assert.ok(isConnectPageUrl(connectPageUrl(origin, writeKey)));
+  assert.equal(pairingUrl(origin, 'current'), `${origin}/api/plugin-connections/current`);
+  assert.equal(isConsoleLink(consoleLink(config, 'overview'), { ...config, origin: PRODUCTION_ORIGIN }), false);
+  for (const bad of [`${origin}.evil.test`, `${origin}/path`, `${origin}?x`, 'http://assetlib-billing-staging.vercel.app',
+    'https://assetlib-billing-staging-other.vercel.app', 'https://user:secret@assetlib-billing-staging.vercel.app']) {
+    assert.throws(() => normalizeConsoleOrigin(bad));
+    assert.throws(() => connectPageUrl(bad, writeKey));
+    assert.equal(isConnectPageUrl(`${bad}/connect/figma#${writeKey}`), false);
+  }
+});
+
+test('connection origin is limited to the production, staging and development origins', () => {
   assert.equal(PRODUCTION_ORIGIN, 'https://console.assetlib.dev');
   assert.equal(normalizeConsoleOrigin(`${PRODUCTION_ORIGIN}/`), PRODUCTION_ORIGIN);
   assert.equal(normalizeConsoleOrigin(DEVELOPMENT_ORIGIN), DEVELOPMENT_ORIGIN);
   for (const origin of ['http://127.0.0.1:3100', 'https://console.assetlib.dev.evil.test', 'http://console.assetlib.dev',
     `${PRODUCTION_ORIGIN}/path`, `${PRODUCTION_ORIGIN}?token=secret`, `https://user:secret@console.assetlib.dev`,
     LEGACY_PRODUCTION_ORIGIN]) {
-    assert.throws(() => normalizeConsoleOrigin(origin), /console\.assetlib\.dev/);
+    assert.throws(() => normalizeConsoleOrigin(origin), /listed Assetlib console/);
   }
   assert.throws(() => validateConnection({ origin: LEGACY_PRODUCTION_ORIGIN, orgId: 'org', appId: 'app', token: 'draft' }),
     'a new connection cannot choose the legacy host');
@@ -76,7 +98,7 @@ test('a saved connection on the legacy production host loads on the current host
     assert.deepEqual(loadSavedConnection({ ...saved, origin }), { ...saved, origin: PRODUCTION_ORIGIN });
   }
   assert.equal(apiUrl(loadSavedConnection(saved), 'drafts'), `${PRODUCTION_ORIGIN}/api/apps/org-123/app-456/drafts`);
-  for (const origin of [PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN]) {
+  for (const origin of [PRODUCTION_ORIGIN, STAGING_ORIGIN, DEVELOPMENT_ORIGIN]) {
     assert.deepEqual(loadSavedConnection({ ...saved, origin }), { ...saved, origin });
   }
   for (const value of [null, 'text', { ...saved, origin: 'https://assetlib-console.vercel.app.evil.test' },
@@ -89,12 +111,12 @@ test('manifest, origin picker, and connection rules name the same origins, with 
   const manifest = JSON.parse(await readText('manifest.json'));
   assert.deepEqual(manifest.networkAccess.allowedDomains, [PRODUCTION_ORIGIN, LEGACY_PRODUCTION_ORIGIN],
     'the legacy host stays allowed so a build made before the move keeps working');
-  assert.deepEqual(manifest.networkAccess.devAllowedDomains, [DEVELOPMENT_ORIGIN]);
+  assert.deepEqual(manifest.networkAccess.devAllowedDomains, [STAGING_ORIGIN, DEVELOPMENT_ORIGIN]);
   const html = await readText('src/ui.html');
   const picker = /<select id="origin">([\s\S]*?)<\/select>/.exec(html);
   assert.ok(picker, 'the origin picker exists');
   const options = [...picker[1].matchAll(/<option value="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(options, [PRODUCTION_ORIGIN, DEVELOPMENT_ORIGIN], 'new connections default to the current host and never offer the legacy one');
+  assert.deepEqual(options, [PRODUCTION_ORIGIN, STAGING_ORIGIN, DEVELOPMENT_ORIGIN], 'new connections default to the current host and never offer the legacy one');
   // Figma rejects IP-literal domains: 127.0.0.1 is only the development console's pages, navigations (links.ts).
   for (const path of ['manifest.json', 'src/shared/connection.ts']) assert.doesNotMatch(await readText(path), /127\.0\.0\.1/, path);
 });
@@ -607,7 +629,7 @@ test('every request goes to one of the five app routes', () => {
     'assets?q=a b', '/placements', 'https://evil.test/placements', `assets/${id}/renditions/${hash.toUpperCase()}`, '']) {
     assert.throws(() => appUrl(config, path), /route it does not use/, path);
   }
-  assert.throws(() => appUrl({ ...config, origin: LEGACY_PRODUCTION_ORIGIN }, 'placements'), /console\.assetlib\.dev/);
+  assert.throws(() => appUrl({ ...config, origin: LEGACY_PRODUCTION_ORIGIN }, 'placements'), /listed Assetlib console/);
 });
 
 test('request timeouts: 20 s reads, 30 s drafts, plus 15 s per MiB, in whole seconds', () => {
@@ -736,10 +758,10 @@ test('a typed token must look like an Assetlib token; saved connections keep loa
   assert.equal(OLDER_CONSOLE, 'This console also needs the organization and app IDs. Find them in Settings › General.');
 });
 
-test('GET /api/token is built for the two console origins only, and its answer is checked', () => {
+test('GET /api/token is built for the allowed console origins only, and its answer is checked', () => {
   assert.equal(tokenUrl(PRODUCTION_ORIGIN), 'https://console.assetlib.dev/api/token');
   assert.equal(tokenUrl(DEVELOPMENT_ORIGIN), 'http://localhost:3100/api/token');
-  for (const origin of [LEGACY_PRODUCTION_ORIGIN, 'http://127.0.0.1:3100', 'https://evil.test']) assert.throws(() => tokenUrl(origin), /console\.assetlib\.dev/);
+  for (const origin of [LEGACY_PRODUCTION_ORIGIN, 'http://127.0.0.1:3100', 'https://evil.test']) assert.throws(() => tokenUrl(origin), /listed Assetlib console/);
   assert.deepEqual(parseTokenIdentity({ orgId: 'org-1', appId: 'app-1', workspaceName: 'Acme', appName: null, scopes: ['draft', 'publish', 'declare'] }),
     { orgId: 'org-1', appId: 'app-1', workspaceName: 'Acme', appName: null, scopes: ['draft', 'declare'] });
   for (const bad of [null, {}, { orgId: '../x', appId: 'a', scopes: [] }, { orgId: 'o', appId: 'a' }, { orgId: 'o', appId: 'a b', scopes: [] }]) {
@@ -952,12 +974,12 @@ test('the connect page is built from a fixed map of the two consoles and a well-
   }
 });
 
-test('connection request routes are on the two console origins only', () => {
+test('connection request routes are on the allowed console origins only', () => {
   assert.equal(pairingUrl(PRODUCTION_ORIGIN, 'start'), 'https://console.assetlib.dev/api/plugin-connections');
   assert.equal(pairingUrl(DEVELOPMENT_ORIGIN, 'claim'), 'http://localhost:3100/api/plugin-connections/claim');
   assert.equal(pairingUrl(PRODUCTION_ORIGIN, 'cancel'), 'https://console.assetlib.dev/api/plugin-connections/cancel');
   assert.equal(pairingUrl(PRODUCTION_ORIGIN, 'current'), 'https://console.assetlib.dev/api/plugin-connections/current');
-  for (const origin of [LEGACY_PRODUCTION_ORIGIN, 'http://127.0.0.1:3100', 'https://evil.test']) assert.throws(() => pairingUrl(origin, 'start'), /console\.assetlib\.dev/);
+  for (const origin of [LEGACY_PRODUCTION_ORIGIN, 'http://127.0.0.1:3100', 'https://evil.test']) assert.throws(() => pairingUrl(origin, 'start'), /listed Assetlib console/);
 });
 
 test('a browser connection keeps how it was made, who approved it, and its code; anything else is dropped', () => {

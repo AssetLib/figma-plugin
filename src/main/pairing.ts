@@ -1,6 +1,6 @@
 // One-click Connect on the main thread: the request waiting for approval, kept in client storage so a reopened plugin
 // resumes it, and the workspaces linked on this page, which the console may preselect. Only code.ts imports it.
-import { DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN, parseStoredLink, validInterval, validReadKey, validUserCode, validUuid } from '../shared/index.js';
+import { DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN, STAGING_ORIGIN, parseStoredLink, validInterval, validReadKey, validUserCode, validUuid } from '../shared/index.js';
 import type { PairingHint, PairingRecord } from '../shared/index.js';
 import { isRecord } from '../shared/validation.js';
 import { LINK_KEY, main } from './state.js';
@@ -11,9 +11,9 @@ const LONGEST_MS = 15 * 60 * 1000;
 // This window of the plugin, in the request's record (`polledBy`), which every window shares.
 const WINDOW = Math.random().toString(36).slice(2, 10);
 
-/** A stored or posted request, or null: a read key, never the write key, on one of the two origins, still waiting. */
+/** A stored or posted request, or null: a read key, never the write key, on one of the allowed origins, still waiting. */
 export function parsePairing(value: unknown, now = Date.now()): PairingRecord | null {
-  if (!isRecord(value) || value.v !== 1 || (value.origin !== PRODUCTION_ORIGIN && value.origin !== DEVELOPMENT_ORIGIN) || !validReadKey(value.readKey)
+  if (!isRecord(value) || value.v !== 1 || (value.origin !== PRODUCTION_ORIGIN && value.origin !== STAGING_ORIGIN && value.origin !== DEVELOPMENT_ORIGIN) || !validReadKey(value.readKey)
     || !validUserCode(value.userCode) || typeof value.deadline !== 'number' || !Number.isFinite(value.deadline) || !validInterval(value.interval)) return null;
   if (value.deadline <= now || value.deadline > now + LONGEST_MS) return null;
   const turn = typeof value.polledAt === 'number' && Number.isFinite(value.polledAt) && typeof value.polledBy === 'string'
@@ -67,7 +67,7 @@ async function forget(matches: (stored: unknown) => boolean): Promise<void> {
 }
 
 /**
- * Up to five workspaces this page's linked layers name (the first 200 links read), on one of the two console origins
+ * Up to five workspaces this page's linked layers name (the first 200 links read), on one of the allowed console origins
  * (the legacy host as production) and by UUID, so the connect page can preselect the one the person works in.
  */
 export function pageHints(): PairingHint[] {
@@ -80,7 +80,7 @@ export function pageHints(): PairingHint[] {
     const link = parseStoredLink(raw);
     if (!link) continue;
     const origin = link.origin === LEGACY_PRODUCTION_ORIGIN ? PRODUCTION_ORIGIN : link.origin;
-    if ((origin !== PRODUCTION_ORIGIN && origin !== DEVELOPMENT_ORIGIN) || !validUuid(link.orgId) || !validUuid(link.appId)) continue;
+    if ((origin !== PRODUCTION_ORIGIN && origin !== STAGING_ORIGIN && origin !== DEVELOPMENT_ORIGIN) || !validUuid(link.orgId) || !validUuid(link.appId)) continue;
     if (hints.some(hint => hint.origin === origin && hint.orgId === link.orgId && hint.appId === link.appId)) continue;
     hints.push({ origin, orgId: link.orgId, appId: link.appId });
     if (hints.length === 5) break;

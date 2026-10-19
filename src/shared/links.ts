@@ -1,7 +1,7 @@
 // Links into the Assetlib console. They open in the browser (a navigation, never a request with the token) and are
 // built only from validated IDs on the connected console's page origin; main opens nothing else from a toast. The connect
 // page, which one-click Connect opens, is built only from the same fixed map and a validated write key.
-import { DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN, normalizeConsoleOrigin, validWriteKey } from './connection.js';
+import { DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN, STAGING_ORIGIN, normalizeConsoleOrigin, validWriteKey } from './connection.js';
 import type { Connection } from './types.js';
 import { validUuid } from './validation.js';
 
@@ -11,8 +11,8 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 // Each console's pages, by its origin. The development console signs people in on 127.0.0.1 only (its session routes
 // refuse localhost), and a page is a navigation, not a request, so the manifest and every request stay on localhost.
-const PAGE_ORIGINS: Record<string, string> = { [PRODUCTION_ORIGIN]: PRODUCTION_ORIGIN, [DEVELOPMENT_ORIGIN]: 'http://127.0.0.1:3100' };
-/** The origin a console's pages open on; throws for any origin but the two consoles. */
+const PAGE_ORIGINS: Record<string, string> = { [PRODUCTION_ORIGIN]: PRODUCTION_ORIGIN, [STAGING_ORIGIN]: STAGING_ORIGIN, [DEVELOPMENT_ORIGIN]: 'http://127.0.0.1:3100' };
+/** The origin a console's pages open on; throws for any origin but the allowed consoles. */
 export function consolePageOrigin(origin: string): string { return PAGE_ORIGINS[normalizeConsoleOrigin(origin)]!; }
 
 /** `{page origin}/w/{orgId}/{appId}/{section}`, plus an image's or placement's uuid. Throws on anything else. */
@@ -23,10 +23,10 @@ export function consoleLink(connection: Pick<Connection, 'origin' | 'orgId' | 'a
   return `${origin}/w/${connection.orgId}/${connection.appId}/${section}${itemId ? `/${itemId.toLowerCase()}` : ''}`;
 }
 
-const CONNECT_PAGE = /^(https:\/\/console\.assetlib\.dev|http:\/\/127\.0\.0\.1:3100)\/connect\/figma#alw_[A-Za-z0-9_-]{43}$/;
+const CONNECT_PAGE = /^(https:\/\/console\.assetlib\.dev|https:\/\/assetlib-billing-staging\.vercel\.app|http:\/\/127\.0\.0\.1:3100)\/connect\/figma#alw_[A-Za-z0-9_-]{43}$/;
 export const CONNECT_PAGE_REFUSED = 'The plugin can’t open that page.';
 
-/** `{page}/connect/figma#{writeKey}` from a fixed map of the two console origins; throws on anything else. */
+/** `{page}/connect/figma#{writeKey}` from a fixed map of the allowed console origins; throws on anything else. */
 export function connectPageUrl(origin: unknown, writeKey: unknown): string {
   const page = typeof origin === 'string' && Object.prototype.hasOwnProperty.call(PAGE_ORIGINS, origin) ? PAGE_ORIGINS[origin] : undefined;
   if (!page || !validWriteKey(writeKey)) throw new Error(CONNECT_PAGE_REFUSED);

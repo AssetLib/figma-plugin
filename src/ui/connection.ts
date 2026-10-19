@@ -2,7 +2,7 @@
 // the token form (one-click Connect's secondary path, connect.ts) and its GET /api/token step, the connection test,
 // Disconnect, and the chip's label.
 import {
-  DEVELOPMENT_ORIGIN, OLDER_CONSOLE, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink, consolePageOrigin,
+  STAGING_ORIGIN, OLDER_CONSOLE, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink, consolePageOrigin,
   fieldError, mapNetworkError, normalizeConsoleOrigin,
   parsePlacements, parseTokenIdentity, PRODUCTION_ORIGIN, reconnectText, refusalCode, tokenPrefix, validateConnection,
 } from '../shared/index.js';
@@ -47,7 +47,7 @@ let formShown = false;
 let originShown = false;
 export function revealOrigin(): void { originShown = true; scheduleRender(); }
 function originNeeded(): boolean {
-  return originShown || chosenOrigin() === DEVELOPMENT_ORIGIN || state.connection?.origin === DEVELOPMENT_ORIGIN || idsShown();
+  return originShown || (chosenOrigin() !== PRODUCTION_ORIGIN || !!state.connection && state.connection.origin !== PRODUCTION_ORIGIN) || idsShown();
 }
 // Each GET /api/token the form starts; a newer one, or a connection change, makes an older answer stale.
 let identifyTicket = 0;
@@ -179,6 +179,8 @@ export function renderConnection(): void {
   const span = (className: string, text: string) => { const item = document.createElement('span'); item.className = className; item.textContent = text; return item; };
   // Before the names: the warning glyph takes room from the workspace's name.
   element('chip-warning').hidden = !attention;
+  element('chip-console').hidden = connection?.origin !== STAGING_ORIGIN;
+  element('chip-console').textContent = 'Staging';
   if (connection?.workspaceName && connection.appName) {
     // A long workspace name shortens first, and a narrow window drops it (ui.html), so the app's name stays.
     // No-break spaces: a grid item drops ordinary spaces at its edges.
@@ -218,7 +220,7 @@ export function renderConnection(): void {
   const hideOrigin = state.pairingActive || (Boolean(connection) && !formShown);
   element('origin-field').hidden = hideOrigin || !originNeeded();
   element('origin-line').hidden = hideOrigin || originNeeded();
-  element('origin-host').textContent = chosenOrigin() === DEVELOPMENT_ORIGIN ? 'localhost:3100' : 'console.assetlib.dev';
+  element('origin-host').textContent = chosenOrigin().replace(/^https?:\/\//, '');
   updateButton.hidden = !connection || browser || formShown;
   // One primary per view: Connect to Assetlib is the first run's (connect.ts), and Connect the account panel's while a
   // pasted token needs attention without a refusal; otherwise the footer's Insert or Send is, and the form's button is secondary.

@@ -59,7 +59,7 @@ export function renderSyncBar(): void {
   syncButton.hidden = !linked;
   setBusy(syncButton, state.ops.syncing ? 'Syncing…' : 'Sync to draft', state.ops.syncing);
   setUnavailable(syncButton, !syncAvailable());
-  syncButton.title = update ? 'Sync replaces Draft’s art for this cell with this layer.' : '';
+  syncButton.title = 'Sync replaces this layer’s earlier art across Draft.';
   updateButton.hidden = !update;
   setBusy(updateButton, isUpdating() ? 'Updating…' : 'Update', isUpdating());
   setUnavailable(updateButton, !update || actionsBlocked());

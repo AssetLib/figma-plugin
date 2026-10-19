@@ -447,6 +447,7 @@ setInterval(() => {
   if (main.importing || main.exporting) return;
   try { if (!selectionStale()) return; } catch { return; /* a page going away: its own event reports */ }
   // The one selected layer no longer shows what the fill left.
+  void initialized.then(scheduleScan);
   retireUndo();
   void initialized.then(reportSelection);
 }, 250);

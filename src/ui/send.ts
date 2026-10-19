@@ -17,6 +17,7 @@ import { actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, state 
 import type { ReadProblem } from './state.js';
 
 const placementPicker = element<HTMLSelectElement>('placement');
+const placementSearch = element<HTMLInputElement>('placement-search');
 const statePicker = element<HTMLSelectElement>('state');
 const appearancePicker = element<HTMLSelectElement>('appearance');
 const armPicker = element<HTMLSelectElement>('arm');
@@ -154,6 +155,7 @@ export function showPlacements(list: Placement[]): void {
   state.placements = list;
   state.placementsLoaded = true;
   const chosen = pickerGeneration === state.connectionGeneration ? placementPicker.value : '';
+  if (pickerGeneration !== state.connectionGeneration) placementSearch.value = '';
   pickerGeneration = state.connectionGeneration;
   buildPlacementOptions();
   // A placement chosen before the list reloaded on this connection stays chosen while it exists.
@@ -163,25 +165,32 @@ export function showPlacements(list: Placement[]): void {
 }
 function buildPlacementOptions(): void {
   const chosen = placementPicker.value;
+  const query = placementSearch.value.trim().toLowerCase();
+  let matches = 0;
   const groups = new Map<string, HTMLOptGroupElement>();
   const fits = document.createElement('optgroup');
   fits.label = 'Fits this layer';
   const node = hasCurrentSelection() && !state.selection.reason ? state.selection.node : null;
   for (const item of state.placements) {
+    const matchesQuery = !query || `${item.key} ${item.screen}`.toLowerCase().includes(query);
+    if (!matchesQuery && item.key !== chosen) continue;
+    if (matchesQuery) matches++;
     let group = groups.get(item.screen);
     if (!group) { group = document.createElement('optgroup'); group.label = item.screen; groups.set(item.screen, group); }
     // The ratio is what a frame must match; the reference size is secondary detail, on hover.
     const option = new Option(`${item.key} · ${ratioName(item.width, item.height)}`, item.key);
     option.title = `${item.key} · reference ${item.width} × ${item.height}`;
     (node && !aspectMismatch(node, item) ? fits : group).append(option);
+    if (!matchesQuery) option.textContent += ' (current choice)';
   }
-  placementPicker.replaceChildren(new Option(state.placements.length ? CHOOSE_PLACEMENT : 'No placements yet', ''),
+  placementPicker.replaceChildren(new Option(!state.placements.length ? 'No placements yet' : !matches ? 'No matching placements' : CHOOSE_PLACEMENT, ''),
     ...(fits.children.length ? [fits] : []), ...[...groups.values()].filter(group => group.children.length));
   if (state.placements.some(item => item.key === chosen)) placementPicker.value = chosen;
 }
 /** No placements, with `text` in the picker saying why. */
 export function clearPlacements(text: string): void {
   state.placements = [];
+  placementSearch.value = '';
   placementPicker.replaceChildren(new Option(text, ''));
   updateCellPickers();
 }
@@ -311,6 +320,7 @@ export function prefillSend(link: Pick<InsertLink, 'placementKey' | 'state' | 'a
   const placement = state.placements.find(item => item.key === link.placementKey);
   if (!placement) return;
   explicitSend = explicit;
+  placementSearch.value = ''; buildPlacementOptions();
   placementPicker.value = placement.key;
   let bind: CellBinding | undefined;
   try { bind = validateBinding(placement, { slotKey: placement.key, state: link.state, appearance: link.appearance, arm: link.arm }); } catch { bind = undefined; }
@@ -412,7 +422,7 @@ export function applySelection(message: Extract<MainMessage, { type: 'selection'
   const { selection } = state;
   const identity = JSON.stringify([selection.fileKey, selection.node?.id, selection.remembered]);
   const shape = JSON.stringify([selection.node?.width, selection.node?.height, selection.reason]);
-  if (identity !== selectionIdentity) { selectionIdentity = identity; selectionShape = shape; explicitSend = false; if (state.placementsLoaded) buildPlacementOptions(); selectRemembered(); }
+  if (identity !== selectionIdentity) { selectionIdentity = identity; selectionShape = shape; explicitSend = false; placementSearch.value = ''; if (state.placementsLoaded) buildPlacementOptions(); selectRemembered(); }
   else if (shape !== selectionShape) { selectionShape = shape; if (state.placementsLoaded) buildPlacementOptions(); }
   scheduleRender();
 }
@@ -655,7 +665,8 @@ export function initSend(actions: { refused: () => void; retry: () => void; upda
     flushRender();
     fileUrl.focus();
   });
-  placementPicker.addEventListener('change', () => { explicitSend = false; updateCellPickers(); });
+  placementSearch.addEventListener('input', () => { buildPlacementOptions(); scheduleRender(); });
+  placementPicker.addEventListener('change', () => { explicitSend = false; buildPlacementOptions(); updateCellPickers(); });
   sendButton.addEventListener('click', () => beginSend(false));
   element('send-plain').addEventListener('click', () => beginSend(false, true));
   for (const picker of [statePicker, appearancePicker, armPicker]) picker.addEventListener('change', () => { explicitSend = false; scheduleRender(); });

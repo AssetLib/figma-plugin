@@ -3,7 +3,7 @@
 // saved as a browser connection. The token form (connection.ts) stays the secondary path. Every request goes through
 // http.ts (pairingRequest); the write key stays in memory, and main keeps only the read key (assetlib.pairing.v1), so a
 // reopened plugin resumes the request. Plugin windows share that record, and ask main for the turn before each poll.
-import { DEVELOPMENT_ORIGIN, DEVICE_STORAGE, PRODUCTION_ORIGIN, formatUserCode, mapHttpError, mapNetworkError, normalizeConsoleOrigin, pairingUrl, parseClaim, parsePairingStart, validUuid } from '../shared/index.js';
+import { DEVELOPMENT_ORIGIN, DEVICE_STORAGE, PRODUCTION_ORIGIN, consolePageOrigin, formatUserCode, mapHttpError, mapNetworkError, normalizeConsoleOrigin, pairingUrl, parseClaim, parsePairingStart, validUuid } from '../shared/index.js';
 import type { ClaimAnswer, ClaimedConnection, Connection, PairingHint, PairingRecord, PairingStart } from '../shared/index.js';
 import {
   OLDER_CONSOLE_CONNECT, OPEN_PAGE_FAILED, PAIRING_BUSY, PAIRING_CANCELLED, PAIRING_DENIED, PAIRING_EXPIRED, PAIRING_FAILED, PAIRING_REUSED, PAIRING_UNREACHABLE,
@@ -141,7 +141,7 @@ export async function startConnect(hint?: PairingHint | null): Promise<void> {
   if (pairing.phase === 'starting' || pairing.phase === 'waiting' || pairing.phase === 'saving') { showRequest(); return; }
   if (state.ops.connecting) return;
   const origin = chosenOrigin();
-  if (origin === DEVELOPMENT_ORIGIN) revealOrigin();
+  if (origin !== PRODUCTION_ORIGIN) revealOrigin();
   const chosen = hint?.origin === origin ? hint : hints.find(item => item.origin === origin) ?? null;
   const ticket = ++pairing.ticket;
   Object.assign(pairing, { phase: 'starting', origin, hint: chosen, ended: null, note: '', readKey: '', writeKey: null, userCode: '', resumed: false, failures: 0 });
@@ -191,7 +191,7 @@ function wait(): void {
 
 /** Main's record of a request this device waits for (the plugin was closed while it waited): it carries on. */
 function resume(saved: PairingRecord): void {
-  if (saved.origin === DEVELOPMENT_ORIGIN) revealOrigin();
+  if (saved.origin !== PRODUCTION_ORIGIN) revealOrigin();
   ++pairing.ticket;
   Object.assign(pairing, { origin: saved.origin, readKey: saved.readKey, writeKey: null, userCode: saved.userCode, deadline: saved.deadline,
     interval: saved.interval, lastSentAt: 0, failures: 0, hint: null, ended: null, note: '', resumed: true });
@@ -385,7 +385,7 @@ function openPage(): void {
 /** Main's connection message: the request's connection was saved, or main holds a request to resume. */
 export function applyPairing(message: Extract<MainMessage, { type: 'connection' }>): void {
   hints = message.hints ?? [];
-  if (hints.some(hint => hint.origin === DEVELOPMENT_ORIGIN)) revealOrigin();
+  if (hints.some(hint => hint.origin !== PRODUCTION_ORIGIN)) revealOrigin();
   const saving = pairing.saving;
   // Saved (connection.ts ends a browser token it replaced). The connection test then says Connected.
   if (pairing.phase === 'saving' && saving && message.connection?.token === saving.token) { connected(); return; }
@@ -472,7 +472,7 @@ export function renderConnect(): void {
   element('first-run-title').hidden = active;
   element('first-run-text').hidden = active;
   if (active) {
-    const host = pairing.origin === PRODUCTION_ORIGIN ? 'console.assetlib.dev' : '127.0.0.1:3100';
+    const host = consolePageOrigin(pairing.origin).replace(/^https?:\/\//, '');
     element('pairing-text').textContent = pairing.resumed ? `Approve in the ${host} tab you opened earlier, or cancel and start again.`
       : `Assetlib opened ${host} in your browser. Sign in, check that it shows this code, and approve.`;
     const code = element('pairing-code');

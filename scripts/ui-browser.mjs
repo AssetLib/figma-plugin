@@ -2381,7 +2381,7 @@ test('Change reveals and focuses the console select, and first run and pasted ac
       assert.equal(await page.evaluate(shown('origin-field')), false);
       assert.equal(await page.evaluate(textOf('origin-host')), 'console.assetlib.dev');
       assert.equal(await page.evaluate(`document.getElementById('guide-link').href`), 'https://www.assetlib.dev/guide#figma');
-      assert.equal(await page.evaluate(textOf('guide-link')), 'How the Figma plugin works');
+      assert.equal(await page.evaluate(textOf('guide-link')), 'Figma guide');
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
       assert.ok(await page.evaluate(`(() => { const r = document.querySelector('#settings .panel').getBoundingClientRect(); return Math.abs((r.left + r.right) / 2 - innerWidth / 2) < 2; })()`));
       await page.click('#origin-change'); await page.frames();
@@ -2689,7 +2689,7 @@ test('Update is primary, blocks Cmd+Enter, and keeps a 48 px bar at 420 px while
       assert.equal(await page.evaluate(textOf('sync-meta')), 'Production has different art now');
       assert.deepEqual(await page.evaluate(inkPrimaries), ['sync-update']);
       assert.equal(await page.evaluate(`document.getElementById('sync').classList.contains('secondary')`), true);
-      assert.equal(await page.evaluate(`document.getElementById('sync').title`), 'Sync replaces Draft’s art for this cell with this layer.');
+      assert.equal(await page.evaluate(`document.getElementById('sync').title`), 'Sync replaces this layer’s earlier art across Draft.');
       assert.equal(await page.evaluate(`document.getElementById('selection-bar').title`), 'Update puts this Production art in the layer. Sync updates Draft only; publishing stays in the console.');
       assert.equal(await page.evaluate(shown('sync-console')), false);
       assert.equal(await page.evaluate(syncFits), true, `${mode}, ${width} px`);
@@ -3302,3 +3302,31 @@ for (const theme of ['light', 'dark']) {
     } finally { await send.close(); }
   });
 }
+
+for (const theme of ['light', 'dark']) test(`staging and Send search remain clear with 500 placements (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const origin = 'https://assetlib-billing-staging.vercel.app';
+    const page = await openUi({ connection: { ...DEFAULTS.connection, origin }, placements: 500,
+      preferences: { tab: 'send' }, selection: { ...DEFAULTS.selection, remembered: null, link: null } }, { width, height: 720, theme });
+    try {
+      await page.waitFor(`document.getElementById('placement').options.length === 501`);
+      assert.equal(await page.evaluate(shown('chip-console')), true);
+      assert.equal(await page.evaluate(textOf('chip-console')), 'Staging');
+      await page.click('#placement-search'); await page.type('slot499'); await page.frames();
+      assert.equal(await page.focused(), 'placement-search');
+      assert.deepEqual(await page.evaluate(`[...document.getElementById('placement').options].map(option => option.value)`), ['', 'screen62.slot499']);
+      await page.press('Tab'); assert.equal(await page.focused(), 'placement');
+      await page.press('s'); await page.frames();
+      assert.equal(await page.evaluate(valueOf('placement')), 'screen62.slot499');
+      await page.click('#placement-search'); await page.evaluate(`document.getElementById('placement-search').select()`); await page.type('no match'); await page.frames();
+      assert.equal(await page.evaluate(valueOf('placement-search')), 'no match');
+      assert.equal(await page.evaluate(valueOf('placement')), 'screen62.slot499', 'filtering keeps the chosen destination');
+      assert.match(await page.evaluate(`document.getElementById('placement').selectedOptions[0].textContent`), /current choice/);
+      assert.equal(await page.evaluate(`document.getElementById('placement').options[0].textContent`), 'No matching placements');
+      assert.ok(await page.evaluate(`__harness.log.every(request => request.url.startsWith('${origin}/'))`));
+      assert.ok(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`));
+      assert.equal(await page.evaluate(inViewport('chip-console')), true);
+      if (shots) await page.screenshot(join(shots, `staging-send-search-${theme}-${width}.png`));
+    } finally { await page.close(); }
+  }
+});

@@ -609,7 +609,7 @@ export function renderList(): void {
     if (loading('placements')) listChildren.push(...skeletons('placements'));
     else if (!current) empty = listError;
     else if (!current.placements.length) {
-      empty = { title: 'No placements yet', text: 'Placements come from your app’s code. When an engineer adds one and runs assetlib sync, or someone requests one in the console, it appears here.',
+      empty = { title: 'No placements yet', text: 'An engineer adds placements in app code and runs assetlib sync. You can request one in the console.',
         action: 'link', link: { text: 'Read the guide', href: GUIDE_URL } };
     } else {
       const matches = current.placements.filter(item => !lower || item.key.toLowerCase().includes(lower) || item.screen.toLowerCase().includes(lower));

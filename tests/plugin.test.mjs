@@ -258,7 +258,7 @@ test('a first connection uses the current host and cannot choose the legacy host
   await flush();
   assert.equal(app.uiMessages.filter(message => message.type === 'save-connection').length, 0);
   assert.equal(app.element('connection-error').hidden, false, 'the error sits under the token field');
-  assert.match(app.element('connection-error').textContent, /https:\/\/console\.assetlib\.dev/);
+  assert.equal(app.element('connection-error').textContent, 'Choose a listed Assetlib console.');
   assert.equal(app.element('origin').getAttribute('aria-invalid'), 'true');
   assert.equal(app.activeElement(), app.element('origin'), 'focus moves to the field at fault');
   assert.equal(app.element('error').hidden, true);
@@ -6279,8 +6279,8 @@ test('unreachable production and development consoles ask for no IDs; a tokenles
 
 test('first-run copy, role, guide, and Change explain the paths without exposing the console picker', async () => {
   const html = await readFile(`${root}/src/ui.html`, 'utf8');
-  assert.ok(html.includes('<p id="browser-help" class="help">Your browser opens so you can sign in and approve. You need edit access (editor, publisher, or owner) in your team’s Assetlib workspace; a workspace owner can invite you or change your role.</p>'));
-  assert.match(html, /id="guide-link"[^>]*href="https:\/\/www\.assetlib\.dev\/guide#figma"[^>]*>How the Figma plugin works<\/a>/);
+  assert.ok(html.includes('<p id="browser-help" class="help">Approve in your browser. You need editor, publisher, or owner access.</p>'));
+  assert.match(html, /id="guide-link"[^>]*href="https:\/\/www\.assetlib\.dev\/guide#figma"[^>]*>Figma guide<\/a>/);
   assert.ok(!html.includes('id="pairing-resumed"'));
   const app = harness({ saved: null }); await settle();
   assert.equal(app.element('origin-line').hidden, false);
@@ -6775,7 +6775,7 @@ test('Batch 3: Update replaces Production art in place, keeps crop and link envi
   assert.equal(app.element('sync-update').hidden, false);
   assert.equal(app.element('sync-update').className, 'primary small');
   assert.equal(app.element('sync').className, 'secondary');
-  assert.equal(app.element('sync').title, 'Sync replaces Draft’s art for this cell with this layer.');
+  assert.equal(app.element('sync').title, 'Sync replaces this layer’s earlier art across Draft.');
   assert.equal(app.element('sync-console').hidden, true);
   assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(13));
   assert.equal(app.element('selection-bar').title, 'Update puts this Production art in the layer. Sync updates Draft only; publishing stays in the console.');
@@ -7783,4 +7783,84 @@ test('phase 1 an instance reads its main’s link, so In this file names it an I
   const send = harness({ remembered: null }); await settle();
   const option = [...send.element('placement').options].find(item => item.value === placement.key);
   assert.equal(option.textContent, `${placement.key} · 1:1`); assert.equal(option.title, `${placement.key} · reference 1000 × 1000`);
+});
+
+// Staging is a separate console, not a production alias or an arbitrary preview host.
+const stagingOrigin = 'https://assetlib-billing-staging.vercel.app';
+test('staging reads, draft sends, browser links and saved tokens stay on staging', async () => {
+  const config = { ...connection, origin: stagingOrigin };
+  const app = harness({ saved: config });
+  await settle();
+  assert.equal(lastConnection(app).origin, stagingOrigin);
+  assert.equal(app.element('chip-console').hidden, false);
+  assert.equal(app.element('chip-console').textContent, 'Staging');
+  assert.equal(app.element('open-console').href, `${stagingOrigin}/w/org-one/app-a/overview`);
+  app.element('sync').click(); await settle();
+  assert.ok(app.requests.some(request => request.route === 'drafts'));
+  assert.ok(app.requests.every(request => request.url.startsWith(`${stagingOrigin}/`)));
+  assert.ok(app.requests.filter(request => request.authorization).every(request => request.authorization === `Bearer ${config.token}`));
+  const inserted = await canvas([], { saved: config }); await choose(inserted);
+  assert.deepEqual(clone(inserted.frames.at(-1).documentationLinks), [{ uri: `${stagingOrigin}/w/org-one/app-a/placements` }]);
+});
+
+test('staging browser pairing keeps its origin across page hints, approval and reopen', async () => {
+  let now = 3_000_000;
+  const app = harness({ saved: null, now: () => now, selection: [linkedNode('50:1', stagingOrigin, orgUuid, appUuid)] });
+  await settle();
+  assert.deepEqual(app.mainMessages.find(message => message.type === 'connection').hints, [{ origin: stagingOrigin, orgId: orgUuid, appId: appUuid }]);
+  app.element('origin').value = stagingOrigin; app.element('origin').dispatch('change');
+  await startConnect(app);
+  const pending = app.console.pairings[0];
+  assert.equal(app.storage.get('assetlib.pairing.v1').origin, stagingOrigin);
+  assert.equal(app.externalUrls[0], `${stagingOrigin}/connect/figma#${pending.writeKey}`);
+  assert.match(app.element('pairing-text').textContent, /assetlib-billing-staging\.vercel\.app/);
+  const resumed = harness({ saved: null, now: () => now, storage: [['assetlib.pairing.v1', app.storage.get('assetlib.pairing.v1')]], console: app.console });
+  await settle();
+  assert.equal(resumed.element('pairing').hidden, false);
+  assert.match(resumed.element('pairing-text').textContent, /Approve in the assetlib-billing-staging\.vercel\.app tab/);
+  approve(app); now += 2000; app.fireTimers(2000); await settle();
+  assert.equal(lastConnection(app).origin, stagingOrigin);
+  assert.ok(app.requests.every(request => request.url.startsWith(`${stagingOrigin}/`)));
+  app.element('disconnect').click(); await settle();
+  assert.equal(app.requests.findLast(request => request.route === 'current').url, `${stagingOrigin}/api/plugin-connections/current`);
+});
+
+test('a canvas Undo refreshes the placement file chip without a reselection', async () => {
+  let now = 3_000_000;
+  const app = harness({ remembered: null, now: () => now, prefs: { tab: 'insert' }, selection: [linkedSpec('10:1')] });
+  await settle();
+  const chip = () => descendants(rowFor(app, placement.key)).find(item => /^tag/.test(item.className));
+  assert.equal(chip().textContent, 'In this file · current');
+  const layer = app.figma.currentPage.selection[0];
+  const link = JSON.parse(layer.getPluginData(LINK_KEY));
+  layer.setPluginData(LINK_KEY, JSON.stringify({ ...link, assetId: armArt }));
+  app.tick(); await settle(); now += 1000; app.fireDue(); await settle();
+  assert.equal(chip().textContent, '1 behind');
+  layer.setPluginData(LINK_KEY, JSON.stringify(link));
+  app.tick(); await settle(); now += 1000; app.fireDue(); await settle();
+  assert.equal(chip().textContent, 'In this file · current');
+});
+
+test('Send filters 500 placements by key or screen without changing the chosen destination', async () => {
+  const placements = Array.from({ length: 500 }, (_, i) => ({ ...placement, key: `screen${i}.hero`, screen: `Screen ${i}` }));
+  const app = harness({ remembered: null, console: { placements }, prefs: { tab: 'send' } });
+  await settle();
+  assert.equal(app.element('placement-search-field').hidden, false);
+  pick(app, 'placement', 'screen4.hero');
+  const filter = app.element('placement-search');
+  filter.value = 'screen499'; filter.dispatch('input');
+  const values = () => app.element('placement').options.map(option => option.value);
+  assert.deepEqual(values(), ['', 'screen4.hero', 'screen499.hero']);
+  assert.equal(app.element('placement').value, 'screen4.hero');
+  pick(app, 'placement', 'screen499.hero');
+  assert.deepEqual(values(), ['', 'screen499.hero']);
+  filter.value = 'Screen 498'; filter.dispatch('input');
+  assert.deepEqual(values(), ['', 'screen498.hero', 'screen499.hero']);
+  filter.value = 'nothing matches'; filter.dispatch('input');
+  assert.equal(app.element('placement').options[0].textContent, 'No matching placements');
+  assert.equal(app.element('placement').value, 'screen499.hero');
+  filter.value = ''; filter.dispatch('input');
+  assert.equal(values().length, 501);
+  app.element('send').click(); await settle();
+  assert.equal(app.requests.filter(request => request.route === 'drafts').at(-1).body.bind.slotKey, 'screen499.hero');
 });
