@@ -7629,11 +7629,57 @@ test('phase 1 placement chips distinguish behind, current, copies, absence and p
   const chip = () => descendants(rowFor(app, placement.key)).find(item => /^tag/.test(item.className));
   assert.equal(chip().textContent, '1 behind'); assert.match(chip().title, /on this page.*Draft.*Select one and choose Update/);
   app.console.artwork.placements[0].cells[0].draft = cellArt(baseArt, null, null); app.element('insert-refresh').click(); await settle();
-  assert.equal(chip().textContent, 'On this page · current');
+  assert.equal(chip().textContent, 'On this page');
+  assert.equal(chip().title, 'Linked environments: Draft.');
   const layer = app.figma.currentPage.selection[0]; const link = JSON.parse(layer.getPluginData(LINK_KEY)); link.nodeId = '10:9'; layer.setPluginData(LINK_KEY, JSON.stringify(link));
   app.postToMain({ type: 'scan-file', requestId: 8001, allPages: false }); await settle(); assert.equal(chip().textContent, 'On this page');
   layer.remove(); app.postToMain({ type: 'scan-file', requestId: 8002, allPages: true }); await settle();
   assert.equal(chip().textContent, 'Not in this file'); assert.equal(chip().className, 'tag quiet');
+});
+test('placement presence does not imply a match to the browsed environment', async () => {
+  const art = artwork(); art.placements[0].cells[0].draft = cellArt(armArt, null, null);
+  const layer = linkedSpec('10:1');
+  layer.pluginData[LINK_KEY] = JSON.stringify({ ...JSON.parse(layer.pluginData[LINK_KEY]), assetId: armArt });
+  const app = harness({ remembered: null, prefs: { tab: 'insert', environment: 'staging', environmentChosen: true }, selection: [layer], console: { artwork: art } });
+  await settle();
+  const chip = () => descendants(rowFor(app, placement.key)).find(item => /^tag/.test(item.className));
+  rowFor(app, placement.key).click(); await settle();
+  for (const environment of ['staging', 'draft', 'staging']) {
+    app.element(`env-${environment}`).click(); await settle();
+    assert.equal(chip().textContent, 'In this file');
+    assert.equal(chip().title, 'Linked environments: Draft.');
+    assert.equal(app.element('sync-update').hidden, true, 'browsing another environment does not change the linked Draft');
+    assert.equal(app.element('insert').textContent, 'Replace image');
+    assert.equal(linkOf(app.figma.currentPage.selection[0]).environment, 'draft');
+  }
+  app.console.artwork.placements[0].cells[0].draft = cellArt(baseArt, null, null);
+  app.element('insert-refresh').click(); await settle();
+  assert.equal(chip().textContent, '1 behind');
+  assert.match(chip().title, /Draft.*Select one and choose Update/);
+  assert.equal(app.element('sync-update').hidden, false, 'a genuine change in the linked Draft still offers Update');
+});
+test('placement presence names all linked environments without including copies', async () => {
+  const draft = linkedSpec('10:1'), staging = linkedSpec('10:2'), copy = linkedSpec('10:3');
+  staging.pluginData[LINK_KEY] = JSON.stringify({ ...JSON.parse(staging.pluginData[LINK_KEY]), environment: 'staging' });
+  copy.pluginData[LINK_KEY] = JSON.stringify({ ...JSON.parse(copy.pluginData[LINK_KEY]), nodeId: '10:9', environment: 'production' });
+  const app = harness({ remembered: null, prefs: { tab: 'insert' }, selection: [draft, staging, copy] }); await settle();
+  const chip = () => descendants(rowFor(app, placement.key)).find(item => /^tag/.test(item.className));
+  assert.equal(chip().textContent, 'In this file');
+  assert.equal(chip().title, 'Linked environments: Draft, Staging.');
+  app.element('browse-file').click(); await settle();
+  assert.match(textOf(rowFor(app, '10:1')), /Draft.*Current/);
+  assert.match(textOf(rowFor(app, '10:2')), /Staging.*Current/);
+  assert.match(textOf(rowFor(app, '10:3')), /Production.*Copy/);
+});
+test('placement presence does not claim currency when linked art is missing', async () => {
+  const art = artwork(); art.placements[0].cells[0].draft = null;
+  const app = harness({ remembered: null, prefs: { tab: 'insert', environment: 'staging', environmentChosen: true },
+    selection: [linkedSpec('10:1')], console: { artwork: art } }); await settle();
+  const chip = descendants(rowFor(app, placement.key)).find(item => /^tag/.test(item.className));
+  assert.equal(chip.textContent, 'In this file');
+  assert.equal(chip.title, 'Linked environments: Draft.');
+  assert.equal(app.element('sync-update').hidden, true);
+  assert.match(app.element('sync-meta').textContent, /Draft no longer has art for this cell/);
 });
 test('phase 1 local placement instances edit their main component in one undo step', async () => {
   for (const image of [true, false]) {
@@ -7830,7 +7876,7 @@ test('a canvas Undo refreshes the placement file chip without a reselection', as
   const app = harness({ remembered: null, now: () => now, prefs: { tab: 'insert' }, selection: [linkedSpec('10:1')] });
   await settle();
   const chip = () => descendants(rowFor(app, placement.key)).find(item => /^tag/.test(item.className));
-  assert.equal(chip().textContent, 'In this file · current');
+  assert.equal(chip().textContent, 'In this file');
   const layer = app.figma.currentPage.selection[0];
   const link = JSON.parse(layer.getPluginData(LINK_KEY));
   layer.setPluginData(LINK_KEY, JSON.stringify({ ...link, assetId: armArt }));
@@ -7838,7 +7884,7 @@ test('a canvas Undo refreshes the placement file chip without a reselection', as
   assert.equal(chip().textContent, '1 behind');
   layer.setPluginData(LINK_KEY, JSON.stringify(link));
   app.tick(); await settle(); now += 1000; app.fireDue(); await settle();
-  assert.equal(chip().textContent, 'In this file · current');
+  assert.equal(chip().textContent, 'In this file');
 });
 
 test('Send filters 500 placements by key or screen without changing the chosen destination', async () => {

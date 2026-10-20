@@ -24,8 +24,9 @@ export function fileTag(key: string, artwork: ArtworkResponse | null): FileTag |
   const linked = entries.filter(entry => entry.kind === 'linked');
   const behind = artwork ? linked.filter(entry => changedArt(artwork, entry)) : [];
   if (behind.length) return { word: `${behind.length} behind`, style: 'behind', title: `${behind.length} linked layer${behind.length === 1 ? '' : 's'} ${where} show older art than ${[...new Set(behind.map(entry => environmentLabel(entry.environment)))].join(', ')} has now. Select one and choose Update.` };
-  return artwork && linked.length ? { word: `${presence} · current`, title: `Every linked layer ${where} shows the current art.` }
-    : { word: presence, title: `${entries.length} layer${entries.length === 1 ? '' : 's'} ${where} use this placement.` };
+  return { word: presence, title: artwork && linked.length
+    ? `Linked environments: ${[...new Set(linked.map(entry => environmentLabel(entry.environment)))].join(', ')}.`
+    : `${entries.length} layer${entries.length === 1 ? '' : 's'} ${where} use this placement.` };
 }
 let scan: number | null = null, selectionRequest: number | null = null, all = false, lastFocus = -Infinity;
 export function requestFileScan(allPages = false): void {

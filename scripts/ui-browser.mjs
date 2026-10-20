@@ -3230,6 +3230,36 @@ test('fill notes make no blanket link claim for layers inside instances', async 
 // Laid out and on screen, not only unhidden: a parent's display: none counts.
 const visible = id => `document.getElementById('${id}').checkVisibility()`;
 for (const theme of ['light', 'dark']) {
+  test(`placement presence ${theme}: browsing Staging does not describe linked Draft art as current`, async () => {
+    const selection = linkedSelection({ id: '80:1', name: 'Banner', type: 'FRAME', width: 390, height: 160 });
+    selection.link.environment = 'draft'; selection.remembered.insertedFrom.environment = 'draft';
+    const page = await openUi({ selection, fileEntries: [{ ...fileFixture[0], environment: 'draft' }], multiPage: true,
+      hold: ['artwork'], preferences: { environment: 'staging', environmentChosen: true } }, { theme });
+    const chip = `document.querySelector('#insert-list [data-key="home.banner"] .tag')`;
+    try {
+      await page.evaluate(`__harness.artwork.environments.staging = { sequence: 3, createdAt: '2026-10-19T00:00:00Z' }; __harness.replaceArt('home.banner', 'staging', 21000); __harness.release('artwork')`);
+      await page.waitFor(`${rows} === 7`);
+      await page.click('#insert-list [data-key="home.banner"]');
+      for (const environment of ['staging', 'draft', 'staging']) {
+        await page.click(`#env-${environment}`);
+        assert.equal(await page.evaluate(`${chip}.textContent`), 'On this page');
+        assert.equal(await page.evaluate(`${chip}.title`), 'Linked environments: Draft.');
+        assert.equal(await page.evaluate(visible('sync-update')), false);
+        assert.equal(await page.evaluate(textOf('insert')), 'Replace image');
+      }
+      for (const width of [420, 320]) {
+        await resizeTo(page, width, 720);
+        assert.equal(await page.evaluate('document.documentElement.scrollWidth - innerWidth'), 0);
+        assert.equal(await page.evaluate(`${chip}.scrollWidth <= ${chip}.clientWidth`), true);
+        if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `presence-scope-${theme}-${width}.png`)); }
+      }
+      await page.evaluate(`__harness.replaceArt('home.banner', 'draft', 21001); ${refreshArtworkOnFocus}`);
+      await page.waitFor(visible('sync-update'));
+      assert.equal(await page.evaluate(`${chip}.textContent`), '1 behind');
+      assert.match(await page.evaluate(`${chip}.title`), /Draft.*Select one and choose Update/);
+      assert.equal(await page.evaluate(textOf('sync-meta')), 'Draft has different art now');
+    } finally { await page.close(); }
+  });
   test(`phase 1 ${theme}: cell-strip radios, row layout and visible-name type-ahead`, async () => {
     const page = await openUi({ declared: true, noAny: true, fileEntries: fileFixture, multiPage: true }, { theme });
     try {
