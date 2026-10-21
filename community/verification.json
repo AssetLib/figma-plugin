@@ -1,0 +1,58 @@
+[
+  {
+    "name": "icon.png",
+    "width": 128,
+    "height": 128,
+    "bytes": 862,
+    "sha256": "f069470d87062aec61c2a355984a856ddb6cb9382c7a7467246d3d8fee387af8"
+  },
+  {
+    "name": "cover-layout",
+    "fontLoaded": true,
+    "text": "assetlib Update your app’s images without an app release. in connected placements, after one SDK integration and app release Insert. Edit. Send to draft. Review and publish in Assetlib. assetlib.dev",
+    "bounds": [
+      {
+        "element": "brand",
+        "x": 128,
+        "y": 104,
+        "width": 220.828125,
+        "height": 48
+      },
+      {
+        "element": "H1",
+        "x": 122,
+        "y": 284,
+        "width": 1231.265625,
+        "height": 239.65625
+      },
+      {
+        "element": "boundary",
+        "x": 128,
+        "y": 568,
+        "width": 1054.859375,
+        "height": 47.59375
+      },
+      {
+        "element": "workflow",
+        "x": 128,
+        "y": 808,
+        "width": 530.1875,
+        "height": 120.390625
+      },
+      {
+        "element": "domain",
+        "x": 1631.015625,
+        "y": 910,
+        "width": 160.984375,
+        "height": 42
+      }
+    ]
+  },
+  {
+    "name": "cover.png",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 98194,
+    "sha256": "6c3c8132d9db0170a71f95da764b42bb0102212cc22277eb0374450b0e68f588"
+  }
+]

@@ -4728,6 +4728,33 @@ test('identity: root data used when fileKey is absent', async () => {
   assert.equal(lastSelection(prefilled).fileKey, null, 'filled in, never used without asking');
 });
 
+test('Community fileKey refusal asks for a file link once and preserves the staging connection on reopen', async () => {
+  const saved = { ...connection, origin: 'https://assetlib-billing-staging.vercel.app' };
+  const app = harness({ fileKeyUnavailable: true, rootName: 'Roam onboarding', remembered: null, saved, console: { draft: boundDraft } });
+  await settle();
+  assert.equal(lastSelection(app).fileKey, null);
+  pick(app, 'placement', placement.key);
+  app.element('send').dispatch('click');
+  await settle();
+  assert.equal(app.drafts().length, 0, 'no export is sent without a source file');
+  assert.equal(app.element('file-fallback').hidden, false);
+  assert.equal(app.activeElement(), app.element('file-url'));
+  app.element('file-url').value = 'https://www.figma.com/design/publicKey7/Roam-onboarding';
+  app.element('file-form').dispatch('submit');
+  await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(app.drafts()[0].body.source.fileKey, 'publicKey7');
+  assert.equal(app.drafts()[0].url.startsWith(saved.origin + '/'), true);
+  assert.equal(app.storage.get('assetlib.connection.v1').token, saved.token);
+  const reopened = harness({ fileKeyUnavailable: true, rootName: 'Roam onboarding', remembered: null, saved,
+    rootPluginData: { [FILE_KEY]: app.figma.root.getPluginData(FILE_KEY) } });
+  await settle();
+  assert.equal(lastSelection(reopened).fileKey, 'publicKey7');
+  assert.equal(reopened.element('file-fallback').hidden, true);
+  assert.equal(reopened.storage.get('assetlib.connection.v1').origin, saved.origin);
+  assert.equal(reopened.storage.get('assetlib.connection.v1').token, saved.token);
+});
+
 test('identity: slug mismatch warns', async () => {
   const app = harness({ fileKey: null, rootName: 'Roam onboarding', remembered: null });
   await settle();

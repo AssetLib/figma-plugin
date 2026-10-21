@@ -57,7 +57,7 @@ function compact(template) {
 /** Writes dist/ui.html; a release build over budget writes nothing and removes the previous one, so none is left to load. */
 async function writeUi(script) {
   const [source, font] = await Promise.all([readFile(templateUrl, 'utf8'), readFile(fontUrl)]);
-  const template = dev ? source : compact(source);
+  const template = dev ? source : compact(source.replace(/<option data-development\b[^>]*>[\s\S]*?<\/option>/g, ''));
   if (template.split(marker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${marker} marker.`);
   if (template.split(fontMarker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${fontMarker} marker.`);
   const face = `@font-face { font-family: 'Instrument Sans'; src: url(data:font/woff2;base64,${font.toString('base64')}) format('woff2'); font-weight: 400 700; font-style: normal; font-display: block; }`;

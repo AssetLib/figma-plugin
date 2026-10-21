@@ -109,13 +109,14 @@ test('a saved connection on the legacy production host loads on the current host
 
 test('manifest, origin picker, and connection rules name the same origins, with the current host as default', async () => {
   const manifest = JSON.parse(await readText('manifest.json'));
-  assert.deepEqual(manifest.networkAccess.allowedDomains, [PRODUCTION_ORIGIN, LEGACY_PRODUCTION_ORIGIN],
+  assert.equal(manifest.enablePrivatePluginApi, undefined, 'Community does not require private Figma APIs');
+  assert.deepEqual(manifest.networkAccess.allowedDomains, [PRODUCTION_ORIGIN, LEGACY_PRODUCTION_ORIGIN, STAGING_ORIGIN],
     'the legacy host stays allowed so a build made before the move keeps working');
-  assert.deepEqual(manifest.networkAccess.devAllowedDomains, [STAGING_ORIGIN, DEVELOPMENT_ORIGIN]);
+  assert.deepEqual(manifest.networkAccess.devAllowedDomains, [DEVELOPMENT_ORIGIN]);
   const html = await readText('src/ui.html');
   const picker = /<select id="origin">([\s\S]*?)<\/select>/.exec(html);
   assert.ok(picker, 'the origin picker exists');
-  const options = [...picker[1].matchAll(/<option value="([^"]+)"/g)].map(match => match[1]);
+  const options = [...picker[1].matchAll(/<option(?: data-development)? value="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(options, [PRODUCTION_ORIGIN, STAGING_ORIGIN, DEVELOPMENT_ORIGIN], 'new connections default to the current host and never offer the legacy one');
   // Figma rejects IP-literal domains: 127.0.0.1 is only the development console's pages, navigations (links.ts).
   for (const path of ['manifest.json', 'src/shared/connection.ts']) assert.doesNotMatch(await readText(path), /127\.0\.0\.1/, path);

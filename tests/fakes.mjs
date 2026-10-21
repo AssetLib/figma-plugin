@@ -341,7 +341,7 @@ function abortError() { return Object.assign(new Error('The operation was aborte
  * they wait for runFrames(). `now` replaces both sides' clock, and `store` is client storage shared with another harness.
  */
 export function createHarness({
-  mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', selection = [], exportBytes = () => new Uint8Array(0),
+  mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', fileKeyUnavailable = false, selection = [], exportBytes = () => new Uint8Array(0),
   createImageBitmap, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, zoom: 1 },
   pages = [], imageSizes = {}, command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false, now, store: sharedStore,
 }) {
@@ -504,7 +504,7 @@ export function createHarness({
     return node;
   };
   const figma = {
-    fileKey,
+    get fileKey() { if (fileKeyUnavailable) throw new Error('fileKey is unavailable to Community plugins'); return fileKey; },
     command,
     currentPage: makePage(selection.map(spec => makeNode(spec))),
     root: {

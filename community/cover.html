@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>Assetlib — Figma Community cover</title>
+  <style>
+    @font-face {
+      font-family: "Instrument Sans";
+      src: url("../src/assets/instrument-sans-variable.woff2") format("woff2");
+      font-weight: 400 700;
+      font-display: block;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 1920px; height: 1080px; margin: 0; }
+    body {
+      position: relative;
+      overflow: hidden;
+      background: #0b0f14;
+      color: #f7f8fa;
+      font-family: "Instrument Sans", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .brand {
+      position: absolute;
+      top: 104px;
+      left: 128px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-size: 48px;
+      font-weight: 600;
+      line-height: 1;
+      letter-spacing: -0.045em;
+    }
+    .brand svg { width: 44px; height: 44px; }
+    h1 {
+      position: absolute;
+      top: 284px;
+      left: 122px;
+      margin: 0;
+      font-size: 112px;
+      font-weight: 500;
+      line-height: 1.07;
+      letter-spacing: -0.035em;
+    }
+    .boundary {
+      position: absolute;
+      top: 568px;
+      left: 128px;
+      margin: 0;
+      font-size: 34px;
+      font-weight: 400;
+      line-height: 1.4;
+      color: #cbd1d9;
+    }
+    .workflow {
+      position: absolute;
+      top: 808px;
+      left: 128px;
+    }
+    .workflow p { margin: 0; }
+    .steps {
+      font-size: 48px;
+      font-weight: 500;
+      line-height: 1.2;
+      letter-spacing: -0.025em;
+    }
+    .publish {
+      padding-top: 18px;
+      font-size: 32px;
+      font-weight: 400;
+      line-height: 1.4;
+      color: #cbd1d9;
+    }
+    .domain {
+      position: absolute;
+      bottom: 128px;
+      right: 128px;
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.4;
+      color: #cbd1d9;
+    }
+  </style>
+</head>
+<body>
+  <div class="brand" aria-label="Assetlib">
+    <svg viewBox="0 0 30 30" aria-hidden="true" fill="none">
+      <path d="M2 8 15 1l13 7-13 7L2 8Z" fill="currentColor"/>
+      <path d="m2 15 13 7 13-7M2 22l13 7 13-7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span>assetlib</span>
+  </div>
+  <h1>Update your app’s images<br>without an app release.</h1>
+  <p class="boundary">in connected placements, after one SDK integration and app release</p>
+  <div class="workflow">
+    <p class="steps">Insert. Edit. Send to draft.</p>
+    <p class="publish">Review and publish in Assetlib.</p>
+  </div>
+  <p class="domain">assetlib.dev</p>
+</body>
+</html>

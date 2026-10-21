@@ -417,7 +417,7 @@ function installFakes(config) {
         reply(selection());
         break;
       // As code.ts does: the connect page opens in the browser, and the request's record is kept and forgotten.
-      case 'open-connect-page': opened.push(`https://console.assetlib.dev/connect/figma#${message.writeKey}`); break;
+      case 'open-connect-page': opened.push(`${message.origin}/connect/figma#${message.writeKey}`); break;
       case 'save-pairing': config.pairing = message.pairing; break;
       case 'clear-pairing': if (config.pairing?.userCode === message.userCode) config.pairing = null; break;
       // One window: no other saved the request's connection or replaced this one, and the turn to ask is always this one's.
@@ -948,6 +948,20 @@ test('Connect closes the settings and moves focus to their summary, never the pa
 });
 
 // ---- A.3: the app shell ----
+
+test('Community build offers production and staging, with no local development choice', async () => {
+  const page = await openUi({ connection: null });
+  try {
+    await page.click('#origin-change');
+    assert.deepEqual(await page.evaluate(`Array.from(document.getElementById('origin').options, option => option.value)`),
+      ['https://console.assetlib.dev', 'https://assetlib-billing-staging.vercel.app']);
+    assert.equal(await page.evaluate(valueOf('origin')), 'https://console.assetlib.dev');
+    await page.evaluate(choose('origin', 'https://assetlib-billing-staging.vercel.app'));
+    await page.click('#connect-browser');
+    await page.waitFor(shown('pairing'));
+    assert.deepEqual(await page.evaluate('__harness.opened'), [`https://assetlib-billing-staging.vercel.app/connect/figma#alw_${'w'.repeat(43)}`]);
+  } finally { await page.close(); }
+});
 
 test('the first run connects with only a token, and an older console asks for the IDs', async () => {
   const page = await openUi({ connection: null });
@@ -2346,7 +2360,7 @@ test('connection paths keep at most one primary in every recovery and token-form
         assert.equal(await page.evaluate(shown('connect-browser')), false);
         assert.equal(await page.evaluate(shown('browser-help')), false);
         await page.click('#origin-change');
-        await page.evaluate(choose('origin', 'http://localhost:3100'));
+        await page.evaluate(choose('origin', 'https://assetlib-billing-staging.vercel.app'));
         await page.frames();
         assert.equal(await page.evaluate(shown('connect-browser')), true);
         assert.equal(await page.evaluate(shown('browser-help')), true);

@@ -8,7 +8,6 @@
   "main": "dist/code.js",
   "ui": "dist/ui.html",
   "documentAccess": "dynamic-page",
-  "enablePrivatePluginApi": true,
   "menu": [
     { "name": "Open Assetlib", "command": "open" },
     { "separator": true },
@@ -22,10 +21,10 @@
   "networkAccess": {
     "allowedDomains": [
       "https://console.assetlib.dev",
-      "https://assetlib-console.vercel.app"
+      "https://assetlib-console.vercel.app",
+      "https://assetlib-billing-staging.vercel.app"
     ],
     "devAllowedDomains": [
-      "https://assetlib-billing-staging.vercel.app",
       "http://localhost:3100"
     ],
     "reasoning": "Reads images from, and sends exported artwork to, the Assetlib console you connect."
