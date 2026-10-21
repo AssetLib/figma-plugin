@@ -1,5 +1,7 @@
 # Community listing assets
 
+Build `1466cb2` was submitted on 2026-10-21 under plugin ID `1690264758934826227`. Figma confirmed receipt; review and public installation are pending.
+
 Upload `icon.png` (128 × 128) and `cover.png` (1920 × 1080). The cover is typographic; it contains no product screenshot or customer artwork. Listing text is in [LISTING.md](LISTING.md).
 
 Editable sources are `icon.svg` and `cover.html`. The icon preserves the canonical mark geometry and uses 44px clear space around its 40px mark box. The cover uses the repository’s licensed Instrument Sans font and the Assetlib paper/ink palette. Brand masters are unchanged.
