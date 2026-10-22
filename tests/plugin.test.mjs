@@ -335,7 +335,7 @@ test('a placement cell inserts as a linked image component, centered and selecte
   const app = harness({ now: () => time });
   await settle(); time += 1;
   const frame = await insertHeroCell(app);
-  assert.deepEqual(app.requests.filter(request => !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork', 'artwork'],
+  assert.deepEqual(app.requests.filter(request => request.method === 'GET' && !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork', 'artwork'],
     'the newly inserted layer gets one artwork read after its link is first seen');
   const downloads = app.requests.filter(request => request.url.endsWith(sha(11)));
   assert.equal(downloads.length, 1, 'the largest PNG within 4 MiB is fetched once');
@@ -679,11 +679,15 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
   const pages = () => app.requests.filter(request => request.route === 'assets').map(request => request.url.slice(`${connection.origin}/api/apps/org-one/app-a/`.length));
   assert.deepEqual(pages(), ['assets?limit=24']);
   assert.equal(tilesOf(app).length, 24);
+  assert.equal(app.element('browse-summary').textContent, '24 images loaded · more available');
+  assert.equal(app.element('art-filters').hidden, true);
+  assert.equal(app.element('insert-search').placeholder, 'Search image names');
   assert.equal(app.element('images-more').hidden, false);
   app.element('images-more').dispatch('click');
   await settle();
   assert.equal(pages()[1], `assets?limit=24&cursor=${entries[23].asset.id}`);
   assert.equal(tilesOf(app).length, 30);
+  assert.equal(app.element('browse-summary').textContent, '30 images');
   assert.equal(app.element('images-more').hidden, true);
 
   app.element('insert-search').value = ' Coast ';
@@ -693,6 +697,7 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
   await settle();
   assert.equal(pages()[2], 'assets?limit=24&q=Coast');
   assert.equal(tilesOf(app).length, 10);
+  assert.equal(app.element('browse-summary').textContent, '10 images matching your search');
 
   tilesOf(app)[0].dispatch('click');
   assert.equal(app.element('insert-title').textContent, 'Coast 0');
@@ -849,7 +854,7 @@ test('preferences restore the tab, environment, and scale, changes are saved, an
   assert.equal(app.element('scale-2').getAttribute('aria-checked'), 'true');
   assert.equal(app.element('env-staging').getAttribute('aria-checked'), 'true');
   assert.equal(app.element('env-staging').title, 'Staging: the release published for testing. Release 3, Oct 8.');
-  assert.deepEqual(app.requests.filter(request => !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork'], 'Insert loads on open');
+  assert.deepEqual(app.requests.filter(request => request.method === 'GET' && !['rendition', 'token'].includes(request.route)).map(request => request.route), ['placements', 'artwork'], 'Insert loads on open');
   assert.equal(app.uiMessages.filter(message => message.type === 'save-preferences').length, 0, 'restoring does not save');
   app.element('env-draft').dispatch('click');
   await settle();
@@ -6648,11 +6653,12 @@ test('Batch 3 review F2: a title reveal that starts a stale full load focuses it
 for (const kind of ['quiet', 'full']) test(`Batch 3 review F5: a ${kind} artwork read cannot clear a newer Send token refusal`, async () => {
   const app = batch3(); await settle();
   if (kind === 'full') { app.element('tab-insert').dispatch('click'); await settle(); }
+  const opening = artworkReads(app).length;
   const gate = deferred(); app.console.gates.artwork = gate;
   if (kind === 'quiet') { app.advance(60000); app.focusWindow(); }
   else app.element('insert-refresh').dispatch('click');
   await settle();
-  assert.equal(artworkReads(app).length, 2);
+  assert.equal(artworkReads(app).length, opening + 1);
   delete app.console.gates.artwork;
   app.advance(1);
   app.console.statuses.drafts = 401;
@@ -7614,6 +7620,135 @@ const fileIndex = app => app.mainMessages.filter(message => message.type === 'fi
 const linkedSpec = (id, extra = {}) => ({ id, name: 'Artwork layer', type: 'COMPONENT', width: 400, height: 400, fills: [{ type: 'IMAGE', imageHash: 'native', scaleMode: 'FILL' }],
   pluginData: { [LINK_KEY]: JSON.stringify({ v: 1, ...connection, token: undefined, placementKey: placement.key, state: 'old', appearance: null, arm: null, environment: 'draft', assetId: baseArt, nodeId: id, insertedAt: 'set' }) }, ...extra });
 
+const inventories = app => app.requests.filter(request => request.route === 'inventory');
+test('console inventory reports bounded linked metadata and explicit page coverage', async () => {
+  const copy = linkedSpec('10:2'); copy.pluginData = linkedSpec('10:1').pluginData;
+  const app = harness({ remembered: null, selection: [linkedSpec('10:1'), copy], pages: [{ id: '0:2', name: 'Other', children: [linkedSpec('20:1')] }] });
+  await settle();
+  const first = inventories(app).at(-1);
+  assert.equal(first.method, 'POST'); assert.equal(first.authorization, `Bearer ${connection.token}`);
+  assert.deepEqual(first.body.file, { fileKey: 'abc123', name: app.figma.root.name });
+  assert.equal(first.body.scope, 'page'); assert.equal(first.body.complete, true); assert.equal(first.body.truncated, false);
+  assert.deepEqual(first.body.entries.map(entry => [entry.nodeId, entry.sourceNodeId, entry.kind]), [['10:1', '10:1', 'linked'], ['10:2', '10:1', 'copy']]);
+  assert.deepEqual(app.loadedPages, [], 'reporting never loads other pages automatically');
+  assert.equal(/imageBase64|insertedAt|token|fills|children\":\[/.test(JSON.stringify(first.body)), false);
+  app.postToMain({ type: 'scan-file', requestId: 8100, allPages: true }); await settle();
+  assert.equal(inventories(app).at(-1).body.scope, 'file');
+  assert.equal(inventories(app).at(-1).body.entries.length, 3);
+  app.figma.root.children[1].loadAsync = async () => { throw new Error('unreadable page'); };
+  app.postToMain({ type: 'scan-file', requestId: 8101, allPages: true }); await settle();
+  assert.equal(inventories(app).at(-1).body.complete, false, 'a skipped page cannot reconcile the whole file');
+  const many = harness({ remembered: null, selection: Array.from({ length: 501 }, (_, i) => linkedSpec(`90:${i}`, { name: 'a'.repeat(250) })) }); await settle();
+  assert.equal(fileIndex(many).entries.length, 501, 'the local list keeps its existing limit');
+  assert.equal(inventories(many).at(-1).body.entries.length, 500); assert.equal(inventories(many).at(-1).body.truncated, true);
+  assert.equal(inventories(many).at(-1).body.entries[0].name.length, 200);
+  app.figma.root.name = 'File\nname'; app.figma.currentPage.name = 'Page\tname';
+  app.figma.currentPage.children[0].name = 'Layer\u007fname';
+  app.postToMain({ type: 'scan-file', requestId: 8102, allPages: false }); await settle();
+  const cleaned = inventories(app).at(-1).body;
+  assert.equal(cleaned.file.name, 'File name'); assert.equal(cleaned.entries[0].pageName, 'Page name'); assert.equal(cleaned.entries[0].name, 'Layer name');
+});
+test('console inventory continues with the newest queued snapshot after a failed report', async () => {
+  const gate = deferred();
+  const app = harness({ remembered: null, selection: [linkedSpec('10:1')], console: { gates: { inventory: gate }, statuses: { inventory: 503 } } }); await settle();
+  app.figma.currentPage.children[0].name = 'Later edit';
+  app.postToMain({ type: 'scan-file', requestId: 8103, allPages: false }); await settle();
+  assert.equal(inventories(app).length, 1);
+  gate.resolve(); await settle();
+  assert.equal(inventories(app).length, 2); assert.equal(inventories(app).at(-1).body.entries[0].name, 'Later edit');
+  assert.equal(app.element('error').textContent, '');
+});
+test('console inventory bounds Unicode payload bytes without splitting an emoji', async () => {
+  const app = harness({ remembered: null, selection: [{ ...node, id: '10:0', name: '框'.repeat(200),
+    children: Array.from({ length: 500 }, (_, i) => linkedSpec(`91:${i}`, { name: '層'.repeat(200) })) }] }); await settle();
+  app.figma.currentPage.name = '頁'.repeat(200);
+  app.figma.root.name = `${'a'.repeat(199)}😀`;
+  app.postToMain({ type: 'scan-file', requestId: 8105, allPages: false }); await settle();
+  const report = inventories(app).at(-1).body;
+  assert.equal(report.file.name, 'a'.repeat(199));
+  assert.ok(Buffer.byteLength(JSON.stringify(report), 'utf8') <= 1_000_000);
+  assert.equal(report.truncated, true); assert.ok(report.entries.length < 500);
+});
+test('console inventory preserves scan coverage when pages change while another page loads', async () => {
+  const app = harness({ remembered: null, selection: [linkedSpec('10:1')], pages: [{ id: '0:2', name: 'Other', children: [linkedSpec('20:1')] }] }); await settle();
+  const gate = deferred(); app.figma.root.children[1].loadAsync = () => gate.promise;
+  app.postToMain({ type: 'scan-file', requestId: 8104, allPages: true }); await settle();
+  app.changePage([linkedSpec('30:1')]); await settle(); gate.resolve(); await settle();
+  const captured = app.mainMessages.find(message => message.type === 'file-links' && message.requestId === 8104);
+  assert.equal(captured.scope, 'file'); assert.equal(captured.pageCount, 2); assert.equal(captured.complete, false);
+  assert.equal(captured.entries.some(entry => entry.nodeId === '30:1'), false, 'a page added after the scan started is not claimed as scanned');
+});
+test('console inventory waits for a file identity and does not block Send on report failure', async () => {
+  const app = harness({ fileKey: null, remembered: null, selection: [linkedSpec('10:1')], console: { failures: new Set(['inventory']), draft: boundDraft } }); await settle();
+  assert.equal(inventories(app).length, 0);
+  app.postToMain({ type: 'save-file-url', requestId: 8110, url: 'https://www.figma.com/design/abc123/Example', force: true }); await settle();
+  assert.equal(inventories(app).length, 1);
+  assert.equal(app.element('error').textContent, '');
+  startSend(app); await settle();
+  assert.equal(app.drafts().length, 1);
+  assert.equal(inventories(app).at(-1).body.entries[0].assetId, sentArt, 'only a confirmed bound send changes the linked image');
+  const before = inventories(app).length;
+  app.console.failures.delete('inventory'); app.postToMain({ type: 'scan-file', requestId: 8111, allPages: false }); await settle();
+  assert.equal(inventories(app).length, before + 1, 'an explicit scan retries a failed report');
+});
+test('console inventory file linking never exports a layer or resumes a previously requested Send', async () => {
+  for (const requestedSend of [false, true]) {
+    const app = harness({ fileKey: null, remembered: null, prefs: { tab: 'insert', browse: 'file' }, selection: [linkedSpec('10:1')] }); await settle();
+    if (requestedSend) {
+      startSend(app); await settle();
+      assert.equal(app.element('file-fallback').hidden, false);
+      assert.equal(app.exportMessages().length, 0);
+      app.element('tab-insert').click(); await settle();
+    }
+    assert.equal(app.element('file-link-prompt').hidden, false);
+    app.element('file-link-prompt').click(); await settle();
+    assert.equal(app.activeElement(), app.element('file-url'));
+    app.element('file-url').value = 'https://www.figma.com/design/abc123/Untitled';
+    app.element('file-url').dispatch('input'); app.fireTimers(350); await settle();
+    assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0);
+    assert.equal(inventories(app).at(-1).body.entries[0].nodeId, '10:1');
+    app.element('tab-insert').click(); await settle(); assert.equal(app.element('file-link-prompt').hidden, true);
+  }
+});
+test('console inventory confirms a renamed or copied document before using its saved file identity', async () => {
+  const app = harness({ fileKey: null, rootName: 'Copied design', remembered: null, prefs: { tab: 'insert', browse: 'file' },
+    rootPluginData: { [FILE_KEY]: JSON.stringify({ v: 1, fileKey: 'originalKey', source: 'link', savedAt: '2026-10-21T12:00:00.000Z', name: 'Original design' }) },
+    selection: [linkedSpec('10:1')] }); await settle();
+  assert.equal(inventories(app).length, 0); assert.equal(fileIndex(app).entries.length, 1, 'local links remain visible');
+  assert.equal(app.element('file-link-prompt').hidden, false);
+  app.element('file-link-prompt').click(); await settle(); app.element('file-url').value = 'https://www.figma.com/design/copiedKey/Copied-design';
+  app.element('file-url').dispatch('input'); app.fireTimers(350); await settle();
+  assert.equal(inventories(app).at(-1).body.file.fileKey, 'copiedKey');
+  assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+test('console inventory drops queued snapshots after the file link is corrected', async () => {
+  const gate = deferred();
+  const app = harness({ fileKey: null, remembered: null,
+    rootPluginData: { [FILE_KEY]: JSON.stringify({ v: 1, fileKey: 'oldKey', source: 'link', savedAt: '2026-10-21T12:00:00.000Z', name: 'Untitled' }) },
+    selection: [linkedSpec('10:1')], console: { gates: { inventory: gate } } }); await settle();
+  app.figma.currentPage.children[0].name = 'Queued under old key';
+  app.postToMain({ type: 'scan-file', requestId: 8106, allPages: false }); await settle();
+  app.postToMain({ type: 'save-file-url', requestId: 8107, url: 'https://www.figma.com/design/correctKey/Untitled' }); await settle();
+  gate.resolve(); await settle();
+  assert.deepEqual(inventories(app).map(request => request.body.file.fileKey), ['oldKey', 'correctKey']);
+});
+for (const [description, next] of [['workspace switch', { ...connection, appId: 'app-b', token: tok('draft_b') }], ['token rotation', { ...connection, token: tok('draft_rotated') }]]) {
+  test(`console inventory drops stale snapshots and responses after ${description}`, async () => {
+    const gate = deferred();
+    const app = harness({ remembered: null, selection: [linkedSpec('10:1')], console: { gates: { inventory: gate } } }); await settle();
+    const old = fileIndex(app), first = inventories(app)[0];
+    app.saveConnection(next); await settle();
+    assert.equal(first.signal.aborted, true);
+    const before = inventories(app).length;
+    app.deliver(old); await settle(); assert.equal(inventories(app).length, before, 'old-generation scans never use the new token');
+    gate.resolve(); await settle();
+    app.postToMain({ type: 'scan-file', requestId: 8120, allPages: false }); await settle();
+    assert.equal(inventories(app).at(-1).authorization, `Bearer ${next.token}`);
+    assert.ok(inventories(app).at(-1).url.includes(`/apps/${next.orgId}/${next.appId}/`));
+    assert.equal(inventories(app).at(-1).body.entries.length, next.appId === connection.appId ? 1 : 0);
+  });
+}
+
 test('phase 1 file inventory reports connection, insert, Send, page changes and all-pages scans', async () => {
   const copy = linkedSpec('10:2'); copy.pluginData = linkedSpec('10:1').pluginData;
   const app = harness({ remembered: null, selection: [linkedSpec('10:1'), copy], pages: [{ id: '0:2', name: 'Other', children: [{ id: '20:1', name: 'Screen', type: 'FRAME', width: 400, height: 400, children: [linkedSpec('20:2')] }] }] });
@@ -7950,4 +8085,40 @@ test('Send filters 500 placements by key or screen without changing the chosen d
   assert.equal(values().length, 501);
   app.element('send').click(); await settle();
   assert.equal(app.requests.filter(request => request.route === 'drafts').at(-1).body.bind.slotKey, 'screen499.hero');
+});
+
+test('placement artwork filters count matching placements across cells and environments and recover from no results', async () => {
+  const data = artwork();
+  const partlySet = { ...data.placements[0], cells: heroCells().map((cell, index) => ({ ...cell, draft: index === 17 ? cell.draft : null, staging: null })) };
+  const empty = { ...partlySet, key: 'home.empty', cells: partlySet.cells.map(cell => ({ ...cell, draft: null })) };
+  const inherited = { ...data.placements[0], key: 'travel.hero', screen: 'Travel' };
+  data.placements = [partlySet, empty, inherited];
+  const app = harness({ prefs: { tab: 'insert', environment: 'draft', environmentChosen: true }, console: { artwork: data } });
+  await settle();
+  const counts = () => ['art-all', 'art-with', 'art-empty'].map(id => app.element(id).textContent);
+  const keys = () => descendants(app.element('insert-list')).filter(item => item.getAttribute?.('data-key')).map(item => item.getAttribute('data-key'));
+  assert.deepEqual(counts(), ['All 3', 'With art 2', 'No art 1']);
+  assert.equal(app.element('browse-summary').textContent, '3 of 3 placements · Draft');
+  app.element('art-with').click();
+  assert.deepEqual(keys(), ['hero.artwork', 'travel.hero'], 'art in an alternate or inherited cell counts');
+  assert.equal(app.element('browse-summary').textContent, '2 of 3 placements · Draft');
+  app.element('insert-search').value = 'Home';
+  app.element('insert-search').dispatch('input');
+  assert.deepEqual(counts(), ['All 2', 'With art 1', 'No art 1']);
+  assert.deepEqual(keys(), ['hero.artwork']);
+  app.element('env-staging').click();
+  assert.deepEqual(counts(), ['All 2', 'With art 0', 'No art 2']);
+  assert.deepEqual(keys(), []);
+  assert.equal(app.element('insert-clear').textContent, 'Clear filters');
+  assert.equal(app.element('browse-summary').textContent, '0 of 3 placements · Staging');
+  app.element('insert-clear').click();
+  assert.equal(app.element('insert-search').value, '');
+  assert.equal(app.element('art-all').getAttribute('aria-checked'), 'true');
+  assert.equal(keys().length, 3);
+  app.element('art-with').focus();
+  app.keydown({ key: 'ArrowRight' }, app.element('art-filters'));
+  assert.equal(app.element('art-empty').getAttribute('aria-checked'), 'true');
+  assert.deepEqual(keys(), ['hero.artwork', 'home.empty']);
+  assert.equal(app.element('art-empty').getAttribute('tabindex'), '0');
+  assert.equal(app.element('art-all').getAttribute('tabindex'), '-1');
 });

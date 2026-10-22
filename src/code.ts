@@ -163,6 +163,7 @@ async function handleMessage(message: UiMessage): Promise<void> {
       try { await figma.clientStorage.setAsync(FILE_URL_KEY, message.url); savedFileUrl = message.url; } catch { /* not needed to send */ }
       post({ type: 'file-saved', requestId: message.requestId, fileKey, session: where === 'session' });
       await reportSelection();
+      void scanLinks();
       break;
     }
     case 'export': {

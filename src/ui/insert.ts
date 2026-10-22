@@ -34,6 +34,9 @@ const hintBar = element('hint-bar');
 const emptyState = element('insert-empty');
 const scaleButtons = [element<HTMLButtonElement>('scale-1'), element<HTMLButtonElement>('scale-2'), element<HTMLButtonElement>('scale-3')] as const;
 const browseButtons = [element<HTMLButtonElement>('browse-placements'), element<HTMLButtonElement>('browse-images'), element<HTMLButtonElement>('browse-file')] as const;
+const artFilters = ['all', 'with', 'empty'] as const;
+type ArtFilter = typeof artFilters[number];
+const artFilterButtons = artFilters.map(name => element<HTMLButtonElement>(`art-${name}`));
 const environmentButtons = ENVIRONMENTS.map(name => element<HTMLButtonElement>(`env-${name}`));
 // Below 400 px wide (ui.html) the radios give way to this dropdown; both show the same choice.
 const environmentSelect = element<HTMLSelectElement>('env-select');
@@ -78,6 +81,7 @@ let images: { items: LibraryAsset[]; nextCursor: string | null; q: string } | nu
 // A row's placement and the cell its strip shows, or a tile's image.
 type Choice = { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string } | { kind: 'file'; nodeId: string };
 let selected: Choice | null = null;
+let artFilter: ArtFilter = 'all';
 let pendingInsert: { id: number; generation: number; kind: 'insert' | 'update' } | null = null;
 let pendingReveal: { key: string; cell: CellCoordinate; environment: EnvironmentName } | null = null;
 // Insert downloads by version (sha256), as PNG bytes: null when a connection change abandoned it. `status` is the Insert
@@ -414,7 +418,7 @@ function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HT
   text.append(key, makeNode('span', 'meta compact-meta', [name !== placement.key ? placement.key : '', meta].filter(Boolean).join(' · ')),
     makeNode('span', 'meta wide-key', name !== placement.key ? placement.key : ''));
   const art = findCell(placement, baseCoordinate(placement))?.[shownEnvironment()] ?? null;
-  const box = makeNode('span', 'thumb-box'); box.append(thumbnailFrame(artworkAsset(current, art), !art, placement));
+  const box = makeNode('span', 'thumb-box'); box.append(thumbnailFrame(artworkAsset(current, art), !art, placement, true, { width: 80, height: 56 }));
   row.append(box, text, makeNode('span', 'meta wide-meta', meta));
   const draft = rowTag(placement);
   row.title = [placement.key, meta, referenceSize(placement), draft?.title].filter(Boolean).join(' · ');
@@ -556,6 +560,7 @@ export function slotIdOf(key: string): string | null {
 
 /** Reveal the linked cell in Insert; a pending reveal is completed once its artwork arrives. */
 export function revealPlacement(key: string, cell: CellCoordinate, environment: EnvironmentName): void {
+  artFilter = 'all';
   setBrowse('placements');
   if (!artwork || artworkGeneration !== state.connectionGeneration || state.ops.loadingList === 'placements') {
     pendingReveal = { key, cell, environment };
@@ -587,6 +592,7 @@ function renderEmpty(current: ListState | null): void {
   title.textContent = empty?.title ?? '';
   element('insert-empty-text').textContent = empty?.text ?? '';
   element('insert-clear').hidden = empty?.action !== 'clear';
+  element('insert-clear').textContent = artFilter !== 'all' && state.prefs.browse === 'placements' ? 'Clear filters' : 'Clear search';
   for (const id of ['insert-retry', 'insert-token', 'insert-go-send']) element(id).className = syncBar() === null ? 'primary' : 'secondary';
   element('insert-retry').hidden = empty?.action !== 'retry';
   // With the settings open, the token field is on screen already. A browser connection is made again, never with a token.
@@ -616,6 +622,9 @@ export function renderList(): void {
   const query = currentQuery();
   const lower = query.toLowerCase();
   let empty: ListState | null = null;
+  let summary = '';
+  const filters = element('art-filters');
+  filters.hidden = true;
   const listChildren: HTMLElement[] = [];
   const gridChildren: HTMLElement[] = [];
   // The connection test runs before any list loads, so it counts as loading too.
@@ -630,8 +639,21 @@ export function renderList(): void {
       empty = { title: 'No placements yet', text: 'An engineer adds placements in app code and runs assetlib sync. You can request one in the console.',
         action: 'link', link: { text: 'Read the guide', href: GUIDE_URL } };
     } else {
-      const matches = current.placements.filter(item => !lower || item.key.toLowerCase().includes(lower) || item.screen.toLowerCase().includes(lower));
-      if (!matches.length) empty = { text: `No placements match “${query}”.`, action: 'clear' };
+      const searched = current.placements.filter(item => !lower || item.key.toLowerCase().includes(lower) || item.screen.toLowerCase().includes(lower));
+      const withArt = (item: PlacementArtwork) => item.cells.some(cell => cell[shownEnvironment()] !== null);
+      const available = searched.filter(withArt).length;
+      const counts = [searched.length, available, searched.length - available];
+      filters.hidden = false;
+      artFilterButtons.forEach((button, index) => {
+        button.textContent = `${['All', 'With art', 'No art'][index]} ${counts[index]}`;
+        button.setAttribute('aria-checked', String(artFilter === artFilters[index]));
+        button.title = index === 0 ? 'Every placement matching your search.' : index === 1
+          ? `At least one cell has art in ${environmentLabel(shownEnvironment())}.` : `No cell has art in ${environmentLabel(shownEnvironment())}.`;
+      });
+      rovingStops(artFilterButtons);
+      const matches = searched.filter(item => artFilter === 'all' || withArt(item) === (artFilter === 'with'));
+      summary = `${matches.length} of ${current.placements.length} placements · ${environmentLabel(shownEnvironment())}`;
+      if (!matches.length) empty = { text: artFilter === 'all' ? `No placements match “${query}”.` : 'No placements match these filters.', action: 'clear' };
       const screens = distinct(matches.map(item => item.screen));
       screens.forEach((screen, index) => {
         // Each screen is a group of options named by its header, which stays in view while its rows scroll.
@@ -656,6 +678,7 @@ export function renderList(): void {
     }));
     if (!rows.size) empty = query ? { text: `No layers match “${query}”.`, action: 'clear' }
       : { title: `Nothing from Assetlib ${state.fileLinks?.scope === 'file' ? 'in this file' : 'on this page'} yet.`, text: 'Insert a placement from Placements, or drag one onto the canvas.', action: null };
+    summary = `${rows.size} linked layer${rows.size === 1 ? '' : 's'}${query ? ' matching your search' : ''}`;
   } else if (!images) {
     if (loading('images')) gridChildren.push(...skeletons('images'));
     else empty = listError;
@@ -664,6 +687,9 @@ export function renderList(): void {
     empty = { title: 'No images yet', text: 'Upload images in the Assetlib console, or send a frame from Figma.', action: 'link',
       link: { text: 'Open console', href: consoleLink(state.connection, 'images') } };
   } else gridChildren.push(...images.items.map(imageTile));
+  if (browse === 'images' && images && (images.items.length || images.q) && !loading('images') && images.q === query) summary = `${images.items.length} image${images.items.length === 1 ? '' : 's'}${images.nextCursor ? ' loaded · more available' : images.q ? ' matching your search' : ''}`;
+  element('browse-summary').textContent = summary;
+  element('browse-results').hidden = !summary && filters.hidden;
   list.replaceChildren(...listChildren);
   grid.replaceChildren(...gridChildren);
   // A listbox only while it holds options; loading, it holds skeletons and the words a screen reader finds there.
@@ -692,7 +718,7 @@ export function renderInsertControls(): void {
   rovingStops(browseButtons);
   // Typing stays possible while a list loads; a new search replaces the load.
   searchInput.disabled = !state.connection;
-  const label = browse === 'placements' ? 'Search placements or screens' : browse === 'file' ? 'Search layers or placements' : 'Search images';
+  const label = browse === 'placements' ? 'Search placements or screens' : browse === 'file' ? 'Search layers or placements' : 'Search image names';
   searchInput.placeholder = label;
   searchInput.setAttribute('aria-label', label);
   searchClear.hidden = !searchInput.value;
@@ -1281,6 +1307,7 @@ export function failInsert(requestId: number, message: string): boolean {
 export function resetInsert(): void {
   resetFile();
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
+  artFilter = 'all';
   artworkFrom = null; quietFrom = null; seenLinks.clear(); checkedLinks.clear();
   quietTicket += 1; quietLoading = false; artworkRefreshPending = false; artworkFinishedAt = null; artworkListStale = false; pendingReveal = null;
   state.ops.loadingList = null; loadingQuery = ''; listError = null; listDeferred = false; listTicket += 1;
@@ -1428,6 +1455,13 @@ function listKeydown(event: KeyboardEvent): void {
 }
 
 export function initInsert(goToSend: () => void): void {
+  artFilterButtons.forEach((button, index) => button.addEventListener('click', () => {
+    artFilter = artFilters[index]!;
+    if (!actionsBlocked()) selected = null;
+    activeKey = null;
+    scheduleRender(true);
+  }));
+  arrowKeys(element('art-filters'), artFilterButtons, 'radios');
   element('intro-close').addEventListener('click', () => {
     state.prefs.introSeen = true;
     savePreferences();
@@ -1481,7 +1515,7 @@ export function initInsert(goToSend: () => void): void {
     if (searchTimer !== null) window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(searchImages, 300);
   });
-  element('insert-clear').addEventListener('click', clearSearch);
+  element('insert-clear').addEventListener('click', () => { artFilter = 'all'; clearSearch(); });
   searchClear.addEventListener('click', () => { clearSearch(); searchInput.focus(); });
   element('insert-refresh').addEventListener('click', refreshList);
   element('insert-retry').addEventListener('click', refreshList);

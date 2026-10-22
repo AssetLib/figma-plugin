@@ -481,6 +481,14 @@ export function initSend(actions: { refused: (text?: string) => void; retry: () 
     flushRender();
     fileUrl.focus();
   });
+  element('file-link-prompt').addEventListener('click', () => {
+    if (actionsBlocked()) return;
+    // This action records inventory only, including when a previous Send was waiting for a link.
+    fileAsked = true;
+    showSend();
+    scheduleRender(); flushRender(); fileUrl.focus();
+    setStatus('Link this file to show its scanned layers in the console.');
+  });
   placementSearch.addEventListener('input', () => { buildPlacementOptions(); scheduleRender(); });
   placementPicker.addEventListener('change', () => { if (actionsBlocked()) return; buildPlacementOptions(); updateCellPickers(); savePicker(); });
   sendButton.addEventListener('click', () => { savePicker(); void sendSelection(); });

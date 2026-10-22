@@ -240,6 +240,7 @@ function installFakes(config) {
     if (config.statuses?.[route]) {
       return json(config.statuses[route], { error: config.errors?.[route] ?? `HTTP ${config.statuses[route]} from the fake console.`, ...(config.codes?.[route] ? { code: config.codes[route] } : {}) });
     }
+    if (route === 'inventory') return json(200, { reportedAt: new Date().toISOString(), accepted: JSON.parse(init.body).entries.length });
     // One-click Connect: a request, claimed as config.pairingStatus says (__harness.approve() approves it).
     if (route === 'start') {
       return json(201, { readKey: `alr_${'r'.repeat(43)}`, writeKey: `alw_${'w'.repeat(43)}`, userCode: 'BCDF-GHJK', expiresAt: new Date(Date.now() + 600000).toISOString(),
@@ -292,7 +293,7 @@ function installFakes(config) {
     const pairing = /^https?:\/\/[^/]+\/api\/plugin-connections(?:\/(claim|cancel|current))?$/.exec(url);
     const route = pairing ? pairing[1] ?? 'start' : /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork'
       : path === 'placements' ? 'placements' : /^assets(\?|$)/.test(path) ? 'assets' : /^assets\/[^/]+\/renditions\/[^/]+$/.test(path) ? 'rendition'
-        : path === 'drafts' ? 'drafts' : 'unknown';
+        : path === 'drafts' ? 'drafts' : path === 'figma/inventory' ? 'inventory' : 'unknown';
     const entry = { route, url, body: typeof init.body === 'string' ? init.body : null, started: performance.now(), done: false, aborted: false };
     log.push(entry);
     const { signal } = init;
@@ -319,7 +320,9 @@ function installFakes(config) {
   const selectedNodes = [];
   const fileEntries = config.fileEntries ?? [];
   let allPages = Boolean(config.fileAll);
-  const inventory = requestId => ({ type: 'file-links', connectionGeneration: generation, scope: allPages || !config.multiPage ? 'file' : 'page', pageCount: config.multiPage ? 2 : 1, currentPageId: '0:1', entries: config.connection ? fileEntries.filter(entry => allPages || !config.multiPage || entry.pageId === '0:1') : [], truncated: false, ...(requestId ? { requestId } : {}) });
+  const inventory = requestId => ({ type: 'file-links', connectionGeneration: generation, scope: allPages || !config.multiPage ? 'file' : 'page', pageCount: config.multiPage ? 2 : 1,
+    currentPageId: '0:1', fileKey: config.selection?.fileKey ?? null, fileName: 'Example', complete: true,
+    entries: config.connection ? fileEntries.filter(entry => allPages || !config.multiPage || entry.pageId === '0:1').map(entry => ({ sourceNodeId: entry.nodeId, ...entry })) : [], truncated: false, ...(requestId ? { requestId } : {}) });
   const notices = [];
   const choices = new Map();
   const exported = new Map();
@@ -390,6 +393,7 @@ function installFakes(config) {
         config.selection = { ...config.selection, fileKey: 'abc123', file: { source: config.viewOnly ? 'session' : 'document', name: config.fileName ?? 'Untitled' } };
         reply({ type: 'file-saved', requestId: message.requestId, fileKey: 'abc123', session: Boolean(config.viewOnly) });
         reply(selection());
+        reply(inventory());
         break;
       case 'save-send-choice':
         choices.set(message.nodeId, { fileKey: message.fileKey, nodeId: message.nodeId, placementKey: message.placementKey,
@@ -1130,7 +1134,7 @@ test('one-click Connect shows the code to compare, cancels, connects without a t
   } finally { await refused.close(); }
 });
 
-test('56 px placement rows and a bounded cell strip leave the list scrollable at 420×720', async () => {
+test('72 px placement rows and a bounded cell strip leave the list scrollable at 420×720', async () => {
   const page = await openUi({ placements: 30, declared: true });
   try {
     await page.waitFor(`${rows} === 30`, { message: 'thirty placements' });
@@ -1140,7 +1144,7 @@ test('56 px placement rows and a bounded cell strip leave the list scrollable at
     const visible = await page.evaluate(`(() => { const region = document.getElementById('list-region').getBoundingClientRect();
       return [...document.querySelectorAll('#insert-list .placement[data-key]')].filter(row => { const r = row.getBoundingClientRect();
         return r.top >= region.top - 0.5 && r.bottom <= region.bottom + 0.5; }).length; })()`);
-    assert.ok(visible >= 5, `${visible} rows are fully visible`);
+    assert.ok(visible >= 3, `${visible} rows are fully visible`);
     // The bars are fixed: only the list scrolls.
     const bars = `['.topbar', '.toolbar', '.scopebar', '#insert-bar'].map(s => Math.round(document.querySelector(s).getBoundingClientRect().top))`;
     const before = await page.evaluate(bars);
@@ -1153,7 +1157,7 @@ test('56 px placement rows and a bounded cell strip leave the list scrollable at
 
 // Names as people give layers (Send names an image after its layer): many have no break opportunity at all.
 const longImageNames = ['onboarding_hero_dark_final_v2', 'travel.coast.background.large', 'IMG_20261009_142233', 'home-banner-summer-campaign-light',
-  'Coast house', 'a_layer_name_far_too_long_for_two_lines_of_any_tile_in_this_grid_v12'];
+  'Coast house', 'a_layer_name_far_too_long_for_two_lines_of_any_tile_in_this_grid_with_extra_review_notes_and_version_history_v12'];
 // A Send receipt for a layer with a long, unbroken name.
 const longKey = 'onboarding.welcome_carousel_slide_three_hero_illustration_large';
 const longRebound = (() => {
@@ -1588,7 +1592,7 @@ test('≤15 tab stops with 500 placements', async () => {
     }
     assert.ok(stops.length <= 15, `${stops.length} tab stops: ${stops.join(', ')}`);
     // Tabs → account → search → scope → list → footer; each tab list, radio group, and the list is one stop.
-    assert.deepEqual(stops, ['tab-insert', 'settings-summary', 'insert-search', 'insert-refresh', 'browse-placements', 'env-draft', 'screen0.slot0',
+    assert.deepEqual(stops, ['tab-insert', 'settings-summary', 'insert-search', 'insert-refresh', 'browse-placements', 'env-draft', 'art-all', 'screen0.slot0',
       'insert-cell', 'scale-1', 'insert']);
     assert.deepEqual(await page.evaluate(listStops), ['screen0.slot0'], 'one of the 500 rows is a tab stop');
     // Shift+Tab from the footer comes back to the chosen row.
@@ -1659,9 +1663,9 @@ test('arrows move selection', async () => {
   const grid = await openUi({ preferences: { browse: 'images' } });
   try {
     await grid.waitFor(`${tiles} === 24`);
-    assert.equal(await grid.evaluate(`getComputedStyle(document.getElementById('image-grid')).gridTemplateColumns.split(' ').length`), 3, 'three columns at 420 px');
+    assert.equal(await grid.evaluate(`getComputedStyle(document.getElementById('image-grid')).gridTemplateColumns.split(' ').length`), 2, 'two columns at 420 px');
     assert.equal(await grid.evaluate(`document.getElementById('image-grid').getAttribute('role')`), 'listbox');
-    const ids = Object.fromEntries(await grid.evaluate(`[1, 2, 4, 5, 20, 22, 24].map(n => [n, __harness.uuid(n)])`));
+    const ids = Object.fromEntries(await grid.evaluate(`[1, 2, 3, 4, 21, 22, 24].map(n => [n, __harness.uuid(n)])`));
     await grid.click('#image-grid .tile');
     const at = async (n, message) => {
       assert.equal(await grid.focused(), ids[n], message);
@@ -1669,13 +1673,13 @@ test('arrows move selection', async () => {
       assert.deepEqual(await grid.evaluate(listStops), [ids[n]], `${message}: the one tab stop`);
     };
     await grid.press('ArrowRight'); await at(2, '→');
-    await grid.press('ArrowDown'); await at(5, '↓ a row');
-    await grid.press('ArrowLeft'); await at(4, '←');
+    await grid.press('ArrowDown'); await at(4, '↓ a row');
+    await grid.press('ArrowLeft'); await at(3, '←');
     await grid.press('ArrowUp'); await at(1, '↑ a row');
     await grid.press('ArrowUp'); await at(1, '↑ on the first row');
     await grid.press('End'); await at(24, 'End');
     await grid.press('ArrowDown'); await at(24, '↓ on the last row');
-    await grid.press('ArrowUp'); await grid.press('ArrowLeft'); await at(20, '↑ then ←');
+    await grid.press('ArrowUp'); await grid.press('ArrowLeft'); await at(21, '↑ then ←');
     await grid.press('Home'); await at(1, 'Home');
     for (const key of 'image 22') await grid.press(key);
     await at(22, 'type-ahead with a space');
@@ -1690,8 +1694,8 @@ test('Enter inserts', async () => {
     await page.press('/');
     assert.equal(await page.focused(), 'insert-search');
     await page.type('home');
-    for (let i = 0; i < 5; i += 1) await page.press('Tab');
-    assert.equal(await page.focused(), 'home.banner', 'past Clear search, Refresh, Browse, and Environment, the first row');
+    for (let i = 0; i < 6; i += 1) await page.press('Tab');
+    assert.equal(await page.focused(), 'home.banner', 'past Clear search, Refresh, Browse, Environment, and artwork filters, the first row');
     assert.deepEqual(await page.evaluate(chosenKeys), [], 'reaching the list chooses nothing');
     await page.press('Enter');
     await page.waitFor(`__harness.inserted() === 1 && document.getElementById('status').textContent === 'Inserted home.banner from Draft.'`, { message: 'the insert' });
@@ -2074,7 +2078,7 @@ test('the layout follows the window: an Environment dropdown below 400 px and a 
       const key = row.querySelector('.row-text').getBoundingClientRect(); const size = row.querySelector('.wide-meta').getBoundingClientRect();
       return { right: Math.round(size.right), after: size.left >= key.right, line: Math.abs((key.top + key.bottom) / 2 - (size.top + size.bottom) / 2) < 1, height: Math.round(row.getBoundingClientRect().height) }; })`);
     assert.equal(new Set(columns.map(column => column.right)).size, 1, `the meta column is right-aligned: ${JSON.stringify(columns.map(column => column.right))}`);
-    assert.ok(columns.every(column => column.after && column.line && column.height === 56), JSON.stringify(columns));
+    assert.ok(columns.every(column => column.after && column.line && column.height === 72), JSON.stringify(columns));
   } finally { await page.close(); }
   // Every tag, the widest ("Needs re-upload") included, fits the tag column, so the meta column stays aligned.
   const tagged = await openUi({ changed: ['home.banner'], unset: ['home.tile'], legacy: ['settings.empty'], missing: ['home.promo'] }, { width: 640, height: 900 });
@@ -2089,8 +2093,8 @@ test('the layout follows the window: an Environment dropdown below 400 px and a 
     assert.equal(new Set(edges.filter(([tag]) => tag).map(([, , right]) => right)).size, 1, 'tags end at the row’s padding');
   } finally { await tagged.close(); }
 
-  // The image grid takes four columns at 560 px and more beyond.
-  for (const [width, count] of [[420, 3], [560, 4], [900, 7]]) {
+  // The image grid prioritizes previews: two columns at 420 px, three at 560 px.
+  for (const [width, count] of [[320, 2], [420, 2], [560, 3], [900, 5]]) {
     const grid = await openUi({ preferences: { browse: 'images' } }, { width, height: 720 });
     try {
       await grid.waitFor(`${tiles} === 24`);
@@ -2152,7 +2156,8 @@ test('a running action keeps its ink and a spinner, and the shell gives names an
     assert.ok(await narrow.evaluate(`document.getElementById('insert-title').getBoundingClientRect().width`) >= 88, 'the name keeps 88 px');
     assert.equal(await narrow.evaluate(`document.getElementById('insert-preview').checkVisibility()`), false, 'the chosen row shows the image already');
     await narrow.click('#settings-summary');
-    assert.ok(await narrow.evaluate(`document.getElementById('list-region').getBoundingClientRect().height`) >= 96, 'two rows or more stay in view');
+    const remaining = await narrow.evaluate(`document.getElementById('list-region').getBoundingClientRect().height`);
+    assert.ok(remaining >= 96, `the list keeps at least 96 px of height (${remaining}px)`);
   } finally { await narrow.close(); }
 
   // Tile names break after their separators.
@@ -3373,7 +3378,7 @@ for (const theme of ['light', 'dark']) {
         await resizeTo(page, width, 720);
         assert.equal(await page.evaluate('document.documentElement.scrollWidth - innerWidth'), 0);
         assert.equal(await page.evaluate(`document.getElementById('list-region').scrollWidth - document.getElementById('list-region').clientWidth`), 0);
-        assert.equal(await page.evaluate(`Math.round(document.querySelector('#insert-list .placement').getBoundingClientRect().height)`), 56);
+        assert.equal(await page.evaluate(`Math.round(document.querySelector('#insert-list .placement').getBoundingClientRect().height)`), 72);
         if (width === 420) assert.equal(await page.evaluate(`document.getElementById('insert-cells').scrollWidth - document.getElementById('insert-cells').clientWidth`), 0, 'four columns and states fit');
         if (width === 420) assert.equal(await page.evaluate(`document.getElementById('browse-group').getBoundingClientRect().top === document.getElementById('env-group').getBoundingClientRect().top`), true, 'Browse and Environment share one row');
       }
@@ -3385,6 +3390,9 @@ for (const theme of ['light', 'dark']) {
     const page = await openUi({ fileEntries: fileFixture, multiPage: true, preferences: { browse: 'file' }, scanDelay: 100 }, { theme });
     try {
       await page.waitFor(`${rows} === 2`);
+      await page.waitFor(`__harness.log.some(entry => entry.route === 'inventory' && entry.done)`);
+      const report = await page.evaluate(`JSON.parse(__harness.log.find(entry => entry.route === 'inventory').body)`);
+      assert.equal(report.scope, 'page'); assert.equal(report.complete, true); assert.equal(report.entries.length, 2);
       assert.equal(await page.evaluate(visible('file-scope')), true);
       assert.equal(await page.evaluate(visible('insert-bar')), false);
       assert.equal(await page.evaluate(visible('hint-bar')), false);
@@ -3404,6 +3412,20 @@ for (const theme of ['light', 'dark']) {
       assert.equal(await page.evaluate(visible('file-scope')), false);
       await page.click('#insert-search'); await page.type('Tablet');
       await page.waitFor(`${rows} === 1`); assert.equal(await page.evaluate(`document.querySelector('#insert-list .name').textContent`), 'Other banner');
+    } finally { await page.close(); }
+  });
+  test(`console inventory ${theme}: link a file without exporting or sending art`, async () => {
+    const page = await openUi({ selection: { ...DEFAULTS.selection, fileKey: null }, fileEntries: fileFixture,
+      preferences: { browse: 'file' } }, { theme, width: 320 });
+    try {
+      await page.waitFor(`${visible('file-link-prompt')}`);
+      await page.click('#file-link-prompt');
+      await page.waitFor(`document.activeElement?.id === 'file-url'`);
+      await page.type('https://www.figma.com/design/abc123/Example');
+      await page.waitFor(`__harness.log.some(entry => entry.route === 'inventory' && entry.done)`);
+      assert.equal(await page.evaluate(`__harness.received.includes('save-file-url')`), true, 'the file link saves automatically');
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+      assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'drafts')`), false);
     } finally { await page.close(); }
   });
   test(`phase 1 ${theme}: automatic Production and main-component and export copy`, async () => {
@@ -3452,4 +3474,27 @@ for (const theme of ['light', 'dark']) test(`staging and Send search remain clea
       if (shots) await page.screenshot(join(shots, `staging-send-search-${theme}-${width}.png`));
     } finally { await page.close(); }
   }
+});
+
+for (const theme of ['light', 'dark']) test(`artwork filter counts, keyboard choices and result recovery stay visible (${theme})`, async () => {
+  const page = await openUi({ unset: ['home.tile'], preferences: { environment: 'draft', environmentChosen: true } }, { width: 320, height: 480, theme });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    assert.deepEqual(await page.evaluate(`['art-all', 'art-with', 'art-empty'].map(id => document.getElementById(id).textContent)`), ['All 7', 'With art 6', 'No art 1']);
+    await page.click('#art-with'); await page.press('ArrowRight');
+    assert.equal(await page.focused(), 'art-empty');
+    assert.equal(await page.evaluate(textOf('browse-summary')), '1 of 7 placements · Draft');
+    assert.equal(await page.evaluate(`${rows}`), 1);
+    await page.click('#insert-search'); await page.type('onboarding'); await page.frames();
+    assert.equal(await page.evaluate(textOf('art-with')), 'With art 2');
+    assert.equal(await page.evaluate(textOf('insert-clear')), 'Clear filters');
+    assert.equal(await page.evaluate(inViewport('insert-clear')), true);
+    await page.click('#insert-clear'); await page.frames();
+    assert.equal(await page.evaluate(`${rows}`), 7);
+    assert.equal(await page.evaluate(`document.getElementById('art-all').getAttribute('aria-checked')`), 'true');
+    assert.equal(await page.evaluate(inViewport('browse-summary')), true);
+    assert.ok(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`));
+    assert.equal(await page.evaluate(`document.scrollingElement.scrollHeight <= innerHeight`), true);
+    if (shots) await page.screenshot(join(shots, `artwork-discovery-${theme}.png`));
+  } finally { await page.close(); }
 });

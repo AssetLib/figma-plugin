@@ -205,7 +205,7 @@ export function fakeConsole(state) {
     // /placements/artwork is matched before /placements.
     const route = pairingRoute ? pairingRoute[1] ?? 'start' : /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork'
       : path === 'placements' ? 'placements' : /^assets(\?.*)?$/.test(path) ? 'assets' : /^assets\/[^/?]+\/renditions\/[^/?]+$/.test(path) ? 'rendition'
-        : path === 'drafts' ? 'drafts' : 'unknown';
+        : path === 'drafts' ? 'drafts' : path === 'figma/inventory' ? 'inventory' : 'unknown';
     request.route = route;
     const bearer = String(options?.headers?.Authorization ?? '').replace(/^Bearer /, '');
     if (state.gates[route]) await state.gates[route].promise;
@@ -284,6 +284,7 @@ export function fakeConsole(state) {
           async json() { throw new SyntaxError('not JSON'); },
           async arrayBuffer() { item.read = true; return item.body.slice().buffer; } };
       }
+      case 'inventory': return jsonResponse(200, { reportedAt: new Date(state.now?.() ?? Date.now()).toISOString(), accepted: request.body.entries.length });
       case 'drafts': {
         const body = request.body;
         const result = state.draft?.(body) ?? { asset: { id: 'asset-new', name: body.name, width: 1000, height: 1000, sha256: 'a'.repeat(64), renditions: 1 },
@@ -680,7 +681,7 @@ export function createHarness({
     setVisibility(value) { document.visibilityState = value; documentListeners.get('visibilitychange')?.({ type: 'visibilitychange' }); },
     /** Switches to a new page holding `nodes` (plain specs), as Figma's currentpagechange. */
     changePage(nodes = []) { figma.currentPage = makePage(nodes.map(spec => makeNode(spec))); figma.currentPage.parent = figma.root; figma.root.children.push(figma.currentPage); events.get('currentpagechange')(); return figma.currentPage; },
-    drafts: () => requests.filter(request => request.method === 'POST'),
+    drafts: () => requests.filter(request => request.method === 'POST' && request.route === 'drafts'),
     exportMessages: () => uiMessages.filter(message => message.type === 'export'),
     insertMessages: () => uiMessages.filter(message => message.type === 'insert'),
     delayTargetReads() { delayTargets = true; },

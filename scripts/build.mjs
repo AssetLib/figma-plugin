@@ -13,8 +13,8 @@ const dev = watching || args.has('--dev');
 // Release budget, embedded font included; raised from 176 KB on October 13, 2026 for the usability release:
 // Connect recovery, explanations, Update from Assetlib, the Send picker.
 // Raised on October 14, 2026: phase 1: cell strip and In this file.
-// Raised on October 21, 2026 for selected-layer rows, per-item receipts, and conditional draft review.
-const MAX_UI_BYTES = 210_000;
+// Raised on October 21, 2026 for selected-layer sends, conditional review, bounded inventory reports, and counted artwork filters.
+const MAX_UI_BYTES = 216_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 // Raised on October 21, 2026 for bounded multi-selection, per-layer choices, and export guards.
 const MAX_MAIN_BYTES = 54_000;

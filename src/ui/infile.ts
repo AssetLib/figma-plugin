@@ -1,10 +1,11 @@
-// Local document inventory and its file-status words; no HTTP calls.
+// Scanned document links, their file-status words, and bounded metadata reports to the connected workspace.
 import { appearanceLabel, changedArt, environmentLabel, findCell } from '../shared/index.js';
 import type { ArtworkResponse, CellCoordinate, Placement } from '../shared/index.js';
 import type { FileLink, FileLinks } from '../shared/protocol.js';
 import { element, post, scheduleRender, showError } from './dom.js';
 import { nextRequestId, state } from './state.js';
 import { thumbnailFrame } from './thumbnails.js';
+import { send } from './http.js';
 
 export type FileTag = { word: string; title: string; style?: string };
 export function cellAxes(placement: Placement, cell: CellCoordinate): string {
@@ -29,6 +30,49 @@ export function fileTag(key: string, artwork: ArtworkResponse | null): FileTag |
     : `${entries.length} layer${entries.length === 1 ? '' : 's'} ${where} use this placement.` };
 }
 let scan: number | null = null, selectionRequest: number | null = null, all = false, lastFocus = -Infinity;
+type Report = { key: string; fileKey: string; body: string; generation: number };
+const reports = new Map<string, Report>(), attempts = new Map<string, { body: string; at: number }>();
+let reporting: object | null = null;
+function reportFile(message: FileLinks): void {
+  if (!message.fileKey || !state.connection || message.connectionGeneration !== state.connectionGeneration) return;
+  const name = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200).replace(/[\ud800-\udbff]$/, '');
+  const key = `${message.fileKey}/${message.scope}/${message.scope === 'page' ? message.currentPageId : ''}`;
+  const report = { schemaVersion: 1, file: { fileKey: message.fileKey, name: name(message.fileName) },
+    scope: message.scope, currentPageId: message.currentPageId, pageCount: message.pageCount,
+    complete: message.complete, truncated: message.truncated || message.entries.length > 500,
+    entries: message.entries.slice(0, 500).map(({ nodeId, sourceNodeId, name: layer, pageId, pageName, frameId, frameName,
+      kind, placementKey, state: cellState, appearance, arm, environment, assetId, image, children, instance }) => ({
+      nodeId, sourceNodeId, name: name(layer), pageId, pageName: name(pageName), frameId, frameName: frameName === null ? null : name(frameName),
+      kind, placementKey, state: cellState, appearance, arm, environment, assetId, image, children, instance,
+    })) };
+  let body = JSON.stringify(report);
+  while (new Blob([body]).size > 1_000_000) {
+    report.entries.length = Math.floor(report.entries.length * .8);
+    report.truncated = true; body = JSON.stringify(report);
+  }
+  const last = attempts.get(key);
+  // Returning to an unchanged page is reported at most once a minute; an explicit Refresh can retry immediately.
+  if (message.requestId === undefined && last?.body === body && Date.now() - last.at < 60000) return;
+  reports.set(key, { key, fileKey: message.fileKey, body, generation: message.connectionGeneration });
+  if (reports.size > 20) reports.delete(reports.keys().next().value!);
+  void sendReports();
+}
+async function sendReports(): Promise<void> {
+  if (reporting) return;
+  const ticket = {}; reporting = ticket;
+  try {
+    while (reports.size && reporting === ticket) {
+      const report = reports.values().next().value!; reports.delete(report.key);
+      const config = state.connection;
+      if (!config || report.generation !== state.connectionGeneration || report.fileKey !== state.fileLinks?.fileKey) continue;
+      attempts.set(report.key, { body: report.body, at: Date.now() });
+      if (attempts.size > 20) attempts.delete(attempts.keys().next().value!);
+      // No success or connection state is inferred from this optional report. Send/Sync retain their own results.
+      try { await send(config, { path: 'figma/inventory', method: 'POST', body: report.body, retry: false, timeoutMs: 10000 }); }
+      catch { /* A failed report must not strand a newer queued snapshot. */ }
+    }
+  } finally { if (reporting === ticket) reporting = null; }
+}
 export function requestFileScan(allPages = false): void {
   if (!state.connection || state.connectionGeneration === null || (scan !== null && !allPages)) return;
   scan = nextRequestId(); all = allPages;
@@ -42,6 +86,7 @@ export function acceptFileLinks(message: FileLinks): void {
     return;
   }
   state.fileLinks = message;
+  reportFile(message);
   if (message.requestId === scan) { scan = null; all = false; }
   scheduleRender(true);
 }
@@ -55,13 +100,17 @@ export function selectFileNode(nodeId: string): void {
   selectionRequest = nextRequestId();
   post({ type: 'select-node', requestId: selectionRequest, nodeId });
 }
-export function resetFile(): void { state.fileLinks = null; scan = null; selectionRequest = null; all = false; lastFocus = -Infinity; }
+export function resetFile(): void {
+  state.fileLinks = null; scan = null; selectionRequest = null; all = false; lastFocus = -Infinity;
+  reporting = null; reports.clear(); attempts.clear();
+}
 export function focusFile(): void {
   if (state.prefs.tab !== 'insert' || state.prefs.browse !== 'file' || Date.now() - lastFocus < 2000) return;
   lastFocus = Date.now(); requestFileScan();
 }
 export function renderFileScope(): void {
   const index = state.fileLinks;
+  element('file-link-prompt').hidden = state.prefs.browse !== 'file' || !index || Boolean(index.fileKey);
   element('file-scope').hidden = state.prefs.browse !== 'file' || index?.scope !== 'page' || index.pageCount <= 1;
   element('file-limit').hidden = state.prefs.browse !== 'file' || !index?.truncated;
   const button = element('file-all');

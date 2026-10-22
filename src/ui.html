@@ -134,6 +134,10 @@
     .panel { display: grid; gap: 12px; max-height: 70vh; overflow: auto; padding: 4px 12px 12px; border-bottom: 1px solid var(--border); }
     .account { display: grid; gap: 2px; }
     .account-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
+    @media (max-height: 520px) {
+      .app[data-view="shell"] .panel { padding-top: 0; padding-bottom: 8px; }
+      .app[data-view="shell"] .account { gap: 0; }
+    }
     /* Disconnect forgets the token, so it stands apart from the actions beside it. */
     #disconnect { margin-left: auto; }
     .connection-form { display: grid; gap: 8px; }
@@ -170,6 +174,7 @@
     .search .icon-button:hover { background: var(--bg-tertiary); }
     .scopebar { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; min-height: 32px; padding: 4px 12px 8px;
       border-bottom: 1px solid var(--border); }
+    .browse-results { flex: none; display: grid; justify-items: start; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
     .segmented { display: inline-flex; flex: none; height: 24px; padding: 2px; border-radius: 5px; background: var(--bg-secondary); }
     .segmented button { height: 20px; padding: 0 8px; border: 1px solid transparent; border-radius: 4px; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--al-text-meta); }
     /* Browse and Environment share one row at the default 420 px. */
@@ -184,7 +189,8 @@
       color: var(--al-text-meta); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Rows and tiles are options of a listbox (one tab stop; the arrow keys move), not buttons. */
     .placement, .tile { cursor: pointer; user-select: none; transition: background-color 120ms; }
-    .placement { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; height: 56px; padding: 8px 12px; }
+    .placement { display: grid; grid-template-columns: 80px minmax(0, 1fr) auto; align-items: center; gap: 12px; width: 100%; height: 72px; padding: 8px 12px; }
+    .placement.file-row { grid-template-columns: 56px minmax(0, 1fr) auto; height: 56px; gap: 8px; }
     .placement:hover { background: var(--bg-hover); }
     .placement[aria-selected="true"] { background: var(--bg-tertiary); }
     /* A row's ring sits inside it, so the scroll region never clips it; a tile's sits 2 px out, clear of its name, in the
@@ -198,7 +204,7 @@
     /* Inside the ring, a 1 px band of the panel background: dark mode's vermilion on the selected row's fill is under 3:1. */
     .placement[aria-selected="true"]:focus-visible { box-shadow: inset 0 0 0 3px var(--bg); }
     .row-text { display: grid; min-width: 0; }
-    .placement .name { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .placement .name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .size { color: var(--al-text-meta); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Tags carry a word, never colour alone: a dot for information, a warning glyph for what blocks Insert. */
     .tag { display: inline-flex; align-items: center; gap: 4px; color: var(--al-text-meta); white-space: nowrap; }
@@ -207,6 +213,7 @@
     .tag.quiet::before { display: none; }
     .placement .meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .thumb-box { width: 56px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    .placement:not(.file-row) .thumb-box { width: 80px; height: 56px; }
     .wide-meta, .wide-key { display: none; }
     .tag.blocking::before { width: 12px; height: 12px; border-radius: 0; -webkit-mask: var(--warning-glyph) center / 12px 12px no-repeat; mask: var(--warning-glyph) center / 12px 12px no-repeat; }
     /* Not positioned, as nothing inside a row or tile may be: a positioned child paints over the focus ring. */
@@ -216,7 +223,7 @@
     .thumb img:not([src]) { visibility: hidden; }
     /* A cell with nothing in this environment is an empty slot, not a broken preview. */
     .thumb.slot { background: none; border: 1px dashed var(--slot); }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 8px 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; padding: 8px 12px; }
     /* An empty grid takes no room, so its empty state sits where the placements' does. */
     .grid:empty { padding: 0; }
     .tile { display: grid; align-content: start; gap: 2px; min-width: 0; border-radius: 6px; }
@@ -229,7 +236,7 @@
     #images-more { display: flex; width: calc(100% - 24px); margin: 0 12px 12px; }
     .skeleton { pointer-events: none; }
     .skeleton .block, .skeleton .bar { display: block; border-radius: 4px; background: var(--bg-secondary); }
-    .skeleton.placement .block { width: 56px; height: 40px; }
+    .skeleton.placement .block { width: 80px; height: 56px; }
     .skeleton .lines { display: grid; gap: 6px; }
     .skeleton .bar { height: 8px; }
     .skeleton .bar + .bar { width: 35%; }
@@ -321,7 +328,7 @@
     .cell-header { color: var(--al-text-meta); font-size: 11px; white-space: pre-line; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; }
     .cell-state { white-space: nowrap; max-width: 64px; text-align: left; }
     .thumb.inherits { outline: 1px dashed var(--al-text-meta); outline-offset: -1px; }
-    #file-scope, #file-limit { padding: 4px 12px; }
+    #file-scope, #file-limit, #file-link-prompt { padding: 4px 12px; }
 
     .footer-row { display: flex; align-items: center; gap: 8px; height: 48px; min-width: 0; }
     /* The item's name keeps room to be read: the primary shortens first. */
@@ -375,7 +382,7 @@
     /* Wide windows: a row's meta moves to a right-aligned column before its tag, whose column fits the Draft and inheritance tags. */
     @media (min-width: 560px) {
       /* The key keeps most of the room: a long meta line stops at 40% and shortens. */
-      .placement { grid-template-columns: 56px minmax(0, 1fr) fit-content(30%) 128px; }
+      .placement { grid-template-columns: 80px minmax(0, 1fr) fit-content(30%) 128px; }
       .placement .compact-meta { display: none; }
       .placement .wide-meta, .placement .wide-key { display: block; }
       .placement .wide-meta { text-align: right; }
@@ -416,6 +423,7 @@
         <div id="account" class="account">
           <p id="account-title" class="title"></p>
           <p id="token-prefix" class="meta"></p>
+          <p class="meta">Reports scanned layer links to this workspace.</p>
           <div id="account-actions" class="account-actions">
             <a id="open-console" class="text-action" href="https://console.assetlib.dev/" target="_blank" rel="noopener noreferrer">Open console</a>
             <button id="switch-workspace" class="text-action" type="button" hidden>Switch workspace</button>
@@ -488,8 +496,17 @@
       </div>
       <p id="env-note" class="note" hidden></p>
       <div id="file-scope" class="meta" hidden>This page only. <button id="file-all" class="text-action" type="button">Include all pages</button></div>
+      <button id="file-link-prompt" class="text-action" type="button" hidden>Link this file to show it in the console</button>
       <p id="file-limit" class="meta" hidden>Showing the first 2,000 linked layers.</p>
       <div id="list-region" class="list-region">
+        <div id="browse-results" class="browse-results" hidden>
+          <div id="art-filters" class="segmented" role="radiogroup" aria-label="Placement artwork" hidden>
+            <button id="art-all" type="button" role="radio" aria-checked="true">All</button>
+            <button id="art-with" type="button" role="radio" aria-checked="false">With art</button>
+            <button id="art-empty" type="button" role="radio" aria-checked="false">No art</button>
+          </div>
+          <p id="browse-summary" class="meta"></p>
+        </div>
         <div id="intro" class="info intro" hidden><p>Placements come from app code. Send updates Draft. Choose an environment to view published art.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">Figma guide</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
         <div id="insert-list"></div>
         <div id="image-grid" class="grid" hidden></div>

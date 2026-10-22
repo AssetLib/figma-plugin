@@ -1,4 +1,4 @@
-// Every console request goes through this module: send() for the five app routes, identify() for GET /api/token,
+// Every console request goes through this module: send() for the app routes, identify() for GET /api/token,
 // which tells a pasted token its own organization and app, consoleAnswers() for the same route without a token, and
 // pairingRequest() and revokeConnection() for one-click Connect's routes. The bearer token goes only to the chosen
 // origin, never with cookies, never following a redirect, with a timeout, GET retries, and aborts on supersession or a
