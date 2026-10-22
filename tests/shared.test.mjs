@@ -616,18 +616,18 @@ test('the window opens at 420 by the canvas height less 64, within 480 to 720, a
   }
 });
 
-test('every request goes to one of the five app routes', () => {
+test('every request goes to an allowed app route', () => {
   const config = { origin: PRODUCTION_ORIGIN, orgId: 'org-1', appId: 'app-1' };
   const base = `${PRODUCTION_ORIGIN}/api/apps/org-1/app-1/`;
   const id = '00000000-0000-4000-8000-000000000001';
   const hash = 'ab'.repeat(32);
-  for (const path of ['placements', 'placements/artwork', 'drafts', 'assets', assetsPath({ limit: 24, cursor: id, q: 'Coast ridge & co' }), renditionPath(id.toUpperCase(), hash)]) {
+  for (const path of ['placements', 'placements/artwork', 'drafts', 'figma/inventory', 'assets', assetsPath({ limit: 24, cursor: id, q: 'Coast ridge & co' }), renditionPath(id.toUpperCase(), hash)]) {
     assert.equal(appUrl(config, path), `${base}${path}`, path);
   }
   assert.equal(renditionPath(id.toUpperCase(), hash), `assets/${id}/renditions/${hash}`, 'asset ids are lowercased');
   assert.equal(assetsPath({ q: ' a/b?c#d ' }), 'assets?q=a%2Fb%3Fc%23d');
   for (const path of ['releases', 'placements/publish', 'drafts/1', 'assets/../releases', `assets/${id}/renditions/${hash}/original`, 'assets#x',
-    'assets?q=a b', '/placements', 'https://evil.test/placements', `assets/${id}/renditions/${hash.toUpperCase()}`, '']) {
+    'figma', 'figma/inventory/other', 'figma/inventory?redirect=elsewhere', 'assets?q=a b', '/placements', 'https://evil.test/placements', `assets/${id}/renditions/${hash.toUpperCase()}`, '']) {
     assert.throws(() => appUrl(config, path), /route it does not use/, path);
   }
   assert.throws(() => appUrl({ ...config, origin: LEGACY_PRODUCTION_ORIGIN }, 'placements'), /listed Assetlib console/);

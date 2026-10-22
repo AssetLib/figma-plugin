@@ -32,13 +32,13 @@ export type SelectedLink = InsertLink & { kind: 'linked' | 'copy' | 'other'; ima
   origin?: string; orgId?: string; appId?: string };
 
 export type FileLink = InsertLink & {
-  nodeId: string; name: string; pageId: string; pageName: string; frameId: string | null; frameName: string | null;
+  nodeId: string; sourceNodeId: string; name: string; pageId: string; pageName: string; frameId: string | null; frameName: string | null;
   kind: 'linked' | 'copy'; image: boolean; children: number;
   /** An instance, which reads its main component's link and follows that main. */
   instance: boolean;
 };
 export type FileLinks = { type: 'file-links'; connectionGeneration: number; scope: 'page' | 'file'; pageCount: number;
-  currentPageId: string; entries: FileLink[]; truncated: boolean; requestId?: number };
+  currentPageId: string; fileKey: string | null; fileName: string; entries: FileLink[]; truncated: boolean; complete: boolean; requestId?: number };
 
 /**
  * Where `fileKey` came from: Figma itself (`figma`), the identity saved in this document (`document`), or a link pasted

@@ -36,7 +36,7 @@ let pendingFile: { id: number; url: string } | null = null;
 // The file link form shows: a Send or Sync found no file key, or Change was chosen.
 let fileAsked = false;
 // The Send or Sync that asked for the file link, which runs once the file is linked if the layer is still selected.
-let afterFile: { rebind: boolean; nodeId: string; plain: boolean } | null = null;
+let afterFile: { rebind: boolean; nodeId: string; plain: boolean; generation: number | null } | null = null;
 // Main said the pasted link names another file; Use anyway saves it regardless.
 let mismatch: { url: string; slug: string; name: string } | null = null;
 // Leaves the Send tab in front (main.ts), for the file link a Sync from the Insert tab asks for.
@@ -492,7 +492,7 @@ function endSend(): void {
  */
 function askForFile(rebind: boolean, nodeId: string, plain: boolean): void {
   fileAsked = true;
-  afterFile = { rebind, nodeId, plain };
+  afterFile = { rebind, nodeId, plain, generation: state.connectionGeneration };
   showSend();
   scheduleRender();
   flushRender();
@@ -601,7 +601,7 @@ export function fileSaved(message: Extract<MainMessage, { type: 'file-saved' }>)
   flushRender();
   // The form is gone: focus goes back to the action that asked for it, or to the file line.
   if (inForm) element(next ? (next.rebind ? 'sync' : sendHidden() ? 'send-plain' : 'send') : 'file-change').focus();
-  if (next && state.selection.node?.id === next.nodeId) beginSend(next.rebind, next.plain);
+  if (next && next.generation === state.connectionGeneration && state.selection.node?.id === next.nodeId) beginSend(next.rebind, next.plain);
 }
 
 /** Main found that the link names another file: the form says so, and Use anyway saves it regardless. */
@@ -664,6 +664,15 @@ export function initSend(actions: { refused: () => void; retry: () => void; upda
     scheduleRender();
     flushRender();
     fileUrl.focus();
+  });
+  element('file-link-prompt').addEventListener('click', () => {
+    if (actionsBlocked()) return;
+    // This action records inventory only, including when a previous Send was waiting for a link.
+    afterFile = null;
+    fileAsked = true;
+    showSend();
+    scheduleRender(); flushRender(); fileUrl.focus();
+    setStatus('Link this file to show its scanned layers in the console.');
   });
   placementSearch.addEventListener('input', () => { buildPlacementOptions(); scheduleRender(); });
   placementPicker.addEventListener('change', () => { explicitSend = false; buildPlacementOptions(); updateCellPickers(); });

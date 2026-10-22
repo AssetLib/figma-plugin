@@ -240,6 +240,7 @@ function installFakes(config) {
     if (config.statuses?.[route]) {
       return json(config.statuses[route], { error: config.errors?.[route] ?? `HTTP ${config.statuses[route]} from the fake console.`, ...(config.codes?.[route] ? { code: config.codes[route] } : {}) });
     }
+    if (route === 'inventory') return json(200, { reportedAt: new Date().toISOString(), accepted: JSON.parse(init.body).entries.length });
     // One-click Connect: a request, claimed as config.pairingStatus says (__harness.approve() approves it).
     if (route === 'start') {
       return json(201, { readKey: `alr_${'r'.repeat(43)}`, writeKey: `alw_${'w'.repeat(43)}`, userCode: 'BCDF-GHJK', expiresAt: new Date(Date.now() + 600000).toISOString(),
@@ -291,7 +292,7 @@ function installFakes(config) {
     const pairing = /^https?:\/\/[^/]+\/api\/plugin-connections(?:\/(claim|cancel|current))?$/.exec(url);
     const route = pairing ? pairing[1] ?? 'start' : /^https?:\/\/[^/]+\/api\/token$/.test(url) ? 'token' : path === 'placements/artwork' ? 'artwork'
       : path === 'placements' ? 'placements' : /^assets(\?|$)/.test(path) ? 'assets' : /^assets\/[^/]+\/renditions\/[^/]+$/.test(path) ? 'rendition'
-        : path === 'drafts' ? 'drafts' : 'unknown';
+        : path === 'drafts' ? 'drafts' : path === 'figma/inventory' ? 'inventory' : 'unknown';
     const entry = { route, url, body: typeof init.body === 'string' ? init.body : null, started: performance.now(), done: false, aborted: false };
     log.push(entry);
     const { signal } = init;
@@ -318,7 +319,9 @@ function installFakes(config) {
   const selectedNodes = [];
   const fileEntries = config.fileEntries ?? [];
   let allPages = Boolean(config.fileAll);
-  const inventory = requestId => ({ type: 'file-links', connectionGeneration: generation, scope: allPages || !config.multiPage ? 'file' : 'page', pageCount: config.multiPage ? 2 : 1, currentPageId: '0:1', entries: config.connection ? fileEntries.filter(entry => allPages || !config.multiPage || entry.pageId === '0:1') : [], truncated: false, ...(requestId ? { requestId } : {}) });
+  const inventory = requestId => ({ type: 'file-links', connectionGeneration: generation, scope: allPages || !config.multiPage ? 'file' : 'page', pageCount: config.multiPage ? 2 : 1,
+    currentPageId: '0:1', fileKey: config.selection?.fileKey ?? null, fileName: 'Example', complete: true,
+    entries: config.connection ? fileEntries.filter(entry => allPages || !config.multiPage || entry.pageId === '0:1').map(entry => ({ sourceNodeId: entry.nodeId, ...entry })) : [], truncated: false, ...(requestId ? { requestId } : {}) });
   const notices = [];
   const reply = message => window.postMessage({ pluginMessage: message }, '*');
   // config.selection may leave out insertTarget: nothing selected for Insert, so a new frame.
@@ -381,6 +384,7 @@ function installFakes(config) {
         config.selection = { ...config.selection, fileKey: 'abc123', file: { source: config.viewOnly ? 'session' : 'document', name: config.fileName ?? 'Untitled' } };
         reply({ type: 'file-saved', requestId: message.requestId, fileKey: 'abc123', session: Boolean(config.viewOnly) });
         reply(selection());
+        reply(inventory());
         break;
       case 'export': {
         const node = message.node, placement = message.placement;
@@ -2118,7 +2122,8 @@ test('a running action keeps its ink and a spinner, and the shell gives names an
     assert.ok(await narrow.evaluate(`document.getElementById('insert-title').getBoundingClientRect().width`) >= 88, 'the name keeps 88 px');
     assert.equal(await narrow.evaluate(`document.getElementById('insert-preview').checkVisibility()`), false, 'the chosen row shows the image already');
     await narrow.click('#settings-summary');
-    assert.ok(await narrow.evaluate(`document.getElementById('list-region').getBoundingClientRect().height`) >= 96, 'two rows or more stay in view');
+    const remaining = await narrow.evaluate(`document.getElementById('list-region').getBoundingClientRect().height`);
+    assert.ok(remaining >= 96, `two rows or more stay in view (${remaining}px)`);
   } finally { await narrow.close(); }
 
   // Tile names break after their separators.
@@ -3307,6 +3312,9 @@ for (const theme of ['light', 'dark']) {
     const page = await openUi({ fileEntries: fileFixture, multiPage: true, preferences: { browse: 'file' }, scanDelay: 100 }, { theme });
     try {
       await page.waitFor(`${rows} === 2`);
+      await page.waitFor(`__harness.log.some(entry => entry.route === 'inventory' && entry.done)`);
+      const report = await page.evaluate(`JSON.parse(__harness.log.find(entry => entry.route === 'inventory').body)`);
+      assert.equal(report.scope, 'page'); assert.equal(report.complete, true); assert.equal(report.entries.length, 2);
       assert.equal(await page.evaluate(visible('file-scope')), true);
       assert.equal(await page.evaluate(visible('insert-bar')), false);
       assert.equal(await page.evaluate(visible('hint-bar')), false);
@@ -3326,6 +3334,20 @@ for (const theme of ['light', 'dark']) {
       assert.equal(await page.evaluate(visible('file-scope')), false);
       await page.click('#insert-search'); await page.type('Tablet');
       await page.waitFor(`${rows} === 1`); assert.equal(await page.evaluate(`document.querySelector('#insert-list .name').textContent`), 'Other banner');
+    } finally { await page.close(); }
+  });
+  test(`console inventory ${theme}: link a file without exporting or sending art`, async () => {
+    const page = await openUi({ selection: { ...DEFAULTS.selection, fileKey: null }, fileEntries: fileFixture,
+      preferences: { browse: 'file' } }, { theme, width: 320 });
+    try {
+      await page.waitFor(`${visible('file-link-prompt')}`);
+      await page.click('#file-link-prompt');
+      await page.waitFor(`document.activeElement?.id === 'file-url'`);
+      await page.type('https://www.figma.com/design/abc123/Example');
+      await page.click('#file-form button[type=submit]');
+      await page.waitFor(`__harness.log.some(entry => entry.route === 'inventory' && entry.done)`);
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+      assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'drafts')`), false);
     } finally { await page.close(); }
   });
   test(`phase 1 ${theme}: automatic Production and main-component and export copy`, async () => {

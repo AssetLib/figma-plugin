@@ -174,10 +174,10 @@ function appBase(connection: AppRoute): string {
 }
 
 // The only routes the plugin calls under /api/apps/{orgId}/{appId}/: GET placements, placements/artwork, assets, and
-// a rendition, and POST drafts. Every request goes through appUrl, so nothing can reach a publish or release route.
-const APP_PATH = /^(?:placements|placements\/artwork|drafts|assets(?:\?[\w.~%&=!*'()-]*)?|assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/renditions\/[0-9a-f]{64})$/;
+// a rendition, and POST drafts and figma/inventory. Nothing can reach a publish or release route.
+const APP_PATH = /^(?:placements|placements\/artwork|drafts|figma\/inventory|assets(?:\?[\w.~%&=!*'()-]*)?|assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/renditions\/[0-9a-f]{64})$/;
 
-/** The URL for one of the five app routes; anything else throws. */
+/** The URL for an allowed app route; anything else throws. */
 export function appUrl(connection: AppRoute, path: string): string {
   if (!APP_PATH.test(path)) throw new Error('The plugin tried to call a console route it does not use. Reopen the plugin and try again.');
   return `${appBase(connection)}/${path}`;

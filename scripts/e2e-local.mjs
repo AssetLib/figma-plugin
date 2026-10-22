@@ -371,7 +371,7 @@ async function runToken() {
   // 7. Requests, and where the token must never appear.
   assert.deepEqual(violations, []);
   const routes = [...new Set(app.requests.map(routeOf))].sort();
-  assert.deepEqual(routes, ['assets', 'drafts', 'placements', 'placements/artwork', 'rendition', 'token']);
+  assert.deepEqual(routes, ['assets', 'drafts', 'figma/inventory', 'placements', 'placements/artwork', 'rendition', 'token']);
   const text = [...app.elements.values()].map(textOf).join('\n');
   const places = { notices: app.notices.join('\n'), pluginData: app.frames.map(frame => frame.getPluginData('assetlib.link.v1')).join('\n'), text,
     urls: app.requests.map(request => request.url).join('\n') };

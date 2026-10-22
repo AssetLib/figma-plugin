@@ -134,6 +134,10 @@
     .panel { display: grid; gap: 12px; max-height: 70vh; overflow: auto; padding: 4px 12px 12px; border-bottom: 1px solid var(--border); }
     .account { display: grid; gap: 2px; }
     .account-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
+    @media (max-height: 520px) {
+      .app[data-view="shell"] .panel { padding-top: 0; padding-bottom: 8px; }
+      .app[data-view="shell"] .account { gap: 0; }
+    }
     /* Disconnect forgets the token, so it stands apart from the actions beside it. */
     #disconnect { margin-left: auto; }
     .connection-form { display: grid; gap: 8px; }
@@ -303,7 +307,7 @@
     .cell-header { color: var(--al-text-meta); font-size: 11px; white-space: pre-line; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; }
     .cell-state { white-space: nowrap; max-width: 64px; text-align: left; }
     .thumb.inherits { outline: 1px dashed var(--al-text-meta); outline-offset: -1px; }
-    #file-scope, #file-limit { padding: 4px 12px; }
+    #file-scope, #file-limit, #file-link-prompt { padding: 4px 12px; }
 
     .footer-row { display: flex; align-items: center; gap: 8px; height: 48px; min-width: 0; }
     /* The item's name keeps room to be read: the primary shortens first. */
@@ -397,6 +401,7 @@
         <div id="account" class="account">
           <p id="account-title" class="title"></p>
           <p id="token-prefix" class="meta"></p>
+          <p class="meta">Reports scanned layer links to this workspace.</p>
           <div id="account-actions" class="account-actions">
             <a id="open-console" class="text-action" href="https://console.assetlib.dev/" target="_blank" rel="noopener noreferrer">Open console</a>
             <button id="switch-workspace" class="text-action" type="button" hidden>Switch workspace</button>
@@ -469,6 +474,7 @@
       </div>
       <p id="env-note" class="note" hidden></p>
       <div id="file-scope" class="meta" hidden>This page only. <button id="file-all" class="text-action" type="button">Include all pages</button></div>
+      <button id="file-link-prompt" class="text-action" type="button" hidden>Link this file to show it in the console</button>
       <p id="file-limit" class="meta" hidden>Showing the first 2,000 linked layers.</p>
       <div id="list-region" class="list-region">
         <div id="intro" class="info intro" hidden><p>Placements come from app code. Send and Sync update Draft. Choose an environment to view published art.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">Figma guide</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
