@@ -2064,8 +2064,13 @@ test('the layout follows the window: an Environment dropdown below 400 px and a 
     const grid = await openUi({ preferences: { browse: 'images' } }, { width, height: 720 });
     try {
       await grid.waitFor(`${tiles} === 24`);
-      assert.equal(await grid.evaluate(`(() => { const top = tile => Math.round(tile.getBoundingClientRect().top); const all = [...document.querySelectorAll('#image-grid .tile')];
-        return all.filter(tile => top(tile) === top(all[0])).length; })()`), count, `${width} px`);
+      for (const reserved of [0, 15]) {
+        // Reserve a classic scrollbar's width even on hosts that use overlay scrollbars.
+        await grid.evaluate(`document.getElementById('list-region').style.borderRight = '${reserved}px solid transparent'`);
+        assert.equal(await grid.evaluate(`(() => { const top = tile => Math.round(tile.getBoundingClientRect().top); const all = [...document.querySelectorAll('#image-grid .tile')];
+          return all.filter(tile => top(tile) === top(all[0])).length; })()`), count, `${width} px, ${reserved} px reserved`);
+        assert.equal(await grid.evaluate(`(() => { const region = document.getElementById('list-region'); return region.scrollWidth <= region.clientWidth; })()`), true, 'no horizontal overflow');
+      }
     } finally { await grid.close(); }
   }
 });
