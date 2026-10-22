@@ -6,14 +6,14 @@ import {
   validateBinding, validateConnection, validateInsertLink,
 } from './shared/index.js';
 import type { Connection, InsertLink, Preferences } from './shared/index.js';
-import { DISCONNECTED, DISCONNECTED_REFUSED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
+import { DISCONNECTED, DISCONNECTED_REFUSED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, MAX_SEND_NODES, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { UiMessage } from './shared/protocol.js';
 import { rasterDensity } from './main/export.js';
 import { scanLinks, scheduleScan, selectNode } from './main/inventory.js';
 import { currentFileKey, linkFile } from './main/identity.js';
 import { discardDrops, discardPlaceholder, drop, dropPending, insert, renameRelinked, retireUndo, writeMarker } from './main/insert.js';
 import { clearPairing, loadPairing, pageHints, parsePairing, savePairing, takeTurn } from './main/pairing.js';
-import { describeNode, nodeLink, reportSelection, selectedNode, selectionStale, storeTarget, writeLink } from './main/selection.js';
+import { describeNode, nodeLink, reportSelection, selectedIds, selectedNode, selectionStale, sendReason, sendSnapshot, storeChoice, storeTarget, writeLink } from './main/selection.js';
 import type { StoredTarget } from './main/selection.js';
 import { SELECTION_MOVED, main, post } from './main/state.js';
 
@@ -24,8 +24,18 @@ let savedFileUrl = '';
 let preferences: Preferences = defaultPreferences();
 // An export waiting for its draft: the connection, the target to remember, the layer, and its placement's declared size.
 // name: the layer name Insert gives the bound cell, which a layer still named for its old placement takes.
-type Exported = { config: Connection; target: StoredTarget; node: SceneNode; frame: { width: number; height: number }; name: string };
+type Exported = { config: Connection; generation: number; snapshot: string; target: StoredTarget; node: SceneNode;
+  frame: { width: number; height: number }; name: string };
 const exported = new Map<number, Exported>();
+function sameConnection(config: Connection): boolean {
+  const current = main.connection;
+  return current !== null && config.origin === current.origin && config.orgId === current.orgId
+    && config.appId === current.appId && config.token === current.token;
+}
+function pendingCurrent(pending: Exported): boolean {
+  return sameConnection(pending.config) && pending.generation === main.connectionGeneration && !pending.node.removed
+    && currentFileKey() === pending.target.fileKey && sendSnapshot(pending.node) === pending.snapshot;
+}
 // This window's own writes of the saved connection (a save, Disconnect, and Disconnect's Undo): how many started, and how
 // many still run. A save-names that began before one, or runs beside one, writes nothing, so it never undoes it.
 const writes = { started: 0, running: 0 };
@@ -160,16 +170,23 @@ async function handleMessage(message: UiMessage): Promise<void> {
       if (main.exporting || main.importing || dropPending()) throw new Error('An export is already in progress.');
       const config = main.connection;
       if (!config) throw new Error('Connect to Assetlib first.');
-      const node = selectedNode();
+      const generation = main.connectionGeneration;
+      const ids = selectedIds();
+      const node = message.selectionIds ? figma.currentPage.selection.find(item => item.id === message.node.id) : selectedNode();
       const fileKey = currentFileKey();
-      if (!node || node.id !== message.node.id || fileKey !== message.fileKey) throw new Error(SELECTION_CHANGED);
-      if (node.width !== message.node.width || node.height !== message.node.height || node.name !== message.node.name) {
+      if (!node || node.id !== message.node.id || fileKey !== message.fileKey || ids.length > MAX_SEND_NODES
+        || (message.connectionGeneration !== undefined && message.connectionGeneration !== generation)
+        || (message.selectionIds && JSON.stringify([...message.selectionIds].sort()) !== JSON.stringify(ids))) throw new Error(SELECTION_CHANGED);
+      if (node.width !== message.node.width || node.height !== message.node.height || node.name !== message.node.name || node.type !== message.node.type) {
         await reportSelection();
         throw new Error(SELECTION_CHANGED);
       }
+      const reason = sendReason(node);
+      if (reason) throw new Error(reason);
       const placement = parsePlacements({ placements: [message.placement] })[0]!;
       const bind = validateBinding(placement, message.bind);
       const snapshot = describeNode(node);
+      const metadata = sendSnapshot(node);
       // Checked before the guard is set: a node or placement without a size throws here.
       let settings = chooseExportSettings(snapshot, placement);
       main.exporting = true;
@@ -188,14 +205,15 @@ async function handleMessage(message: UiMessage): Promise<void> {
       }
       catch { throw new Error('Figma couldn’t export this layer. Try again, or flatten it first.'); }
       finally { main.exporting = false; }
-      if (node.removed || node.width !== snapshot.width || node.height !== snapshot.height || node.name !== snapshot.name) {
+      if (node.removed || !sameConnection(config) || generation !== main.connectionGeneration || currentFileKey() !== fileKey
+        || JSON.stringify(selectedIds()) !== JSON.stringify(ids) || sendSnapshot(node) !== metadata) {
         await reportSelection();
         throw new Error(SELECTION_CHANGED);
       }
       if (bytes.byteLength > MAX_EXPORT_BYTES) throw new Error(mapHttpError(413, null));
       exported.clear();
       exported.set(message.requestId, {
-        config, node, frame: { width: placement.width, height: placement.height }, name: layerName(placement, bind),
+        config, generation, snapshot: metadata, node, frame: { width: placement.width, height: placement.height }, name: layerName(placement, bind),
         target: { fileKey, nodeId: snapshot.id, placementKey: bind.slotKey, state: bind.state, appearance: bind.appearance, arm: bind.arm },
       });
       post({ type: 'exported', requestId: message.requestId, node: snapshot, fileKey, settings, bytes });
@@ -204,11 +222,24 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'remember': {
       const pending = exported.get(message.requestId);
       if (!pending) throw new Error('The draft was sent, but its sync target is no longer available.');
+      exported.delete(message.requestId);
+      if (!pendingCurrent(pending)) throw new Error('The draft was sent, but this layer or connection changed. Select the layer again to check its destination.');
       try { await storeTarget(pending.config, pending.target); }
       catch { throw new Error('The draft was sent, but Figma couldn’t save its sync target on your device. Send again to remember it.'); }
-      exported.delete(message.requestId);
+      if (!pendingCurrent(pending)) throw new Error('The draft was sent, but this layer or connection changed. Select the layer again to check its destination.');
       linkSent(pending, message.assetId ?? null);
       post({ type: 'remembered', requestId: message.requestId });
+      await reportSelection();
+      break;
+    }
+    case 'save-send-choice': {
+      const config = main.connection;
+      if (!config || message.connectionGeneration !== main.connectionGeneration || message.fileKey !== currentFileKey()
+        || figma.currentPage.selection.length > MAX_SEND_NODES || !figma.currentPage.selection.some(node => node.id === message.nodeId)) throw new Error(SELECTION_MOVED);
+      const { fileKey, nodeId, placementKey, state, appearance, arm } = message;
+      try { await storeChoice(config, { fileKey, nodeId, placementKey, state, appearance, arm }); }
+      catch { throw new Error('Figma couldn’t save this destination on your device. Choose it again to retry.'); }
+      post({ type: 'send-choice-saved', requestId: message.requestId });
       await reportSelection();
       break;
     }

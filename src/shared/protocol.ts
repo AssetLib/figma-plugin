@@ -2,7 +2,7 @@ import type {
   CanvasTarget, CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, InsertMode, NodeSelection, PairingHint, PairingRecord, Placement,
   Preferences,
 } from './index.js';
-import { isRecord, validNodeId, validUuid } from './validation.js';
+import { isRecord, validArm, validFileKey, validNodeId, validPlacementKey, validState, validUuid } from './validation.js';
 
 /**
  * Where an insert goes: a new frame (centered in the view, or right of the selection), a child of the container
@@ -57,7 +57,16 @@ export type SelectionState = {
   // One selected layer's link, or null (optional: a selection without them reads as null).
   link?: SelectedLink | null;
   file?: FileState;
+  sendNodes?: SendNode[];
+  selectionIds?: string[];
+  truncated?: boolean;
+  choice?: RememberedTarget | null;
 };
+
+export type SendNode = { node: NodeSelection; reason: string | null; remembered: RememberedTarget | null;
+  link: SelectedLink | null; choice?: RememberedTarget | null };
+
+export const MAX_SEND_NODES = 50;
 
 // Every message that main can refuse carries a requestId, and main's error names it, so an error ends only that operation.
 export type UiMessage =
@@ -67,7 +76,10 @@ export type UiMessage =
   | { type: 'save-connection'; requestId: number; connection: Connection }
   // `force`: Use anyway, after main said the link names another file (`file-mismatch`).
   | { type: 'save-file-url'; requestId: number; url: string; force?: boolean }
-  | { type: 'export'; requestId: number; node: NodeSelection; fileKey: string; placement: Placement; bind: CellBinding; rebind: boolean }
+  | { type: 'export'; requestId: number; node: NodeSelection; fileKey: string; placement: Placement; bind: CellBinding; rebind: boolean;
+    connectionGeneration?: number; selectionIds?: string[] }
+  | { type: 'save-send-choice'; requestId: number; connectionGeneration: number; fileKey: string; nodeId: string;
+    placementKey: string; state: CellBinding['state']; appearance: CellBinding['appearance']; arm: CellBinding['arm'] }
   // `assetId`: the image the draft put in the cell, which the layer's link then names; null when the draft wasn't bound.
   | { type: 'remember'; requestId: number; assetId?: string | null }
   // `drop` names a drop main answered with `dropped`: the target is then that drop's placeholder or image frame.
@@ -132,6 +144,7 @@ export type MainMessage =
   | { type: 'launch'; command: 'sync' | 'insert' | 'send' }
   | { type: 'exported'; requestId: number; node: NodeSelection; fileKey: string; settings: ExportSettings; bytes: Uint8Array }
   | { type: 'remembered'; requestId: number }
+  | { type: 'send-choice-saved'; requestId: number }
   // `node` is the new frame, or the first layer filled; `notice` is main's toast, which the UI repeats in its status region.
   | { type: 'inserted'; requestId: number; connectionGeneration: number; node: NodeSelection; linked: boolean; mode: InsertMode; notice: string }
   // Main answered a drop: `nodeId` is the placeholder it made, or the image frame the drop landed on, which the UI fills.
@@ -177,6 +190,9 @@ export const UNREADABLE_MESSAGE = 'The plugin hit an unexpected problem. Close a
 const requestId = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 const text = (value: unknown): value is string => typeof value === 'string';
 const size = (value: unknown): value is number => typeof value === 'number';
+const generation = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+const selectionIds = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= MAX_SEND_NODES
+  && value.every(validNodeId) && new Set(value).size === value.length;
 const destination = (value: unknown): value is InsertDestination => isRecord(value) && (value.kind === 'new'
   || (value.kind === 'into' && text(value.nodeId))
   || (value.kind === 'fill' && Array.isArray(value.nodeIds) && value.nodeIds.length > 0 && value.nodeIds.every(text)));
@@ -202,7 +218,11 @@ export function parseUiMessage(value: unknown): UiMessage {
       case 'select-node': return requestId(m.requestId) && validNodeId(m.nodeId);
       case 'save-file-url': return requestId(m.requestId) && text(m.url) && (m.force === undefined || typeof m.force === 'boolean');
       case 'export': return requestId(m.requestId) && isRecord(m.node) && text(m.node.id) && text(m.node.name) && text(m.node.type)
-        && size(m.node.width) && size(m.node.height) && text(m.fileKey) && isRecord(m.placement) && isRecord(m.bind) && typeof m.rebind === 'boolean';
+        && size(m.node.width) && size(m.node.height) && text(m.fileKey) && isRecord(m.placement) && isRecord(m.bind) && typeof m.rebind === 'boolean'
+        && (m.connectionGeneration === undefined || generation(m.connectionGeneration)) && (m.selectionIds === undefined || selectionIds(m.selectionIds));
+      case 'save-send-choice': return requestId(m.requestId) && generation(m.connectionGeneration) && validFileKey(m.fileKey)
+        && validNodeId(m.nodeId) && validPlacementKey(m.placementKey) && (m.state === null || validState(m.state))
+        && (m.appearance === null || m.appearance === 'light' || m.appearance === 'dark') && (m.arm === null || validArm(m.arm));
       case 'remember': return requestId(m.requestId) && (m.assetId === undefined || m.assetId === null || text(m.assetId));
       // The bytes, frame, and scale have their own messages in main.
       case 'insert': return requestId(m.requestId) && typeof m.connectionGeneration === 'number' && Number.isSafeInteger(m.connectionGeneration)

@@ -112,7 +112,7 @@ function encodePng(width, height, [red, green, blue]) {
   const pixels = deflateSync(Buffer.concat(Array.from({ length: height }, () => row)));
   return new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', pixels), chunk('IEND', Buffer.alloc(0))]));
 }
-// A colour unique to this run, so each Sync uploads new bytes.
+// A colour unique to this run, so each Send uploads new bytes.
 const stamp = Date.now();
 const colour = [stamp & 255, (stamp >> 8) & 255, (stamp >> 16) & 255];
 // Main may lower this constraint for native density, the 2048 edge cap, or the PNG byte budget.
@@ -137,13 +137,13 @@ function expectedRendition(asset) {
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const app = createHarness({
-  // No file key, as a Community plugin runs: the first Sync asks for this file's link, whose name matches the document's.
+  // No file key, as a Community plugin runs: the first Send asks for this file's link, whose name matches the document's.
   ...(await bundlePlugin(root)), fetch: consoleFetch, fileKey: null, rootName: 'Assetlib plugin local e2e', selection: [], exportBytes: exportPng,
   storage: [],
   viewport: { center: { x: 0, y: 0 }, bounds: { x: -2000, y: -2000, width: 4000, height: 4000 } },
 });
 const el = id => app.element(id);
-// Connect waits (aria-disabled) while a connection test, send, sync, or insert runs; a list marks itself aria-busy while it loads.
+// Connect waits (aria-disabled) while a connection test, send, or insert runs; a list marks itself aria-busy while it loads.
 const unavailable = id => el(id).getAttribute('aria-disabled') === 'true';
 const idle = () => !unavailable('connect') && ['insert-list', 'image-grid'].every(id => el(id).getAttribute('aria-busy') !== 'true');
 // Fake elements start visible, so an error counts only once it has text. A failed connection test shows under the token
@@ -231,8 +231,8 @@ async function runToken() {
     assert.equal(lastSelection().remembered?.insertedFrom?.environment, environment);
     assert.equal(el('selection-bar').hidden, false);
     assert.equal(el('sync-title').textContent, `Linked to ${PLACEMENT}`);
-    assert.equal(unavailable('sync'), false, 'Sync is ready; it asks for the file link when chosen');
-    assert.deepEqual(frame.getRelaunchData(), { sync: `${PLACEMENT}, from ${environment[0].toUpperCase()}${environment.slice(1)}. Sync sends edits to its draft.` });
+    assert.equal(unavailable('sync'), false, 'Send review is available from Insert');
+    assert.deepEqual(frame.getRelaunchData(), { sync: `${PLACEMENT}, from ${environment[0].toUpperCase()}${environment.slice(1)}. Review this layer and send edits to its draft.` });
     inserted[environment] = frame;
     ok(`Insert ${PLACEMENT} from ${environment}: ${frame.width} × ${frame.height} component with the placement description, ${rendition.mime} ${rendition.width} × ${rendition.height} (${asset.name})`);
   }
@@ -287,38 +287,46 @@ async function runToken() {
   const fetched = app.requests.filter(request => request.url.endsWith(`/renditions/${draftRendition.sha256}`)).length - fetchesBefore;
   ok(`Drag ${PLACEMENT} onto the canvas: a placeholder at the drop point, filled and linked in one undo step (${fetched ? 'downloaded' : 'the insert download reused'})`);
 
-  // 4. Round trip: Sync the draft frame, then read the artwork again. This rebinds the app's draft travel.coast,
-  // so the image it showed before is printed for restoring it in the console. Without a file key, the Sync asks for
-  // the file's link first, saves it in the document, and then runs.
-  log(`note - draft ${PLACEMENT} shows ${base0.draft ? `image ${base0.draft.assetId}` : 'no image'} before this run; rebind it in the console to restore it`);
+  // 4. Round trip: review and send the draft frame, then read the artwork again. Only this cell is assigned;
+  // the prior image is printed for restoring it. Saving the missing file link must not start an upload.
+  log(`note - draft ${PLACEMENT} shows ${base0.draft ? `image ${base0.draft.assetId}` : 'no image'} before this run; assign it in the console to restore it`);
   const selections = app.mainMessages.length;
   app.select([inserted.draft]);
   await waitFor(() => app.mainMessages.length > selections && lastSelection()?.node?.id === inserted.draft.id, { message: 'the selection report' });
-  await waitFor(() => !unavailable('sync'), { message: 'Sync to be ready' });
+  await waitFor(() => !unavailable('sync'), { message: 'Send review to be ready' });
   // Once the artwork read after this selection arrives, the bar says where the layer's art is published.
-  await waitFor(() => /^in (Production \(release \d+\)|Staging, not in Production|Draft, not published)$/.test(el('sync-meta').textContent), { message: 'the Sync bar status' });
+  await waitFor(() => /^in (Production \(release \d+\)|Staging, not in Production|Draft, not published)$/.test(el('sync-meta').textContent), { message: 'the linked artwork status' });
   el('sync').dispatch('click');
-  assert.equal(el('file-fallback').hidden, false, 'the first Sync asks for the file link');
+  assert.equal(el('panel-send').hidden, false, 'Insert opens the destination review');
+  assert.equal(app.exportMessages().length, 0, 'opening the review never exports');
   assert.equal(app.drafts().length, 0);
+  el('send').dispatch('click');
+  assert.equal(el('file-fallback').hidden, false, 'the first Send asks for the file link');
   el('file-url').value = FILE_URL;
-  el('file-form').dispatch('submit');
-  await waitFor(() => app.drafts().length > 0, { message: 'the Sync that asked for the file link' });
-  await settled('Sync', 120000);
+  el('file-url').dispatch('input'); app.fireTimers(350);
+  await waitFor(() => el('file-fallback').hidden && lastSelection()?.fileKey === 'AssetlibPluginE2E' && !unavailable('send'), { message: 'the pasted file link to save automatically' });
+  assert.equal(app.exportMessages().length, 0, 'linking the file does not resume an export');
+  assert.equal(app.drafts().length, 0, 'linking the file saves setup only');
+  el('send').dispatch('click');
+  await waitFor(() => app.drafts().length > 0, { message: 'the reviewed Send' });
+  await settled('Send', 120000);
   assert.deepEqual([JSON.parse(app.figma.root.getPluginData('assetlib.file.v1')).fileKey, JSON.parse(app.figma.root.getPluginData('assetlib.file.v1')).source],
     ['AssetlibPluginE2E', 'link'], 'the document keeps the file key');
   const draft = app.requests.filter(request => routeOf(request) === 'drafts').at(-1);
   assert.equal(draft.status, 201);
   assert.deepEqual(draft.body.bind, { slotKey: PLACEMENT, state: null, appearance: null, arm: null });
-  assert.equal(draft.body.rebind, true);
+  assert.equal(draft.body.rebind, false);
+  assert.equal(draft.body.expectedAssetId, base0.draft.assetId);
+  assert.deepEqual(draft.json.rebound, []);
   assert.deepEqual(draft.json.bound, { slotKey: PLACEMENT, state: null, appearance: null, arm: null });
   const created = draft.json.asset;
   assert.equal(draft.body.source.fileKey, 'AssetlibPluginE2E');
-  assert.equal(el('status').textContent, `Synced ${PLACEMENT} to draft`);
-  assert.equal(app.notifications.at(-1).message, `Synced ${PLACEMENT} to draft`);
-  // The synced layer's link now names the draft's new image, for every device and teammate.
+  assert.equal(el('status').textContent, '1 of 1 layer sent to draft.');
+  assert.equal(app.notifications.at(-1).message, '1 of 1 layer sent to draft.');
+  // The sent layer's link now names the draft's new image, for every device and teammate.
   const relinked = JSON.parse(inserted.draft.getPluginData('assetlib.link.v1'));
   assert.deepEqual([relinked.environment, relinked.assetId, relinked.nodeId], ['draft', created.id, inserted.draft.id]);
-  ok(`Sync POST drafts 201 after linking the file once: asset ${created.id} ${created.width} × ${created.height}, bound to ${PLACEMENT}, ${draft.json.rebound.length} reference(s) rebound; the layer's link names it`);
+  ok(`Reviewed Send POST drafts 201 after automatic file linking: asset ${created.id} ${created.width} × ${created.height}, conditionally bound to ${PLACEMENT}, no references rebound; the layer's link names it`);
 
   el('tab-insert').dispatch('click');
   el('browse-placements').dispatch('click');
@@ -336,7 +344,7 @@ async function runToken() {
     const tags = descendants(rowFor(PLACEMENT)).filter(item => /^tag( |$)/.test(item.className ?? '')).map(item => item.textContent);
     assert.deepEqual(tags, [base1.production ? 'Changed in Draft' : 'New in Draft']);
   }
-  ok(`GET placements/artwork after Sync: draft ${PLACEMENT} is ${created.id} via its own cell; staging and production unchanged`);
+  ok(`GET placements/artwork after Send: draft ${PLACEMENT} is ${created.id} via its own cell; staging and production unchanged`);
 
   const png = after.assets[created.id].renditions.filter(item => item.mime === 'image/png').sort((a, b) => b.width * b.height - a.width * a.height)[0];
   const response = await fetch(`${base}assets/${created.id}/renditions/${png.sha256}`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' });

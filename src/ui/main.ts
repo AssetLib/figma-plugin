@@ -8,10 +8,10 @@ import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, sche
 import { acceptFileLinks, failFileScan, focusFile } from './infile.js';
 import { abortAll } from './http.js';
 import {
-  applyPreferences, connectionKept, draftArtState, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
-  noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, resetInsert, rowFor, savePreferences,
+  applyPreferences, beginArtworkRead, connectionKept, draftArtState, draftSnapshot, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
+  noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, reviewSendArtwork, resetInsert, rowFor, savePreferences,
 } from './insert.js';
-import { applyFileUrl, applySelection, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
+import { applyFileUrl, applySelection, choiceSaved, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { actionsBlocked, state } from './state.js';
 import { initSyncBar, launched, renderSyncBar, syncFromKeyboard } from './syncbar.js';
 import type { ReadFailure } from './state.js';
@@ -20,7 +20,7 @@ const app = element('app');
 const tabSend = element<HTMLButtonElement>('tab-send');
 const tabInsert = element<HTMLButtonElement>('tab-insert');
 const searchInput = element<HTMLInputElement>('insert-search');
-let menuCommand: 'insert' | 'send' | null = null;
+let menuCommand: 'insert' | 'send' | 'sync' | null = null;
 
 function render(): void {
   // Until main's first connection message (which also brings the preferences) the connection is unknown, not absent:
@@ -127,6 +127,7 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
       break;
     case 'file-links': acceptFileLinks(message); break;
     case 'file-saved': fileSaved(message); break;
+    case 'send-choice-saved': choiceSaved(message); break;
     case 'file-mismatch': fileMismatch(message); break;
     case 'launch': launch(message.command); break;
     case 'exported': void sendExport(message); break;
@@ -150,8 +151,8 @@ function setTab(next: typeof state.prefs.tab): void {
   if (next === 'send') ensureArtwork();
 }
 function launch(command: Extract<MainMessage, { type: 'launch' }>['command']): void {
-  if (command === 'sync') { launched(); return; }
   if (!state.preferencesLoaded) { menuCommand = command; return; }
+  if (command === 'sync') { launched(); return; }
   setTab(command);
   if (command === 'insert' && state.connection) focusSearch();
 }
@@ -244,7 +245,7 @@ element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
 initConnect();
 const showSend = () => setTab('send');
-initSend({ refused: () => needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState });
+initSend({ refused: (text = TOKEN_NO_LONGER_ACCEPTED) => needsAttention({ text, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState, draftSnapshot, reviewArtwork: reviewSendArtwork, beginArtworkRead });
 initSyncBar({ showSend, showInsert: () => setTab('insert') });
 initInsert(() => { setTab('send'); tabSend.focus(); });
 post({ type: 'init' });

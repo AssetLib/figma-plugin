@@ -312,13 +312,13 @@ export function linkMatches(link: StoredLink, connection: Pick<Connection, 'orig
 }
 
 /**
- * The description under a linked layer's **Sync to Assetlib** button in Figma's properties panel: its cell (the axes it
+ * The description under a linked layer's **Send to draft…** button in Figma's properties panel: its cell (the axes it
  * names) and where its art came from. Figma shows about three lines and refuses more than 1000 characters; a link's key,
  * state, and arm are short, so this stays well under.
  */
 export function syncDescription(link: Pick<InsertLink, 'placementKey' | 'state' | 'appearance' | 'arm' | 'environment'>): string {
   const cell = [link.placementKey, link.state, link.appearance ? appearanceLabel(link.appearance) : null, link.arm].filter(part => part !== null).join(' · ');
-  return `${cell}, from ${environmentLabel(link.environment)}. Sync sends edits to its draft.`;
+  return `${cell}, from ${environmentLabel(link.environment)}. Review this layer and send edits to its draft.`;
 }
 
 /** The plugin opens on Insert: its library is the first thing people look for. */

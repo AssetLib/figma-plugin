@@ -19,6 +19,12 @@ const rememberedA = { fileKey: 'abc123', nodeId: node.id, placementKey: placemen
 const rememberedB = { ...rememberedA, state: 'new', appearance: 'dark', arm: 'c' };
 // An action that can't run now is aria-disabled, so it keeps focus; other controls use disabled.
 const off = (app, id) => app.element(id).getAttribute('aria-disabled') === 'true';
+function startSend(app) {
+  app.element('tab-send').dispatch('click');
+  for (const control of descendants(app.element('send-items'))) if (control.tagName === 'BUTTON' && control.textContent === 'Send again' && !control.hidden) control.dispatch('click');
+  app.element('send').dispatch('click');
+}
+const sendFeedback = app => textOf(app.element('send-items'));
 const storageKey = (config, nodeId = node.id) => `assetlib.target.v1:${JSON.stringify([config.origin, config.orgId, config.appId, 'abc123', nodeId])}`;
 
 // Library fixtures: ids are uuids and hashes are 64 hex characters, as the console sends them.
@@ -66,6 +72,11 @@ const renditionsServed = () => [...baseItems, ...armItems].flatMap(item => item.
 function harness({ remembered = rememberedA, bytes = pngHeader(1000, 1000), saved = connection, storage = [], console: state = {}, prefs = { tab: 'send' }, ...options } = {}) {
   // The console keeps the harness's clock, so its slow_down rule is timed as the plugin's polls are.
   const consoleState = { placements: [clone(placement)], artwork: artwork(), library: [], renditions: renditionsServed(), ...(options.now ? { now: options.now } : {}), ...state };
+  if (state.placements && state.artwork === undefined) consoleState.artwork.placements = state.placements.map(p => ({ ...p,
+    cells: artwork().placements.find(existing => existing.key === p.key
+      && JSON.stringify([existing.states, existing.variants]) === JSON.stringify([p.states, p.variants]))?.cells ?? (p.states ?? [null]).flatMap(state =>
+      [null, ...(p.variants?.arm ?? [])].flatMap(arm => [null, ...(p.variants?.appearance ?? [])].map(appearance =>
+        ({ state, arm, appearance, draft: null, staging: null, production: null })))) }));
   const app = createHarness({
     ...sources, fetch: fakeConsole(consoleState), exportBytes: () => bytes, selection: [node],
     storage: [...(prefs ? [['assetlib.preferences.v1', prefs]] : []), ...(saved ? [['assetlib.connection.v1', saved], [storageKey(saved), remembered]] : []), ...storage],
@@ -81,7 +92,7 @@ for (const [description, next] of [
   test(`delayed client storage cannot queue a rebind with old coordinates when ${description}`, async () => {
     const app = harness();
     await flush();
-    assert.equal(off(app, 'sync'), false);
+    assert.equal(off(app, 'send'), false);
     const initialSelection = app.mainMessages.find(message => message.type === 'selection');
 
     app.delayTargetReads();
@@ -94,8 +105,8 @@ for (const [description, next] of [
     for (let i = 0; i < 4; i++) await flush();
     assert.equal(app.uiMessages.filter(message => message.type === 'save-connection').length, 1);
     app.deliver(initialSelection);
-    assert.equal(app.element('sync').hidden, true, 'saving immediately clears the remembered target');
-    app.element('sync').dispatch('click');
+    assert.equal(off(app, 'send'), true, 'saving immediately clears the reviewed target');
+    startSend(app);
     assert.equal(app.exportMessages().length, 0, 'a late reply cannot restore Sync before the save acknowledgement');
 
     write.resolve();
@@ -103,34 +114,34 @@ for (const [description, next] of [
     assert.equal(app.pendingReads.length, 2, 'the new-generation storage lookup remains delayed');
     assert.ok(app.requests.some(request => request.method === 'GET' && request.authorization === `Bearer ${next.token}`),
       'the new placements response has already completed');
-    assert.equal(off(app, 'sync'), true);
+    assert.equal(off(app, 'send'), true);
     assert.equal(off(app, 'send'), true, 'send also waits for a matching selection state');
-    app.element('sync').dispatch('click');
+    startSend(app);
     app.element('send').dispatch('click');
     assert.equal(app.exportMessages().length, 0, 'direct handler dispatch cannot bypass selection readiness');
     assert.equal(app.drafts().length, 0);
 
     app.deliver(initialSelection);
-    assert.equal(app.element('sync').hidden, true, 'the UI ignores replies carrying the old connection generation');
+    assert.equal(off(app, 'send'), true, 'the UI ignores replies carrying the old connection generation');
     const selectionsBeforeOldRead = app.mainMessages.filter(message => message.type === 'selection').length;
     app.pendingReads[0].resolve(clone(rememberedA));
     await flush();
     assert.equal(app.mainMessages.filter(message => message.type === 'selection').length, selectionsBeforeOldRead,
       'main suppresses its old-generation storage result');
-    app.element('sync').dispatch('click');
+    startSend(app);
     assert.equal(app.exportMessages().length, 0);
 
     app.pendingReads[1].resolve(clone(rememberedB));
     app.resumeTargetReads();
     await flush();
-    assert.equal(off(app, 'sync'), false);
-    app.element('sync').dispatch('click');
+    assert.equal(off(app, 'send'), false);
+    startSend(app);
     await flush();
     assert.equal(app.exportMessages().length, 1);
     assert.deepEqual(app.exportMessages()[0].bind, { slotKey: placement.key, state: 'new', appearance: 'dark', arm: 'c' });
     assert.equal(app.drafts().length, 1);
     assert.equal(app.drafts()[0].authorization, `Bearer ${next.token}`);
-    assert.equal(app.drafts()[0].body.rebind, true);
+    assert.equal(app.drafts()[0].body.rebind, false);
     assert.deepEqual(app.drafts()[0].body.bind, app.exportMessages()[0].bind);
     assert.equal(app.exports[0].useAbsoluteBounds, true);
   });
@@ -143,20 +154,20 @@ test('a current-generation selection without a remembered target enables Send wh
   assert.equal(app.element('placement').value, '');
   assert.equal(app.element('placement').children[0].textContent, 'Choose placement…');
   assert.equal(off(app, 'send'), true);
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   assert.equal(app.element('export-note').textContent, 'Exports up to 2047 × 2047 PNG, the largest size Assetlib keeps.');
   assert.equal(off(app, 'send'), false);
   // Another connection starts with nothing chosen, even when its app has a placement with the same key.
   const switched = harness({ remembered: null });
   await flush();
-  pick(switched, 'placement', placement.key);
+  await pick(switched, 'placement', placement.key);
   switched.saveConnection({ ...connection, appId: 'app-b', token: tok('draft_b') });
   for (let i = 0; i < 6; i++) await flush();
   assert.equal(switched.mainMessages.filter(message => message.type === 'connection').at(-1).connection.appId, 'app-b');
   assert.equal(switched.element('placement').value, '', 'a placement chosen for app-a is not chosen for app-b');
   assert.equal(off(switched, 'send'), true);
-  assert.equal(app.element('sync').hidden, true);
-  assert.equal(off(app, 'sync'), true);
+  assert.equal(app.element('selection-bar').hidden, true);
+  assert.equal(off(app, 'send'), false);
   app.element('send').dispatch('click');
   await flush();
   assert.equal(app.drafts().length, 1);
@@ -167,16 +178,15 @@ test('actual PNG dimensions block upload when node metadata matches but the expo
   const app = harness({ bytes: pngHeader(1500, 1000) });
   await flush();
   assert.equal(app.element('aspect-warning').hidden, true, 'the measured node aspect matches the placement');
-  app.element('sync').dispatch('click');
+  startSend(app);
   await flush();
   assert.equal(app.exports.length, 1);
   assert.equal(app.exports[0].useAbsoluteBounds, true);
   assert.equal(app.drafts().length, 0, 'reject the PNG before creating a console draft');
   assert.equal(app.uiMessages.filter(message => message.type === 'remember').length, 0);
-  assert.equal(app.element('error').hidden, false);
-  assert.match(app.element('error').textContent, /PNG.*1500.*1000/i);
-  assert.match(app.element('error').textContent, /aspect|ratio/i);
-  assert.equal(off(app, 'sync'), false, 'a rejected export can be corrected and retried');
+  assert.match(sendFeedback(app), /aspect ratio/i);
+  assert.equal(app.element('send-items').children[0].getAttribute('data-state'), 'failed');
+  assert.equal(off(app, 'send'), false, 'a rejected export can be corrected and retried');
 });
 
 for (const width of [1000, 1019, 981, 1020, 980]) {
@@ -198,8 +208,8 @@ for (const width of [1021, 979]) {
     app.element('send').dispatch('click');
     await flush();
     assert.equal(app.drafts().length, 0);
-    assert.equal(app.element('error').hidden, false);
-    assert.match(app.element('error').textContent, /2\.1%/);
+    assert.match(sendFeedback(app), /aspect ratio/i);
+    assert.equal(app.element('send-items').children[0].getAttribute('data-state'), 'failed');
   });
 }
 
@@ -209,8 +219,7 @@ test('malformed PNG bytes show an actionable error before any draft upload', asy
   app.element('send').dispatch('click');
   await flush();
   assert.equal(app.drafts().length, 0);
-  assert.equal(app.element('error').hidden, false);
-  assert.equal(app.element('error').textContent, 'Figma couldn’t export this layer. Try again, or flatten it first.');
+  assert.ok(sendFeedback(app).includes('Figma couldn’t export this layer. Try again, or flatten it first.'));
 });
 
 test('a connection saved on the legacy host loads on the current host with the same token and keeps its sync target', async () => {
@@ -224,19 +233,19 @@ test('a connection saved on the legacy host loads on the current host with the s
   assert.deepEqual(app.requests.filter(request => ['placements', 'token'].includes(request.route)).map(request => [request.method, request.url, request.authorization]),
     [['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, `Bearer ${connection.token}`],
       ['GET', `${connection.origin}/api/token`, `Bearer ${connection.token}`]]);
-  assert.equal(off(app, 'sync'), false, 'the sync target remembered under the legacy host is still found');
+  assert.equal(off(app, 'send'), false, 'the sync target remembered under the legacy host is still found');
 
-  app.element('sync').dispatch('click');
+  startSend(app);
   await flush();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].url, `${connection.origin}/api/apps/org-one/app-a/drafts`);
   assert.equal(app.drafts()[0].authorization, `Bearer ${connection.token}`);
-  assert.equal(app.drafts()[0].body.rebind, true);
+  assert.equal(app.drafts()[0].body.rebind, false);
   assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: 'light', arm: 'b' });
   assert.deepEqual(app.storage.get(storageKey(connection)), rememberedA, 'the sync target is now saved under the current host');
-  const link = app.element('result').children.find(child => child.textContent === 'View in console');
+  const link = app.element('result').children.find(child => child.textContent === 'Review drafts in console');
   assert.equal(link.href, `${connection.origin}/w/org-one/app-a/releases`, 'people are sent to the current console host');
-  assert.deepEqual(app.notifications.map(item => [item.message, item.options?.button?.text]), [['Synced hero.artwork to draft', 'Review']]);
+  assert.deepEqual(app.notifications.map(item => [item.message, item.options?.button?.text]), [['1 of 1 layer sent to draft.', 'Review']]);
 
   app.saveConnection({ ...connection, token: '' });
   await flush();
@@ -273,7 +282,7 @@ test('a first connection uses the current host and cannot choose the legacy host
   assert.deepEqual(app.requests.filter(request => ['placements', 'token'].includes(request.route)).map(request => [request.method, request.url, request.authorization]),
     [['GET', `${connection.origin}/api/token`, `Bearer ${connection.token}`], ['GET', `${connection.origin}/api/apps/org-one/app-a/placements`, `Bearer ${connection.token}`]]);
   assert.equal(app.element('app').getAttribute('data-view'), 'shell');
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   assert.equal(off(app, 'send'), false);
 });
 
@@ -287,13 +296,14 @@ const tilesOf = app => descendants(app.element('image-grid')).filter(item => ite
 const errorsFor = (app, requestId) => app.mainMessages.filter(message => message.type === 'error' && message.requestId === requestId).map(message => message.message);
 const cellRadios = app => app.element('insert-cells').children.filter(item => item.getAttribute('role') === 'radio');
 const chosenCell = app => Object.fromEntries(['state', 'appearance', 'arm'].map(axis => [axis, cellRadios(app).find(item => item.getAttribute('aria-checked') === 'true')?.getAttribute(`data-${axis}`) ?? '']));
-function pick(app, id, value) {
+async function pick(app, id, value) {
   if (/^insert-(state|appearance|arm)$/.test(id)) {
     const wanted = { ...chosenCell(app), [id.slice(7)]: value };
     const radio = cellRadios(app).find(item => Object.entries(wanted).every(([axis, val]) => item.getAttribute(`data-${axis}`) === val));
     assert.ok(radio, `cell ${JSON.stringify(wanted)} exists`); radio.click(); return;
   }
   app.element(id).value = value; app.element(id).dispatch('change');
+  await settle();
 }
 // Insert with nothing selected makes a new frame centered in the view; most Insert tests start there. `keep` keeps the
 // harness's selection, which a fill or an insert into a container needs.
@@ -306,9 +316,9 @@ async function openInsert(app, { keep = false } = {}) {
 async function insertHeroCell(app, cell = { state: 'old', appearance: 'light', arm: 'b' }) {
   await openInsert(app);
   rowFor(app, placement.key).dispatch('click');
-  pick(app, 'insert-state', cell.state ?? '');
-  pick(app, 'insert-appearance', cell.appearance ?? '');
-  pick(app, 'insert-arm', cell.arm ?? '');
+  await pick(app, 'insert-state', cell.state ?? '');
+  await pick(app, 'insert-appearance', cell.appearance ?? '');
+  await pick(app, 'insert-arm', cell.arm ?? '');
   app.element('insert').dispatch('click');
   await settle();
   return app.frames.at(-1);
@@ -372,10 +382,10 @@ test('a placement cell inserts as a linked image component, centered and selecte
   assert.equal(app.element('sync-title').textContent, 'Linked to hero.artwork');
   assert.equal(app.element('sync-meta').textContent, 'old · Light · b · in Draft, not published');
   // The hover names the cell as the meta does: the axes the placement declares, in the same order.
-  assert.match(app.element('selection-bar').title, /^hero\.artwork · old · Light · b\. Sync sends this layer to that cell in Draft/);
+  assert.match(app.element('selection-bar').title, /^hero\.artwork · old · Light · b\. Send reviews this layer and updates only its selected draft destination/);
   assert.equal(app.element('sync').hidden, false);
-  assert.equal(off(app, 'sync'), false);
-  assert.equal(app.element('sync').textContent, 'Sync to draft');
+  assert.equal(off(app, 'send'), false);
+  assert.equal(app.element('sync').textContent, 'Send to draft');
   assert.equal(app.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${armArt}`, 'Open in console names the linked image');
   assert.equal(app.element('status').textContent, 'Inserted hero.artwork · b · light from Draft.', 'the status region repeats the toast');
   assert.equal(app.element('error').hidden, true);
@@ -384,22 +394,22 @@ test('a placement cell inserts as a linked image component, centered and selecte
 test('Sync from an inserted frame binds exactly its cell without changing the draft wire shape, then the saved target wins', async () => {
   const app = harness();
   const frame = await insertHeroCell(app);
-  app.element('sync').dispatch('click');
+  startSend(app);
   await settle();
   assert.equal(app.drafts().length, 1);
   const { body } = app.drafts()[0];
-  assert.deepEqual(Object.keys(body).sort(), ['bind', 'imageBase64', 'mime', 'name', 'rebind', 'schemaVersion', 'source']);
+  assert.deepEqual(Object.keys(body).sort(), ['bind', 'expectedAssetId', 'imageBase64', 'mime', 'name', 'rebind', 'schemaVersion', 'source']);
   assert.deepEqual(Object.keys(body.source).sort(), ['export', 'fileKey', 'nodeId', 'nodeName', 'provider', 'versionId']);
   assert.deepEqual(body.bind, { slotKey: placement.key, state: 'old', appearance: 'light', arm: 'b' }, 'the picked cell, not the family it inherits');
-  assert.equal(body.rebind, true);
+  assert.equal(body.rebind, false);
   assert.equal(body.source.nodeId, frame.id);
   assert.deepEqual(app.storage.get(storageKey(connection, frame.id)),
     { fileKey: 'abc123', nodeId: frame.id, placementKey: placement.key, state: 'old', appearance: 'light', arm: 'b' }, 'stored targets keep their shape');
   const last = app.mainMessages.filter(message => message.type === 'selection').at(-1);
   assert.equal(last.selection.remembered.insertedFrom, null, 'the client storage target is found before the link');
   assert.equal(app.element('sync-title').textContent, 'Linked to hero.artwork');
-  assert.equal(app.element('status').textContent, 'Synced hero.artwork to draft');
-  assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text], ['Synced hero.artwork to draft', 'Review'], 'a toast with Review');
+  assert.equal(app.element('status').textContent, '1 of 1 layer sent to draft.');
+  assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text], ['1 of 1 layer sent to draft.', 'Review'], 'a toast with Review');
   app.notifications.at(-1).options.button.action();
   assert.deepEqual(app.externalUrls, [`${connection.origin}/w/org-one/app-a/releases`], 'Review opens the console’s releases');
 });
@@ -470,7 +480,7 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
   assert.deepEqual(descendants(app.element('insert-list')).filter(item => item.className === 'group').map(item => item.textContent), ['Home', 'Tasks', 'Travel']);
   assert.equal(app.element('env-staging').disabled, true, 'nothing is published to staging');
   assert.equal(app.element('env-staging').title, 'Nothing published to Staging yet.');
-  assert.equal(app.element('env-draft').title, 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.');
+  assert.equal(app.element('env-draft').title, 'Draft: unpublished art. Sending changes Draft; your app gets it only after someone publishes.');
   assert.equal(app.element('env-note').hidden, true);
 
   rowFor(app, placement.key).dispatch('click');
@@ -478,8 +488,8 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
   assert.deepEqual([...new Set(cellRadios(app).map(item => item.getAttribute('data-state')))], ['old', 'new'], 'the default state first');
   assert.deepEqual([...new Set(cellRadios(app).map(item => item.getAttribute('data-appearance')))], ['', 'light', 'dark']);
   assert.deepEqual([...new Set(cellRadios(app).map(item => item.getAttribute('data-arm')))], ['', 'b', 'c']);
-  pick(app, 'insert-appearance', 'dark');
-  pick(app, 'insert-arm', 'b');
+  await pick(app, 'insert-appearance', 'dark');
+  await pick(app, 'insert-arm', 'b');
   // The pickers say the cell; the line says what it inherits, so a 420 px footer keeps it whole.
   assert.equal(app.element('insert-meta').textContent, '→ 1000 × 1000 · Draft · old · Dark · arm b · inherits Control · Any art');
   assert.equal(app.element('insert-note').hidden, true, 'nothing blocks it');
@@ -487,7 +497,7 @@ test('rows show the base art and tags for unset, unavailable, legacy, and unpubl
   assert.equal(app.element('insert').textContent, 'Insert');
 
   rowFor(app, 'tasks.empty').dispatch('click');
-  pick(app, 'insert-state', 'new');
+  await pick(app, 'insert-state', 'new');
   assert.equal(app.element('insert-note').textContent, 'No image in Draft for this cell yet.');
   assert.equal(app.element('insert-preview').className, 'thumb slot', 'the footer shows the same empty slot as a Not set row');
   assert.equal(off(app, 'insert'), true);
@@ -698,7 +708,7 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
   assert.equal(frame.description, undefined);
   assert.equal(app.insertMessages()[0].link, null);
   assert.equal(app.mainMessages.filter(message => message.type === 'selection').at(-1).selection.remembered, null);
-  assert.equal(app.element('sync').hidden, true);
+  assert.equal(app.element('selection-bar').hidden, true);
   assert.equal(app.element('status').textContent, 'Inserted Coast 0.');
   assert.deepEqual(app.notices, ['Inserted Coast 0']);
   // The first insert retires the hint bar for good.
@@ -718,7 +728,7 @@ test('a link applies only to its own node in the same app; copies, other apps, a
     frameNode('30:5', JSON.stringify({ ...link, nodeId: '30:5', origin: legacyConnection.origin })),
     frameNode('30:6', JSON.stringify({ ...link, nodeId: '30:6', token: 'draft_a', assetId: 'not-a-uuid' })),
   ] });
-  await settle();
+  await settle(); app.element('tab-insert').dispatch('click'); await settle();
   const nodes = [...app.figma.currentPage.selection];
   const rememberedFor = async index => {
     app.select([nodes[index]]);
@@ -727,14 +737,14 @@ test('a link applies only to its own node in the same app; copies, other apps, a
   };
   assert.deepEqual(await rememberedFor(0), { fileKey: 'abc123', nodeId: '30:1', placementKey: placement.key, state: 'new', appearance: 'dark', arm: 'c',
     insertedFrom: { environment: 'staging', assetId: baseArt } });
-  assert.equal(off(app, 'sync'), false);
+  assert.equal(off(app, 'send'), false);
   assert.equal(app.element('sync-meta').textContent, 'new · Dark · c · in Staging, not in Production');
   assert.equal(await rememberedFor(1), null, 'a Cmd+D copy keeps the data but not the node id');
   assert.equal(app.element('sync').hidden, true);
   assert.equal(app.element('sync-title').textContent, 'Copy of a linked frame');
   assert.equal(await rememberedFor(2), null, 'another app');
   assert.equal(app.element('sync-title').textContent, 'Linked to another workspace');
-  assert.equal(app.element('sync-meta').textContent, 'Connect to that workspace to sync it.');
+  assert.equal(app.element('sync-meta').textContent, 'Connect to that workspace to send it.');
   assert.equal(app.element('sync-preview').hidden, true, 'no image square for art it can’t show');
   assert.equal(await rememberedFor(3), null, 'malformed JSON');
   assert.equal((await rememberedFor(4))?.insertedFrom?.environment, 'staging', 'a link written on the legacy host still applies');
@@ -747,8 +757,8 @@ test('without a file key, the first Sync asks for the file’s link on the Send 
   assert.equal(app.element('status').textContent, 'Inserted hero.artwork · b · light from Draft.');
   assert.equal(app.element('file-fallback').hidden, true, 'nothing asks for the link when the plugin opens or inserts');
   assert.equal(app.element('sync').hidden, false);
-  assert.equal(off(app, 'sync'), false, 'Sync is ready: choosing it asks for the link');
-  app.element('sync').dispatch('click');
+  assert.equal(off(app, 'send'), false, 'Sync is ready: choosing it asks for the link');
+  startSend(app);
   await settle();
   assert.equal(app.exportMessages().length, 0);
   assert.equal(app.element('panel-send').hidden, false, 'the Send tab asks for it');
@@ -758,10 +768,12 @@ test('without a file key, the first Sync asks for the file’s link on the Send 
   app.element('file-form').dispatch('submit');
   await settle();
   assert.equal(app.element('file-fallback').hidden, true);
-  assert.equal(app.drafts().length, 1, 'the Sync that asked runs once the file is linked');
+  assert.equal(app.drafts().length, 0, 'saving setup never sends artwork');
+  startSend(app); await settle();
+  assert.equal(app.drafts().length, 1, 'Send is a separate deliberate action');
   assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: 'light', arm: 'b' });
   assert.equal(app.drafts()[0].body.source.fileKey, 'abc123');
-  assert.equal(app.activeElement(), app.element('sync'), 'focus goes back to Sync');
+  assert.equal(app.element('send-bar').hidden, false, 'the stable Send action is available after setup');
 });
 
 test('Insert errors: each failed list says why in its place, with the one action that helps, and Send still works', async () => {
@@ -965,9 +977,9 @@ test('thumbnails load with the bearer as data: URLs, at most three at a time, an
 test('the Insert footer shows only with a choice, errors sit in the fixed line above it, and Send has its own footer', async () => {
   const app = harness();
   await settle();
-  assert.equal(app.element('sync').className, 'primary', 'a remembered target makes Sync the primary action');
-  assert.equal(app.element('send').className, 'secondary');
-  assert.equal(app.element('send-bar').hidden, true);
+  assert.equal(app.element('selection-bar').hidden, true, 'Send owns the outgoing review');
+  assert.equal(app.element('send').className, 'primary');
+  assert.equal(app.element('send-bar').hidden, false);
   assert.equal(app.element('insert-bar').hidden, true);
   await openInsert(app);
   assert.equal(app.element('send-bar').hidden, true);
@@ -1009,7 +1021,8 @@ test('the Insert footer shows only with a choice, errors sit in the fixed line a
   assert.match(inserted.element('status').textContent, /^Inserted hero\.artwork/);
   inserted.element('tab-send').dispatch('click');
   assert.equal(inserted.element('status').textContent, '', 'the Insert status does not follow to Send');
-  assert.equal(inserted.element('sync').className, 'primary');
+  assert.equal(inserted.element('send').className, 'primary');
+  assert.equal(inserted.element('send-bar').hidden, false);
 });
 
 // ---- A.1: ratio gate, live sizes, recovered connections, previews, visible errors ----
@@ -1023,55 +1036,31 @@ function ratioHarness(nodeSpec = tallNode, options = {}) {
 }
 const lastSelection = app => app.mainMessages.filter(message => message.type === 'selection').at(-1).selection;
 
-test('send and sync are disabled whenever the ratio warning is shown', async () => {
-  const app = ratioHarness();
-  await settle();
-  assert.equal(app.element('placement').value, banner.key, 'the remembered placement is chosen');
+test('Send ratio checks follow its displayed destination and Insert still offers Match ratio', async () => {
+  const app = ratioHarness(); await settle();
+  assert.equal(app.element('placement').value, banner.key);
   assert.equal(app.element('aspect-warning').hidden, false);
-  // No-break spaces keep each size and the ratio whole when the callout wraps.
-  assert.equal(app.element('aspect-text').textContent,
-    'This frame is 390\u00a0×\u00a0844. home.banner needs 2.44\u00a0:\u00a01 (1170\u00a0×\u00a0480). Match ratio makes it 390\u00a0×\u00a0160. Or choose a placement that fits.');
-  assert.equal(app.element('export-note').textContent, '', 'no export size beside a ratio that blocks the export');
+  assert.match(app.element('aspect-text').textContent, /home.banner needs.*Match ratio makes/);
+  assert.equal(app.element('export-note').textContent, '');
   assert.equal(off(app, 'send'), true);
-  assert.equal(app.element('sync').hidden, false);
-  assert.equal(off(app, 'sync'), true);
-  app.element('send').dispatch('click');
-  app.element('sync').dispatch('click');
-  await settle();
-  assert.equal(app.exportMessages().length, 0, 'a direct dispatch cannot export either');
-  assert.equal(app.element('error').hidden, true, 'the callout already says why');
-  // The callout names the banner, which is Sync's too, so the Sync bar doesn't say it again.
-  assert.equal(app.element('sync-meta').textContent, 'sent to Draft');
-  assert.equal(app.element('sync-match').hidden, true);
-
-  // A matching placement can be sent; Sync still goes to the banner, so it stays disabled and the Sync bar says why.
-  pick(app, 'placement', phone.key);
-  assert.equal(off(app, 'send'), false);
-  assert.equal(off(app, 'sync'), true);
+  assert.equal(app.element('selection-bar').hidden, true);
+  startSend(app); await settle();
+  assert.equal(app.exportMessages().length, 0, 'the outgoing gate cannot be bypassed');
+  await pick(app, 'placement', phone.key);
+  assert.equal(off(app, 'send'), false, 'the selected phone destination fits');
   assert.equal(app.element('aspect-warning').hidden, true);
-  // The bar names both sizes and what Match ratio makes of the layer; Match ratio is its primary while Sync can't run.
-  assert.equal(app.element('sync-meta').textContent, 'This frame is 390\u00a0×\u00a0844; home.banner is 1170\u00a0×\u00a0480. Match ratio makes it 390\u00a0×\u00a0160.');
-  assert.equal(app.element('sync-match').hidden, false, 'with its own Match ratio');
-  assert.deepEqual([app.element('sync-match').className, app.element('sync').className], ['secondary small', 'secondary']);
-  // Both off: the callout names the chosen placement and the Sync bar Sync's.
-  pick(app, 'placement', placement.key);
-  assert.equal(app.element('aspect-text').textContent,
-    'This frame is 390\u00a0×\u00a0844. hero.artwork needs 1\u00a0:\u00a01 (1000\u00a0×\u00a01000). Match ratio makes it 390\u00a0×\u00a0390. Or choose a placement that fits.');
-  assert.equal(app.element('sync-meta').textContent, 'This frame is 390\u00a0×\u00a0844; home.banner is 1170\u00a0×\u00a0480. Match ratio makes it 390\u00a0×\u00a0160.');
+  await pick(app, 'placement', placement.key);
   assert.equal(off(app, 'send'), true);
-  assert.equal(off(app, 'sync'), true);
-  // The bar's Match ratio matches Sync's placement, the banner.
-  app.element('sync-match').dispatch('click');
-  await settle();
+  assert.match(app.element('aspect-text').textContent, /hero.artwork needs/);
+  app.element('tab-insert').dispatch('click'); await settle();
+  assert.equal(app.element('sync-match').hidden, false);
+  app.element('sync-match').dispatch('click'); await settle();
   assert.deepEqual(app.uiMessages.filter(message => message.type === 'match-ratio').map(({ width, height }) => [width, height]), [[1170, 480]]);
-  assert.equal(off(app, 'sync'), false, 'the layer now fits the banner');
-
-  // Within 2%, nothing is shown and both work.
-  const close = ratioHarness({ ...tallNode, width: 1170, height: 475 });
-  await settle();
+  app.element('tab-send').dispatch('click'); await pick(app, 'placement', banner.key);
+  assert.equal(off(app, 'send'), false, 'the layer now fits the reviewed banner destination');
+  const close = ratioHarness({ ...tallNode, width: 1170, height: 475 }); await settle();
   assert.equal(close.element('aspect-warning').hidden, true);
-  assert.equal(off(close, 'send'), false);
-  assert.equal(off(close, 'sync'), false);
+  assert.equal(off(close, 'send'), false, 'the inclusive 2% tolerance remains');
 });
 
 test('match-ratio resizes height and reports the new selection', async () => {
@@ -1087,8 +1076,8 @@ test('match-ratio resizes height and reports the new selection', async () => {
   assert.deepEqual([lastSelection(app).node.width, lastSelection(app).node.height], [390, 160]);
   assert.equal(app.element('aspect-warning').hidden, true);
   assert.equal(off(app, 'send'), false);
-  assert.equal(off(app, 'sync'), false);
-  app.element('sync').dispatch('click');
+  assert.equal(off(app, 'send'), false);
+  startSend(app);
   await settle();
   assert.deepEqual(app.drafts()[0].body.bind, { slotKey: banner.key, state: null, appearance: null, arm: null });
 
@@ -1096,12 +1085,14 @@ test('match-ratio resizes height and reports the new selection', async () => {
   app.postToMain({ type: 'match-ratio', requestId: 700, nodeId: '99:9', width: 1170, height: 480 });
   await settle();
   assert.deepEqual(errorsFor(app, 700), ['The selection changed. Check it and try again.']);
-  const exporting = app.delayExport();
-  app.element('sync').dispatch('click');
+  const busy = ratioHarness({ ...tallNode, height: 160 }, { bytes: pngHeader(1170, 480) });
   await settle();
-  app.postToMain({ type: 'match-ratio', requestId: 701, nodeId: tallNode.id, width: 1000, height: 1000 });
+  const exporting = busy.delayExport();
+  startSend(busy);
   await settle();
-  assert.deepEqual(errorsFor(app, 701), ['Wait for the current export or insert to finish, then match the ratio.']);
+  busy.postToMain({ type: 'match-ratio', requestId: 701, nodeId: tallNode.id, width: 1000, height: 1000 });
+  await settle();
+  assert.deepEqual(errorsFor(busy, 701), ['Wait for the current export or insert to finish, then match the ratio.']);
   exporting.resolve();
   await settle();
   assert.equal(app.resizes.length, 1);
@@ -1122,7 +1113,7 @@ test('a canvas edit to the selected layer reaches the Sync bar at the next check
   await settle();
   assert.equal(app.intervals.size, 1);
   assert.equal([...app.intervals.values()][0].delay, 250);
-  assert.equal(off(app, 'sync'), false);
+  assert.equal(off(app, 'send'), false);
   const reports = () => app.mainMessages.filter(message => message.type === 'selection').length;
   const before = reports();
   app.tick();
@@ -1137,7 +1128,7 @@ test('a canvas edit to the selected layer reaches the Sync bar at the next check
   assert.equal(reports(), before + 1);
   assert.deepEqual([lastSelection(app).node.width, lastSelection(app).node.height], [1000, 400]);
   assert.equal(app.element('aspect-warning').hidden, false, 'the gate follows the canvas without a new selection');
-  assert.equal(off(app, 'sync'), true);
+  assert.equal(off(app, 'send'), true);
   app.tick();
   await settle();
   assert.equal(reports(), before + 1);
@@ -1156,7 +1147,7 @@ test('a canvas edit to the selected layer reaches the Sync bar at the next check
   assert.equal(lastSelection(app).node.height, 500);
 });
 
-test('with no layer or several selected, the canvas check reads nothing', async () => {
+test('canvas checks watch multi-selection without repeating unchanged reports', async () => {
   const app = harness({ selection: [node, { ...node, id: '12:35', name: 'Other' }] });
   await settle();
   const page = app.figma.currentPage;
@@ -1171,7 +1162,7 @@ test('with no layer or several selected, the canvas check reads nothing', async 
     const before = reports();
     app.tick(); app.tick();
     await settle();
-    assert.equal(reads, 0);
+    assert.equal(reads, 2, 'each check reads the selection once, including an empty selection');
     assert.equal(reports(), before);
   }
   app.select([page.children[0]]);
@@ -1362,7 +1353,7 @@ test('a failed connection test recovered by another read loads placements for Se
   assert.equal(app.element('send-problem').hidden, true);
   assert.equal(app.element('placement').value, placement.key, 'the remembered placement is chosen without another test');
   assert.equal(off(app, 'send'), false);
-  assert.equal(off(app, 'sync'), false);
+  assert.equal(off(app, 'send'), false);
 
   // While placements still fail, the label and the test's reason stay, and another quiet try waits 15 s.
   const down = harness({ console: { failures: new Set(['placements']) } });
@@ -1497,9 +1488,8 @@ test('errors are scrolled into view and focused; connection errors sit under the
   await settle();
   app.element('send').dispatch('click');
   await settle();
-  assert.equal(app.element('error').hidden, false);
-  assert.deepEqual(clone(app.element('error').scrolledIntoView), { block: 'nearest' });
-  assert.equal(app.activeElement(), app.element('error'));
+  assert.match(sendFeedback(app), /couldn’t export this layer/);
+  assert.equal(app.element('send-items').children[0].getAttribute('data-state'), 'failed');
 
   // Typing a search keeps focus; the error still scrolls into view.
   const typing = harness({ console: { ...library([libraryAsset(82, 'Solo', 400, 200)]) } });
@@ -1647,14 +1637,14 @@ test('draft POST is never retried', async () => {
   ]) {
     const app = harness({ remembered: null });
     await settle();
-    pick(app, 'placement', placement.key);
+    await pick(app, 'placement', placement.key);
     fail(app.console);
     app.element('send').dispatch('click');
     await exhaustRetries(app);
     assert.equal(app.drafts().length, 1, name);
-    assert.equal(app.element('error').textContent, expected, name);
-    assert.equal(app.element('status').textContent, '');
-    assert.equal(off(app, 'send'), false, 'Send can be chosen again');
+    assert.ok(sendFeedback(app).includes(expected), name);
+    assert.equal(app.element('send-items').children[0].getAttribute('data-state'), 'unknown');
+    assert.equal(off(app, 'send'), true, 'uncertain sends cannot be blindly retried');
     assert.equal(app.uiMessages.filter(message => message.type === 'remember').length, 0);
   }
 });
@@ -1673,16 +1663,15 @@ test('timeout says how many seconds', async () => {
   // A draft that timed out may still have arrived, and says so.
   const sending = harness({ remembered: null, console: { gates: { drafts: deferred() } } });
   await settle();
-  pick(sending, 'placement', placement.key);
+  await pick(sending, 'placement', placement.key);
   sending.element('send').dispatch('click');
   await settle();
   assert.ok(timerDelays(sending).includes(30000), 'a small draft waits 30 s');
   sending.fireTimers(30000);
   await settle();
-  assert.equal(sending.element('error').textContent,
-    'Assetlib didn’t answer within 30 seconds. It may have arrived anyway, so check the console before sending again.');
+  assert.ok(sendFeedback(sending).includes('Assetlib didn’t answer within 30 seconds. It may have arrived anyway, so check the console before sending again.'));
   assert.equal(sending.drafts().length, 1);
-  assert.equal(off(sending, 'send'), false);
+  assert.equal(off(sending, 'send'), true);
 });
 
 test('upload timeout grows with body size', async () => {
@@ -1691,7 +1680,7 @@ test('upload timeout grows with body size', async () => {
   big.set(pngHeader(1000, 1000));
   const app = harness({ remembered: null, bytes: big, console: { gates: { drafts: deferred() } } });
   await settle();
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   app.element('send').dispatch('click');
   await settle();
   const [draft] = app.drafts();
@@ -1702,8 +1691,7 @@ test('upload timeout grows with body size', async () => {
   assert.ok(timerDelays(app).includes(expected));
   app.fireTimers(expected);
   await settle();
-  assert.equal(app.element('error').textContent,
-    'Assetlib didn’t answer within 70 seconds. It may have arrived anyway, so check the console before sending again.');
+  assert.ok(sendFeedback(app).includes('Assetlib didn’t answer within 70 seconds. It may have arrived anyway, so check the console before sending again.'));
   assert.equal(app.drafts().length, 1);
 
   // An insert download is timed by the size the console listed: 20 s plus 15 s per MiB.
@@ -1828,40 +1816,42 @@ test('malformed save-connection gets a plain error', async () => {
 });
 
 test('an error clears only its own pending operation', async () => {
-  const app = harness({ remembered: null });
+  const app = harness({ remembered: null, console: { draft: body => boundDraft(body) } });
   await settle();
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   const exporting = app.delayExport();
   app.element('send').dispatch('click');
   await settle();
-  assert.equal(app.element('status').textContent, 'Exporting selected artwork…');
+  assert.equal(app.element('status').textContent, 'Checking current drafts…');
   for (const id of ['send', 'connect', 'insert', 'match-ratio']) assert.equal(off(app, id), true, `${id} waits for the send`);
 
-  // A file URL that main refuses, a stale request's error, and an error naming no request: the send carries on.
+  // File setup waits for the send, while unrelated and stale errors leave its operation running.
   app.element('file-url').value = 'https://example.com/not-figma';
   app.element('file-form').dispatch('submit');
   await settle();
-  assert.equal(app.element('error').textContent, 'That isn’t a link to a Figma design file. In Figma, press Cmd+L to copy this file’s link, then paste it here.');
+  assert.equal(app.uiMessages.filter(message => message.type === 'save-file-url').length, 0);
   app.postToMain({ type: 'match-ratio', requestId: 777, nodeId: '99:9', width: 10, height: 10 });
   app.deliver({ type: 'error', message: 'Something else went wrong.' });
   await settle();
   assert.deepEqual(errorsFor(app, 777), ['Wait for the current export or insert to finish, then match the ratio.']);
   assert.equal(app.element('error').textContent, 'Something else went wrong.');
-  assert.equal(app.element('status').textContent, 'Exporting selected artwork…');
+  assert.equal(app.element('status').textContent, 'Checking current drafts…');
   assert.equal(off(app, 'send'), true, 'the send is still running');
   exporting.resolve();
   await settle();
   assert.equal(app.drafts().length, 1);
-  assert.equal(app.element('status').textContent, 'Sent to hero.artwork draft');
-  assert.equal(off(app, 'send'), false);
+  assert.equal(app.element('status').textContent, '1 of 1 layer sent to draft.');
+  assert.equal(off(app, 'send'), false, 'an explicit send can repeat a fully successful selection');
+  assert.equal(app.drafts().length, 1, 'success never starts a second upload automatically');
 
   // Its own error ends it.
-  app.figma.currentPage.selection = [];
-  app.element('send').dispatch('click');
+  const changed = harness(); await settle();
+  changed.figma.currentPage.selection = [];
+  startSend(changed);
   await settle();
-  assert.equal(app.element('error').textContent, 'The selection changed while sending. Check it and send again.');
-  assert.equal(app.element('status').textContent, '');
-  assert.equal(off(app, 'connect'), false);
+  assert.match(sendFeedback(changed), /selection changed/i);
+  assert.equal(changed.element('send-items').children[0].getAttribute('data-state'), 'failed');
+  assert.equal(off(changed, 'connect'), false);
 
   // A save-file-url reply names its request, and a stale one is ignored.
   app.deliver({ type: 'file-saved', requestId: 9999, fileKey: 'abc123' });
@@ -1893,13 +1883,14 @@ async function assertConnectionKept(app, typed) {
   assert.ok(rowFor(app, placement.key));
   // Send and Sync work with the old connection, and the error stays until the person acts on it.
   assert.equal(off(app, 'send'), false);
-  assert.equal(off(app, 'sync'), false);
-  app.element('sync').dispatch('click');
+  assert.equal(off(app, 'send'), false);
+  startSend(app);
   await settle();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].authorization, `Bearer ${connection.token}`);
   assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: 'light', arm: 'b' });
   assert.equal(app.element('connection-error').textContent, SAVE_REFUSED);
+  app.element('tab-insert').dispatch('click'); await settle();
 }
 
 for (const [description, finishFirst] of [['ended while the save waited', true], ['was still running when main refused the save', false]]) {
@@ -1993,9 +1984,11 @@ test('only conflicting actions wait during an operation; tabs, lists, search, an
   app.element('insert').dispatch('click');
   await settle();
   assert.equal(app.element('status').textContent, 'Downloading hero.artwork…');
-  for (const id of ['insert', 'sync-update', 'send', 'sync', 'connect', 'match-ratio']) assert.equal(off(app, id), true, `${id} waits`);
-  for (const id of ['tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'scale-2', 'env-draft', 'env-staging', 'insert-refresh', 'placement'])
+  for (const id of ['insert', 'sync-update', 'send', 'connect', 'match-ratio']) assert.equal(off(app, id), true, `${id} waits`);
+  assert.equal(off(app, 'sync'), false, 'opening Send remains available during an insert');
+  for (const id of ['tab-send', 'tab-insert', 'browse-placements', 'browse-images', 'insert-search', 'scale-2', 'env-draft', 'env-staging', 'insert-refresh'])
     assert.equal(app.element(id).disabled, false, `${id} stays live`);
+  assert.equal(app.element('placement').disabled, true, 'the reviewed destination waits for the operation');
   app.element('tab-send').dispatch('click');
   assert.equal(app.element('panel-send').hidden, false);
   assert.equal(app.element('status').textContent, 'Downloading hero.artwork…', 'switching tabs keeps the running status');
@@ -2067,7 +2060,7 @@ test('the Insert list is a listbox with one tab stop; the arrow keys move the ch
   assert.deepEqual(rowsState(), [['option', 'false', '0'], ['option', 'false', '-1']], 'nothing chosen: the first row is the one tab stop');
 
   rowFor(app, placement.key).dispatch('click');
-  pick(app, 'insert-appearance', 'dark');
+  await pick(app, 'insert-appearance', 'dark');
   rowFor(app, placement.key).focus();
   assert.equal(app.keydown({ key: 'ArrowDown' }, list).defaultPrevented, true);
   assert.equal(app.activeElement(), rowFor(app, 'home.second'), 'focus moves with the choice');
@@ -2090,9 +2083,9 @@ test('Enter on a row inserts the cell the footer shows, and choosing the chosen 
   await openInsert(app);
   const row = rowFor(app, placement.key);
   row.dispatch('click');
-  pick(app, 'insert-state', 'new');
-  pick(app, 'insert-appearance', 'light');
-  pick(app, 'insert-arm', 'b');
+  await pick(app, 'insert-state', 'new');
+  await pick(app, 'insert-appearance', 'light');
+  await pick(app, 'insert-arm', 'b');
   row.dispatch('click');
   assert.deepEqual(['state', 'appearance', 'arm'].map(axis => chosenCell(app)[axis]), ['new', 'light', 'b'], 'choosing it again keeps the cell');
   row.focus();
@@ -2328,11 +2321,11 @@ test('a click on an unavailable Send or Sync does nothing, as on a disabled butt
     [0, true, 'Connected. No placements yet. Placements come from your app’s code.']);
 
   // The remembered placement is gone from the app: the Sync bar says so, with Send elsewhere… in place of Sync.
-  const gone = harness({ remembered: { ...rememberedA, placementKey: 'gone.key' } });
+  const gone = harness({ prefs: { tab: 'insert' }, remembered: { ...rememberedA, placementKey: 'gone.key' } });
   await settle();
   assert.equal(gone.element('sync').hidden, true);
-  assert.equal(off(gone, 'sync'), true);
-  gone.element('sync').dispatch('click');
+  assert.equal(off(gone, 'send'), true);
+  startSend(gone);
   await settle();
   assert.deepEqual([gone.exportMessages().length, gone.element('error').hidden], [0, true]);
   assert.equal(gone.element('sync-title').textContent, 'Linked to gone.key');
@@ -2837,48 +2830,27 @@ test('main shows a toast of at most 100 characters and opens only a console link
   assert.equal(app.mainMessages.filter(message => message.type === 'error').length, 0, 'a toast is never refused');
 });
 
-test('Send: the result says what happened inline, a toast says where it went, and a 409 keeps the console’s words', async () => {
-  const app = harness({ remembered: null });
-  await settle();
-  pick(app, 'placement', placement.key);
-  app.element('send').dispatch('click');
-  assert.equal(app.element('send').textContent, 'Sending…');
-  await settle();
+test('Send keeps per-layer receipts and partial uploads preserve the console’s words', async () => {
+  const app = harness({ remembered: null, console: { draft: body => boundDraft(body) } }); await settle();
+  await pick(app, 'placement', placement.key); app.element('send').dispatch('click');
+  assert.match(app.element('send').textContent, /^Sending [01] of 1…$/); await settle();
   assert.equal(app.element('send').textContent, 'Send to draft');
-  const result = app.element('result');
-  assert.equal(result.hidden, false);
-  assert.equal(app.element('send-footnote').hidden, true, 'the result says where the draft went; the footnote would repeat it');
-  assert.deepEqual(result.children.map(child => child.textContent), ['Draft updated. Publish it from the console when it’s ready.', 'View in console']);
-  assert.equal(result.children[1].href, `${connection.origin}/w/org-one/app-a/releases`);
-  assert.deepEqual(app.notices, ['Sent to hero.artwork draft']);
-  assert.equal(app.element('status').textContent, 'Sent to hero.artwork draft');
-
-  // A Sync that also rebound other cells says how many, with the cells under Details.
-  const synced = harness({ console: { draft: body => ({ asset: { id: uuid(77), name: body.name, width: 1000, height: 1000, sha256: 'a'.repeat(64), renditions: 1 },
-    previous: null, bound: body.bind, bindError: null, rebound: [body.bind, { ...body.bind, state: 'new' }, { ...body.bind, arm: 'c' }] }) } });
-  await settle();
-  synced.element('sync').dispatch('click');
-  await settle();
-  const parts = synced.element('result').children;
-  assert.equal(parts[2].textContent, 'Also updated 2 other draft cells that used this layer’s earlier art.');
-  assert.deepEqual(descendants(parts[3]).filter(item => item.tag === 'li').map(item => item.textContent),
-    ['hero.artwork · new · Light · b', 'hero.artwork · old · Light · c'], 'each cell named by the axes its placement declares');
-  assert.deepEqual(synced.notices, ['Synced hero.artwork to draft']);
-
-  // HTTP 409: the image exists but is not in the cell; no success toast, and a link to the image.
+  assert.equal(app.element('result').hidden, false);
+  assert.ok(textOf(app.element('result')).includes('1 of 1 layer sent to draft.'));
+  assert.equal(app.element('send-items').children[0].getAttribute('data-state'), 'sent');
+  assert.deepEqual(app.notices, ['1 of 1 layer sent to draft.']);
+  assert.equal(app.drafts()[0].body.rebind, false);
   const partial = harness({ console: { draft: body => ({ asset: { id: uuid(78), name: body.name, width: 1000, height: 1000, sha256: 'a'.repeat(64), renditions: 1 },
     previous: null, bound: null, bindError: 'This arm is not declared by the placement', rebound: [] }) } });
-  await settle();
-  partial.element('sync').dispatch('click');
-  await settle();
-  // The problem and the link to check it sit in one callout.
-  const [notice] = partial.element('result').children;
-  assert.equal(notice.className, 'notice');
-  const [words, imageLink] = notice.children;
-  assert.equal(words.textContent, 'The image was uploaded, but Assetlib couldn’t put it in hero.artwork: This arm is not declared by the placement. Check the console before sending again.');
-  assert.deepEqual([imageLink.textContent, imageLink.href], ['Open image in console', `${connection.origin}/w/org-one/app-a/images/${uuid(78)}`]);
-  assert.deepEqual(partial.notices, [], 'no success toast');
-  assert.equal(partial.element('status').textContent, words.textContent, 'the status region repeats the result');
+  await settle(); startSend(partial); await settle();
+  assert.ok(sendFeedback(partial).includes('Uploaded but not assigned. This arm is not declared by the placement'));
+  assert.equal(partial.element('send-items').children[0].getAttribute('data-state'), 'partial');
+  const imageLink = descendants(partial.element('send-items')).find(item => item.tagName === 'A');
+  assert.equal(imageLink.href, `${connection.origin}/w/org-one/app-a/images/${uuid(78)}`);
+  assert.deepEqual(partial.notices, [], 'no success toast for an unassigned upload');
+  assert.equal(off(partial, 'send'), true, 'partial uploads are not blindly retried');
+  partial.element('send').dispatch('click'); await settle();
+  assert.equal(partial.drafts().length, 1);
 });
 
 test('the Send tab shows the layer as a designer reads it, and the export as a PNG size', async () => {
@@ -2886,7 +2858,7 @@ test('the Send tab shows the layer as a designer reads it, and the export as a P
   await settle();
   assert.equal(app.element('selection-name').textContent, 'Hero artwork');
   assert.equal(app.element('selection-meta').textContent, '390 × 390', 'whole pixels, no node ID or type');
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   assert.equal(app.element('export-note').textContent, 'Exports up to 1171 × 1169 PNG, 3× this layer.');
   assert.deepEqual(app.element('appearance').children.map(option => option.textContent), ['Any', 'Light (inherits)', 'Dark (inherits)']);
   app.select([]);
@@ -2896,7 +2868,8 @@ test('the Send tab shows the layer as a designer reads it, and the export as a P
   const nodes = [...app.figma.currentPage.children];
   app.select([nodes[0], { ...nodes[0], id: '9:9' }]);
   await settle();
-  assert.equal(app.element('selection-name').textContent, 'Select one layer. Sending several at once isn’t supported yet.');
+  assert.equal(app.element('selection-name').textContent, '2 layers selected');
+  assert.equal(app.element('send-items').children.length, 2);
 });
 
 test('previews of list rows load as they near the list’s view; the footer’s loads whenever it shows', async () => {
@@ -2948,7 +2921,7 @@ const linkOf = layer => JSON.parse(layer.getPluginData(LINK_KEY) || 'null');
 const topImage = layer => [...layer.fills].reverse().find(paint => paint.type === 'IMAGE')?.imageHash;
 const insertedMessage = app => app.mainMessages.filter(message => message.type === 'inserted').at(-1);
 const solid = { type: 'SOLID', color: { r: 1, g: 0.2, b: 0 }, opacity: 1, visible: true, blendMode: 'NORMAL' };
-const INSTANCE_LAYERS = 'Filled. Layers inside instances can’t be linked, so Sync isn’t available for them.';
+const INSTANCE_LAYERS = 'Filled. Layers inside instances can’t be linked.';
 
 test('fill keeps non-image paints and image transform', async () => {
   const under = { type: 'IMAGE', imageHash: 'under', scaleMode: 'FILL', visible: true, opacity: 1, blendMode: 'NORMAL' };
@@ -3172,8 +3145,8 @@ test('three shapes fill and link each with its own id', async () => {
   // Placement art is named by its key, not by the cell's layer name.
   const cell = await canvas(shapes);
   rowFor(cell, placement.key).dispatch('click');
-  pick(cell, 'insert-appearance', 'dark');
-  pick(cell, 'insert-arm', 'c');
+  await pick(cell, 'insert-appearance', 'dark');
+  await pick(cell, 'insert-arm', 'c');
   await choose(cell);
   assert.equal(cell.notifications.at(-1).message, 'Filled 3 layers with hero.artwork');
 
@@ -3476,7 +3449,7 @@ test('fill Undo refuses a fill style applied after the fill without changing its
   assert.equal(app.undoCommits.length, 1);
 });
 
-for (const action of ['sync', 'send-plain']) test(`starting ${action} retires a fill’s Undo while its export waits`, async () => {
+for (const action of ['review', 'send']) test(`starting ${action} retires a fill’s Undo while its export waits`, async () => {
   const app = await canvas([{ id: '52:28', name: 'Shape', type: 'RECTANGLE', width: 300, height: 200, fills: [solid] }], { bytes: pngHeader(1200, 800) });
   const layer = app.figma.currentPage.selection[0];
   await choose(app);
@@ -3487,8 +3460,8 @@ for (const action of ['sync', 'send-plain']) test(`starting ${action} retires a 
   let writes = 0;
   Object.defineProperty(layer, 'fills', { get: () => paints, set(value) { paints = value; writes++; } });
   const exporting = app.delayExport();
-  if (action === 'send-plain') { app.element('tab-send').dispatch('click'); await settle(); }
-  app.element(action).dispatch('click'); await settle();
+  if (action === 'review') { app.element('sync').dispatch('click'); await settle(); assert.equal(app.exports.length, 0); }
+  startSend(app); await settle();
   assert.equal(app.exports.length, 1, 'the export started and is still held');
   assert.equal(app.drafts().length, 0);
   assert.equal(toast.cancelled, true);
@@ -3737,15 +3710,15 @@ test('instance sublayer is filled but not linked', async () => {
   assert.equal(topImage(refusing.figma.currentPage.selection[0]), 'hash-1');
   assert.equal(refusing.element('error').hidden, true);
   assert.equal(insertedMessage(refusing).linked, false);
-  assert.equal(refusing.notifications.at(-1).message, 'Filled. Figma didn’t let one layer be linked, so Sync isn’t available for it.', 'not an instance, so not the instance copy');
+  assert.equal(refusing.notifications.at(-1).message, 'Filled. Figma didn’t let one layer be linked.', 'not an instance, so not the instance copy');
 
   // Refused on one layer and not linked on another: the toast says both.
   const both = await canvas([sublayer, { id: '60:5', name: 'Badge', type: 'RECTANGLE', width: 64, height: 64, fills: [] },
     { id: '60:6', name: 'Stuck', type: 'RECTANGLE', width: 64, height: 64, fills: [] }]);
   Object.defineProperty(both.figma.currentPage.selection[2], 'fills', { get: () => [], set() { throw new Error('Cannot set fills'); } });
   await choose(both);
-  assert.equal(both.notifications.at(-1).message, 'Filled 2 of 3 layers. Figma couldn’t fill the other one, and Sync isn’t available for one of them.');
-  assert.equal(both.element('status').textContent, 'Filled 2 of 3 layers. Figma couldn’t fill the other one, and Sync isn’t available for one of them.');
+  assert.equal(both.notifications.at(-1).message, 'Filled 2 of 3 layers. Figma couldn’t fill the other one or link one filled layer.');
+  assert.equal(both.element('status').textContent, 'Filled 2 of 3 layers. Figma couldn’t fill the other one or link one filled layer.');
 });
 
 test('linked node selected → replace relinks', async () => {
@@ -3760,8 +3733,8 @@ test('linked node selected → replace relinks', async () => {
   // The designer cropped the image since; a replace keeps the crop.
   const crop = [[0.8, 0, 0.1], [0, 0.8, 0.1]];
   component.fills = [solid, { type: 'IMAGE', imageHash: 'hash-1', scaleMode: 'CROP', imageTransform: crop }];
-  pick(app, 'insert-appearance', 'dark');
-  pick(app, 'insert-arm', 'c');
+  await pick(app, 'insert-appearance', 'dark');
+  await pick(app, 'insert-arm', 'c');
   await choose(app);
   assert.equal(app.frames.length, 1, 'no new layer');
   assert.deepEqual(clone(component.fills), [solid, { type: 'IMAGE', imageHash: 'hash-2', scaleMode: 'CROP', imageTransform: crop }]);
@@ -3814,32 +3787,34 @@ test('replace after a Sync relinks Sync too', async () => {
   // Exports keep the layer's proportions, so Sync's PNG check follows Match ratio.
   const app = harness({ remembered: null, console: canvasConsole(), exportBytes: layer => pngHeader(Math.round(layer.width), Math.round(layer.height)) });
   const component = await insertHeroCell(app);
-  app.element('sync').dispatch('click');
+  startSend(app);
   await settle();
   assert.deepEqual(app.storage.get(storageKey(connection, component.id)), { fileKey: 'abc123', nodeId: component.id, placementKey: placement.key,
     state: 'old', appearance: 'light', arm: 'b' }, 'the Sync stored a target, which outranks the link');
 
   // Another cell of the same placement.
-  pick(app, 'insert-appearance', 'dark');
-  pick(app, 'insert-arm', 'c');
+  app.element('tab-insert').dispatch('click'); await settle();
+  await pick(app, 'insert-appearance', 'dark');
+  await pick(app, 'insert-arm', 'c');
   await choose(app);
   assert.deepEqual([linkOf(component).appearance, linkOf(component).arm], ['dark', 'c']);
   assert.equal(app.storage.has(storageKey(connection, component.id)), false, 'the stored target goes with the relink');
   assert.deepEqual(lastSelection(app).remembered, { fileKey: 'abc123', nodeId: component.id, placementKey: placement.key, state: 'old', appearance: 'dark', arm: 'c',
     insertedFrom: { environment: 'draft', assetId: baseArt } });
-  app.element('sync').dispatch('click');
+  startSend(app);
   await settle();
   assert.deepEqual(app.drafts().at(-1).body.bind, { slotKey: placement.key, state: 'old', appearance: 'dark', arm: 'c' });
   assert.equal(app.storage.get(storageKey(connection, component.id)).arm, 'c', 'and this Sync is remembered again');
 
   // Another placement.
+  app.element('tab-insert').dispatch('click'); await settle();
   rowFor(app, card.key).dispatch('click');
   await choose(app);
   assert.equal(app.storage.has(storageKey(connection, component.id)), false);
   assert.equal(app.element('sync-title').textContent, 'Linked to home.card');
   app.element('match-ratio').dispatch('click');
   await settle();
-  app.element('sync').dispatch('click');
+  startSend(app);
   await settle();
   assert.equal(app.drafts().length, 3);
   assert.deepEqual(app.drafts().at(-1).body.bind, { slotKey: card.key, state: null, appearance: null, arm: null });
@@ -3861,7 +3836,7 @@ test('a fill of a sent layer relinks Sync, even before the file key is known, an
   assert.equal(linkOf(layer).placementKey, card.key);
   assert.deepEqual([app.storage.has(storageKey(connection)), app.storage.has(storageKey(legacyConnection))], [false, false]);
   assert.equal(app.element('sync-title').textContent, 'Linked to home.card');
-  app.element('sync').dispatch('click');
+  startSend(app);
   await settle();
   assert.deepEqual(app.drafts().at(-1).body.bind, { slotKey: card.key, state: null, appearance: null, arm: null });
 
@@ -3876,7 +3851,7 @@ test('a fill of a sent layer relinks Sync, even before the file key is known, an
   await settle();
   assert.equal(unkeyed.storage.has(storageKey(connection)), false);
   assert.equal(unkeyed.element('sync-title').textContent, 'Linked to home.card');
-  unkeyed.element('sync').dispatch('click');
+  startSend(unkeyed);
   await settle();
   assert.deepEqual(unkeyed.drafts().at(-1).body.bind, { slotKey: card.key, state: null, appearance: null, arm: null });
 
@@ -3887,7 +3862,7 @@ test('a fill of a sent layer relinks Sync, even before the file key is known, an
   await choose(stuck);
   assert.equal(stuck.storage.has(storageKey(legacyConnection)), true);
   assert.equal(stuck.element('sync-title').textContent, 'Linked to home.card', 'the undeletable target is ignored');
-  stuck.element('sync').dispatch('click');
+  startSend(stuck);
   await settle();
   stuck.selectionChanged();
   await settle();
@@ -4405,14 +4380,14 @@ test('a row no longer chosen drags its base cell again', async () => {
   const hero = () => rowFor(app, placement.key);
   assert.equal(hero().draggable, true);
   hero().dispatch('click');
-  pick(app, 'insert-appearance', 'dark');
+  await pick(app, 'insert-appearance', 'dark');
   await settle();
   assert.equal(hero().draggable, false, 'the chosen row drags the cell its pickers show');
   rowFor(app, card.key).dispatch('click');
   await settle();
   assert.equal(hero().draggable, true, 'another row chosen');
   hero().dispatch('click');
-  pick(app, 'insert-appearance', 'dark');
+  await pick(app, 'insert-appearance', 'dark');
   await settle();
   assert.equal(hero().draggable, false);
   hero().focus();
@@ -4514,9 +4489,9 @@ test('setRelaunchData called once with ≤1000 chars after insert, fill, drop an
   // Insert: the new component's Sync to Assetlib, and the document's Open Assetlib once however many links follow.
   const app = harness({ remembered: null });
   const frame = await insertHeroCell(app);
-  assert.deepEqual(relaunchesOf(app, frame.id), [{ sync: 'hero.artwork · old · Light · b, from Draft. Sync sends edits to its draft.' }]);
+  assert.deepEqual(relaunchesOf(app, frame.id), [{ sync: 'hero.artwork · old · Light · b, from Draft. Review this layer and send edits to its draft.' }]);
   const second = await insertHeroCell(app, { state: 'new', appearance: null, arm: null });
-  assert.deepEqual(relaunchesOf(app, second.id), [{ sync: 'hero.artwork · new, from Draft. Sync sends edits to its draft.' }]);
+  assert.deepEqual(relaunchesOf(app, second.id), [{ sync: 'hero.artwork · new, from Draft. Review this layer and send edits to its draft.' }]);
   assert.deepEqual(relaunchesOf(app, '0:0'), [OPEN], 'the document’s button is set once');
   assert.deepEqual(app.undoCommits.length, 2, 'each in its insert’s one undo step');
 
@@ -4525,7 +4500,7 @@ test('setRelaunchData called once with ≤1000 chars after insert, fill, drop an
   const filled = await canvas([shape('61:1', 'One'), shape('61:2', 'Two'), shape('61:3;4', 'Inside')]);
   await choose(filled);
   assert.deepEqual(['61:1', '61:2', '61:3;4'].map(id => relaunchesOf(filled, id).length), [1, 1, 0]);
-  assert.deepEqual(relaunchesOf(filled, '61:1'), [{ sync: 'home.card, from Draft. Sync sends edits to its draft.' }]);
+  assert.deepEqual(relaunchesOf(filled, '61:1'), [{ sync: 'home.card, from Draft. Review this layer and send edits to its draft.' }]);
 
   // A library image links nothing, so it sets no button.
   const coast = libraryAsset(8, 'Coast', 400, 200);
@@ -4545,16 +4520,16 @@ test('setRelaunchData called once with ≤1000 chars after insert, fill, drop an
   await settle();
   const placeholder = dropped.frames.at(-1);
   assert.equal(placeholder.name, card.key);
-  assert.deepEqual(relaunchesOf(dropped, placeholder.id), [{ sync: 'home.card, from Draft. Sync sends edits to its draft.' }]);
+  assert.deepEqual(relaunchesOf(dropped, placeholder.id), [{ sync: 'home.card, from Draft. Review this layer and send edits to its draft.' }]);
 
   // Send: the sent layer, after the console put the draft in its cell.
   const sent = harness({ remembered: null, console: { draft: boundDraft } });
   await settle();
-  pick(sent, 'placement', placement.key);
+  await pick(sent, 'placement', placement.key);
   sent.element('send').dispatch('click');
   await settle();
   assert.equal(sent.drafts().length, 1);
-  assert.deepEqual(relaunchesOf(sent, node.id), [{ sync: 'hero.artwork, from Draft. Sync sends edits to its draft.' }]);
+  assert.deepEqual(relaunchesOf(sent, node.id), [{ sync: 'hero.artwork, from Draft. Review this layer and send edits to its draft.' }]);
   assert.deepEqual(relaunchesOf(sent, '0:0'), [OPEN]);
   for (const entry of [app, filled, dropped, sent].flatMap(item => item.relaunches)) {
     assert.equal(Object.keys(entry.data).length, 1, 'one command per call');
@@ -4562,20 +4537,21 @@ test('setRelaunchData called once with ≤1000 chars after insert, fill, drop an
   }
 });
 
-test('sync command opens with the Sync bar', async () => {
+test('the legacy sync command opens Send review without uploading', async () => {
   for (const tab of ['send', 'insert']) {
     const app = harness({ command: 'sync', prefs: { tab } });
     await settle();
     assert.deepEqual(app.mainMessages.filter(message => message.type === 'launch'), [{ type: 'launch', command: 'sync' }]);
-    assert.equal(app.element('selection-bar').hidden, false, tab);
-    assert.equal(app.element('sync-title').textContent, 'Linked to hero.artwork');
-    assert.equal(app.activeElement(), app.element('sync'), `${tab}: Sync takes focus`);
+    assert.equal(app.element('selection-bar').hidden, true, tab);
+    assert.equal(app.element('panel-send').hidden, false);
+    assert.ok(sendFeedback(app).includes('hero.artwork'));
+    assert.equal(app.activeElement(), app.element('send'), `${tab}: Send takes focus`);
     assert.deepEqual([app.exportMessages().length, app.drafts().length], [0, 0], 'it never syncs by itself');
     // Cmd+Enter is Sync while the bar offers it.
     app.keydown({ key: 'Enter', metaKey: true });
     await settle();
     assert.equal(app.drafts().length, 1, tab);
-    assert.equal(app.drafts()[0].body.rebind, true);
+    assert.equal(app.drafts()[0].body.rebind, false);
   }
   // Opened from the plugin menu, nothing takes focus for it; Cmd+Enter in the connection settings is theirs.
   const plain = harness();
@@ -4601,16 +4577,19 @@ test('copy of linked frame shows copy state', async () => {
   const app = harness({ selection: [copy], remembered: null, command: 'sync', prefs: { tab: 'insert' }, console: { draft: boundDraft } });
   await settle();
   assert.deepEqual([lastSelection(app).link.kind, lastSelection(app).remembered], ['copy', null]);
+  assert.equal(app.element('selection-bar').hidden, true);
+  assert.equal(app.activeElement(), app.element('send'));
+  app.element('tab-insert').dispatch('click'); await settle();
   assert.equal(app.element('selection-bar').hidden, false);
   assert.equal(app.element('sync-title').textContent, 'Copy of a linked frame');
   assert.equal(app.element('sync-meta').textContent, 'Copies aren’t linked. Send it to a cell of hero.artwork.');
   assert.deepEqual([app.element('sync').hidden, app.element('sync-send').hidden, app.element('sync-send').textContent], [true, false, 'Send…']);
-  assert.equal(app.activeElement(), app.element('sync-send'), 'the bar’s one action takes focus');
+  assert.equal(app.element('sync-send').hidden, false);
   app.element('sync-send').dispatch('click');
   assert.equal(app.element('panel-send').hidden, false, 'Send… opens the Send tab');
   assert.deepEqual(['placement', 'state', 'appearance', 'arm'].map(id => app.element(id).value), [placement.key, 'old', 'light', null].map(value => value ?? ''), 'the first other cell without own Draft art');
   assert.equal(app.activeElement(), app.element('state'));
-  app.element('send').dispatch('click');
+  await settle(); app.element('send').dispatch('click');
   await settle();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].body.rebind, false, 'a new send, never a rebind of the original’s art');
@@ -4618,24 +4597,25 @@ test('copy of linked frame shows copy state', async () => {
   assert.equal(app.drafts()[0].body.source.nodeId, copy.id);
   // Sent, the copy is linked in its own right.
   assert.equal(linkOf(app.figma.currentPage.selection[0]).nodeId, copy.id);
+  app.element('tab-insert').dispatch('click'); await settle();
   assert.equal(app.element('sync-title').textContent, 'Linked to hero.artwork');
   assert.equal(app.element('sync').hidden, false);
 
   // Another app's link: said, with nothing to do here.
-  const other = harness({ selection: [{ ...copy, pluginData: { [LINK_KEY]: JSON.stringify({ ...link, nodeId: copy.id, appId: 'app-z' }) } }], remembered: null });
+  const other = harness({ prefs: { tab: 'insert' }, selection: [{ ...copy, pluginData: { [LINK_KEY]: JSON.stringify({ ...link, nodeId: copy.id, appId: 'app-z' }) } }], remembered: null });
   await settle();
   assert.equal(other.element('sync-title').textContent, 'Linked to another workspace');
-  assert.equal(other.element('sync-meta').textContent, 'Connect to that workspace to sync it.');
+  assert.equal(other.element('sync-meta').textContent, 'Connect to that workspace to send it.');
   assert.deepEqual(['sync', 'sync-send', 'sync-match'].map(id => other.element(id).hidden), [true, true, true]);
 });
 
 test('link written after remember', async () => {
   const app = harness({ remembered: null, console: { draft: boundDraft } });
   await settle();
-  pick(app, 'placement', placement.key);
-  pick(app, 'state', 'new');
-  pick(app, 'appearance', 'dark');
-  pick(app, 'arm', 'c');
+  await pick(app, 'placement', placement.key);
+  await pick(app, 'state', 'new');
+  await pick(app, 'appearance', 'dark');
+  await pick(app, 'arm', 'c');
   const commits = app.undoCommits.length;
   app.element('send').dispatch('click');
   await settle();
@@ -4654,24 +4634,25 @@ test('link written after remember', async () => {
   const teammate = harness({ saved: { ...connection, token: tok('teammate') }, remembered: null, selection: [{ ...node, pluginData: { [LINK_KEY]: raw } }] });
   await settle();
   assert.deepEqual(lastSelection(teammate).remembered.insertedFrom, { environment: 'draft', assetId: sentArt });
+  teammate.element('tab-insert').dispatch('click'); await settle();
   assert.equal(teammate.element('sync-title').textContent, 'Linked to hero.artwork');
-  assert.equal(teammate.element('sync-meta').textContent, 'Draft has different art now. Sync replaces it with this layer.');
-  assert.equal(off(teammate, 'sync'), false);
+  assert.equal(teammate.element('sync-meta').textContent, 'Draft has different art now. Review it in Send before replacing it.');
+  assert.equal(off(teammate, 'send'), false);
   assert.equal(teammate.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${sentArt}`);
 
   // A draft the console didn't put in the cell (409) links nothing; an existing link stays as it was.
   const partial = harness({ remembered: null, console: { draft: body => ({ ...boundDraft(body), bound: null, bindError: 'This placement changed.' }) } });
   await settle();
-  pick(partial, 'placement', placement.key);
+  await pick(partial, 'placement', placement.key);
   partial.element('send').dispatch('click');
   await settle();
-  assert.deepEqual(partial.uiMessages.filter(message => message.type === 'remember').map(message => message.assetId), [null]);
+  assert.deepEqual(partial.uiMessages.filter(message => message.type === 'remember').map(message => message.assetId), []);
   assert.equal(partial.figma.currentPage.selection[0].getPluginData(LINK_KEY), '');
   assert.deepEqual(partial.relaunches, []);
   // Nor does a layer inside an instance, where Figma keeps no plugin data.
   const inside = harness({ remembered: null, selection: [{ ...node, id: '12:34;5' }], console: { draft: boundDraft } });
   await settle();
-  pick(inside, 'placement', placement.key);
+  await pick(inside, 'placement', placement.key);
   inside.element('send').dispatch('click');
   await settle();
   assert.equal(inside.drafts().length, 1);
@@ -4704,7 +4685,7 @@ test('identity: root data used when fileKey is absent', async () => {
   assert.equal(app.element('file-fallback').hidden, true);
   assert.deepEqual([app.element('file-line').hidden, app.element('file-name').textContent, app.element('file-session').hidden], [false, 'File: Roam onboarding', true]);
   assert.equal(app.element('file-url').value, '', 'another file’s link from this device is not filled in');
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   app.element('send').dispatch('click');
   await settle();
   assert.equal(app.drafts().length, 1, 'nothing is asked');
@@ -4718,7 +4699,7 @@ test('identity: root data used when fileKey is absent', async () => {
   await settle();
   assert.equal(identityOf(app).fileKey, 'newKey2');
   assert.deepEqual([app.element('file-fallback').hidden, app.element('file-line').hidden], [true, false]);
-  assert.equal(app.activeElement(), app.element('file-change'), 'focus goes back to the file line');
+  assert.equal(app.activeElement(), app.element('send'), 'focus returns to the stable Send action');
 
   // A link from this device that names this file fills in the field.
   const prefilled = harness({ fileKey: null, rootName: 'Roam onboarding', remembered: null,
@@ -4733,7 +4714,7 @@ test('Community fileKey refusal asks for a file link once and preserves the stag
   const app = harness({ fileKeyUnavailable: true, rootName: 'Roam onboarding', remembered: null, saved, console: { draft: boundDraft } });
   await settle();
   assert.equal(lastSelection(app).fileKey, null);
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   app.element('send').dispatch('click');
   await settle();
   assert.equal(app.drafts().length, 0, 'no export is sent without a source file');
@@ -4742,6 +4723,8 @@ test('Community fileKey refusal asks for a file link once and preserves the stag
   app.element('file-url').value = 'https://www.figma.com/design/publicKey7/Roam-onboarding';
   app.element('file-form').dispatch('submit');
   await settle();
+  assert.equal(app.drafts().length, 0, 'saving setup never uploads');
+  startSend(app); await settle();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].body.source.fileKey, 'publicKey7');
   assert.equal(app.drafts()[0].url.startsWith(saved.origin + '/'), true);
@@ -4758,7 +4741,7 @@ test('Community fileKey refusal asks for a file link once and preserves the stag
 test('identity: slug mismatch warns', async () => {
   const app = harness({ fileKey: null, rootName: 'Roam onboarding', remembered: null });
   await settle();
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   app.element('send').dispatch('click');
   await settle();
   assert.equal(app.element('file-fallback').hidden, false, 'the first Send asks for the link');
@@ -4778,27 +4761,31 @@ test('identity: slug mismatch warns', async () => {
   assert.deepEqual({ ...identityOf(app), savedAt: 'set' }, { v: 1, fileKey: 'zzz999', source: 'link', savedAt: 'set', name: 'Roam onboarding' });
   assert.equal(app.undoCommits.length, commits + 1, 'saved in the document as an undo step of its own');
   assert.equal(app.element('file-fallback').hidden, true);
-  assert.equal(app.drafts().length, 1, 'the Send that asked runs');
+  assert.equal(app.drafts().length, 0, 'confirming file identity saves setup only');
+  startSend(app); await settle();
+  assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].body.source.fileKey, 'zzz999');
   assert.equal(app.storage.get('assetlib.file-url.v1'), 'https://www.figma.com/design/zzz999/Coast-house?node-id=1-2');
 
   // This file's own link, however Figma spells the name, saves without a warning.
   const matching = harness({ fileKey: null, rootName: 'Roam — onboarding (v2)', remembered: null });
   await settle();
-  pick(matching, 'placement', placement.key);
+  await pick(matching, 'placement', placement.key);
   matching.element('send').dispatch('click');
   await settle();
   matching.element('file-url').value = 'https://www.figma.com/design/key777/Roam-%E2%80%94-onboarding--v2-';
   matching.element('file-form').dispatch('submit');
   await settle();
   assert.equal(matching.mainMessages.some(message => message.type === 'file-mismatch'), false);
+  assert.equal(matching.drafts().length, 0);
+  startSend(matching); await settle();
   assert.equal(matching.drafts()[0].body.source.fileKey, 'key777');
 });
 
 test('identity: view-only falls back to session', async () => {
   const app = harness({ fileKey: null, readOnlyRoot: true, remembered: null });
   await settle();
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   app.element('send').dispatch('click');
   await settle();
   app.element('file-url').value = 'https://www.figma.com/design/abc123/Untitled';
@@ -4811,12 +4798,13 @@ test('identity: view-only falls back to session', async () => {
   assert.deepEqual(lastSelection(app).file, { source: 'session', name: 'Untitled' });
   assert.deepEqual([app.element('file-line').hidden, app.element('file-session').hidden], [false, false]);
   assert.equal(app.element('file-session').textContent, 'This file is view-only, so the link lasts until you close the plugin.');
+  assert.equal(app.drafts().length, 0, 'saving setup never uploads');
+  startSend(app); await settle();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].body.source.fileKey, 'abc123');
   // For the rest of the session, nothing is asked again.
-  pick(app, 'placement', placement.key);
-  app.element('send').dispatch('click');
-  await settle();
+  await pick(app, 'state', 'new');
+  startSend(app); await settle();
   assert.equal(app.drafts().length, 2);
   assert.equal(app.element('file-fallback').hidden, true);
 
@@ -5009,13 +4997,13 @@ test('the environment dropdown shows the radios’ choice and makes the same cha
   assert.deepEqual([select.value, select.hidden, select.disabled], ['draft', false, false]);
   assert.deepEqual(['draft', 'staging', 'production'].map(name => app.element(`env-option-${name}`).disabled), [false, false, true]);
   assert.equal(app.element('env-option-staging').title, app.element('env-staging').title);
-  assert.equal(select.title, 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.');
-  pick(app, 'env-select', 'staging');
+  assert.equal(select.title, 'Draft: unpublished art. Sending changes Draft; your app gets it only after someone publishes.');
+  await pick(app, 'env-select', 'staging');
   await settle();
   assert.equal(app.element('env-staging').getAttribute('aria-checked'), 'true');
   assert.equal(app.storage.get('assetlib.preferences.v1').environment, 'staging');
   // A choice with nothing published shows the current one again.
-  pick(app, 'env-select', 'production');
+  await pick(app, 'env-select', 'production');
   await settle();
   assert.equal(select.value, 'staging');
   assert.equal(app.storage.get('assetlib.preferences.v1').environment, 'staging');
@@ -5034,7 +5022,7 @@ test('a Send relinks a component and its marker to the placement it went to; a d
   const component = { ...node, type: 'COMPONENT', description: oldMarker, documentationLinks: [] };
   const app = harness({ remembered: null, selection: [component], console: { draft: boundDraft } });
   await settle();
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   const commits = app.undoCommits.length;
   app.element('send').dispatch('click');
   await settle();
@@ -5046,7 +5034,7 @@ test('a Send relinks a component and its marker to the placement it went to; a d
 
   const own = harness({ remembered: null, selection: [{ ...component, description: 'Our hero image' }], console: { draft: boundDraft } });
   await settle();
-  pick(own, 'placement', placement.key);
+  await pick(own, 'placement', placement.key);
   own.element('send').dispatch('click');
   await settle();
   assert.equal(own.figma.currentPage.selection[0].description, 'Our hero image');
@@ -5057,7 +5045,7 @@ test('a Send relinks a component and its marker to the placement it went to; a d
   for (const [name, expected] of [['home.card', 'hero.artwork'], ['Spring hero', 'Spring hero']]) {
     const linked = harness({ remembered: null, selection: [{ ...component, name, pluginData: { [LINK_KEY]: JSON.stringify(link) } }], console: { draft: boundDraft } });
     await settle();
-    pick(linked, 'placement', placement.key);
+    await pick(linked, 'placement', placement.key);
     linked.element('send').dispatch('click');
     await settle();
     const sent = linked.figma.currentPage.selection[0];
@@ -5089,7 +5077,7 @@ test('linking the file retires a fill’s Undo, and an edit waits for a drop’s
   dropping.element('file-url').value = 'https://www.figma.com/design/key2/Roam';
   dropping.element('file-form').dispatch('submit');
   await settle();
-  assert.equal(identityOf(dropping).fileKey, 'key2');
+  assert.equal(identityOf(dropping), null, 'file setup waits until the drop finishes');
   assert.equal(dropping.undoCommits.length, before, 'no step of its own while the placeholder waits');
   dropping.postToMain({ type: 'match-ratio', requestId: 990, nodeId: dropping.frames[0].id, width: 100, height: 50 });
   await settle();
@@ -5097,6 +5085,9 @@ test('linking the file retires a fill’s Undo, and an edit waits for a drop’s
   dropping.console.gates.rendition.resolve();
   await settle();
   assert.equal(dropping.undoCommits.length, before + 1, 'the drop commits once, with its image');
+  dropping.element('file-form').dispatch('submit'); await settle();
+  assert.equal(identityOf(dropping).fileKey, 'key2');
+  assert.equal(dropping.undoCommits.length, before + 2, 'the file link has its own later undo step');
 });
 
 test('the device’s file link fills in only for the file it names', async () => {
@@ -5113,7 +5104,7 @@ test('the device’s file link fills in only for the file it names', async () =>
 test('a link without the file’s name asks to Use anyway, and editing the link withdraws the question', async () => {
   const app = harness({ fileKey: null, rootName: 'Roam onboarding', remembered: null });
   await settle();
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   app.element('send').dispatch('click');
   await settle();
   app.element('file-url').value = 'https://www.figma.com/file/zzz999';
@@ -5128,7 +5119,9 @@ test('a link without the file’s name asks to Use anyway, and editing the link 
   app.element('file-form').dispatch('submit');
   await settle();
   assert.equal(identityOf(app).fileKey, 'zzz999');
-  assert.equal(app.drafts().length, 1, 'the Send that asked runs');
+  assert.equal(app.drafts().length, 0, 'saving a file link never resumes an upload');
+  startSend(app); await settle();
+  assert.equal(app.drafts().length, 1);
 });
 
 test('a drop the panel gave up on gives way to the next one, and an older drop is refused', async () => {
@@ -5766,7 +5759,7 @@ test('an approval during a Send or an Insert waits for it, then the connection c
   const app = harness({ saved: earlier, console: { issued: issued() } });
   await settle();
   await switchWorkspace(app);
-  pick(app, 'placement', placement.key);
+  await pick(app, 'placement', placement.key);
   app.console.gates.drafts = deferred();
   app.element('send').dispatch('click');
   await settle();
@@ -5784,7 +5777,7 @@ test('an approval during a Send or an Insert waits for it, then the connection c
   assert.ok(app.storage.get('assetlib.pairing.v1').polledAt >= turn);
   app.console.gates.drafts.resolve();
   await settle();
-  assert.ok(app.notices.includes('Sent to hero.artwork draft'), 'the draft arrived and said so');
+  assert.ok(app.notices.includes('1 of 1 layer sent to draft.'), 'the draft arrived and said so');
   assert.equal(app.storage.get('assetlib.connection.v1').appId, otherApp, 'then the connection was saved');
   assert.ok(app.notices.includes('Connected to Roam · Roam Android as dana@example.com'));
   assert.ok(app.console.revoked.has(figmaToken), 'and the token it replaced ended');
@@ -5794,7 +5787,7 @@ test('an approval during a Send or an Insert waits for it, then the connection c
   const exporting = harness({ saved: earlier, console: { issued: issued() } });
   await settle();
   await switchWorkspace(exporting);
-  pick(exporting, 'placement', placement.key);
+  await pick(exporting, 'placement', placement.key);
   const gate = exporting.delayExport();
   exporting.element('send').dispatch('click');
   await settle();
@@ -5886,7 +5879,7 @@ test('a browser connection another window replaced is taken up, and no token is 
   await switchWorkspace(switching);
   approve(switching);
   await advance(sending.clock, [switching], 2000);
-  pick(stale, 'placement', placement.key);
+  await pick(stale, 'placement', placement.key);
   stale.element('send').dispatch('click');
   await settle();
   assert.deepEqual([stale.element('error').textContent, stale.element('error-action').hidden],
@@ -6013,10 +6006,10 @@ test('Switch workspace keeps Insert working while it waits, and ends the token i
 
 test('the Sync bar offers Switch workspace for another app on this console', async () => {
   const otherOrg = '55555555-5555-4555-8555-555555555555';
-  const app = harness({ saved: browserConnection, remembered: null, selection: [linkedNode('61:1', connection.origin, otherOrg, appUuid)], console: { issued: issued() } });
+  const app = harness({ prefs: { tab: 'insert' }, saved: browserConnection, remembered: null, selection: [linkedNode('61:1', connection.origin, otherOrg, appUuid)], console: { issued: issued() } });
   await settle();
   assert.equal(app.element('sync-title').textContent, 'Linked to another workspace');
-  assert.equal(app.element('sync-meta').textContent, 'Switch to that workspace to sync it.');
+  assert.equal(app.element('sync-meta').textContent, 'Switch to that workspace to send it.');
   assert.deepEqual(['sync', 'sync-send', 'sync-switch'].map(id => app.element(id).hidden), [true, true, false]);
   app.element('sync-switch').dispatch('click');
   await settle();
@@ -6028,9 +6021,9 @@ test('the Sync bar offers Switch workspace for another app on this console', asy
   assert.equal(app.element('settings').open, false);
 
   // Another console's link: nothing to switch to here.
-  const elsewhere = harness({ saved: browserConnection, remembered: null, selection: [linkedNode('61:2', 'http://localhost:3100', otherOrg, appUuid)] });
+  const elsewhere = harness({ prefs: { tab: 'insert' }, saved: browserConnection, remembered: null, selection: [linkedNode('61:2', 'http://localhost:3100', otherOrg, appUuid)] });
   await settle();
-  assert.equal(elsewhere.element('sync-meta').textContent, 'Connect to that workspace to sync it.');
+  assert.equal(elsewhere.element('sync-meta').textContent, 'Connect to that workspace to send it.');
   assert.equal(elsewhere.element('sync-switch').hidden, true);
 });
 
@@ -6152,7 +6145,7 @@ test('a browser connection the console refuses says why, with Connect again, nev
   // A refused draft says why in the error line, with Connect again.
   const draft = harness({ saved: { ...browserConnection }, console: { statuses: { drafts: 403 }, errors: { drafts: 'Ended.' }, codes: { drafts: 'revoked' } } });
   await settle();
-  pick(draft, 'placement', placement.key);
+  await pick(draft, 'placement', placement.key);
   draft.element('send').dispatch('click');
   await settle();
   assert.deepEqual([draft.element('error').textContent, draft.element('error-action').textContent, draft.element('error-action').hidden],
@@ -6232,11 +6225,11 @@ test('pasted tokens reconnect with the current workspace hint, without revoking 
 });
 
 test('a refused pasted draft warns the chip and offers Connect again; refused Disconnect has no Undo', async () => {
-  for (const action of ['send', 'sync']) {
-    const app = harness({ remembered: action === 'sync' ? rememberedA : null, console: { statuses: { drafts: 401 } } });
+  for (const linked of [false, true]) {
+    const app = harness({ remembered: linked ? rememberedA : null, console: { statuses: { drafts: 401 } } });
     await settle();
-    if (action === 'send') { app.element('placement').value = placement.key; app.element('placement').dispatch('change'); }
-    app.element(action).dispatch('click'); await settle();
+    if (!linked) await pick(app, 'placement', placement.key);
+    startSend(app); await settle();
     assert.equal(app.element('connection-label').textContent, 'Needs attention');
     assert.equal(app.element('chip-warning').hidden, false);
     assert.equal(app.element('error').textContent, refusedPastedText);
@@ -6346,10 +6339,10 @@ test('waiting has a spinner and a countdown renewed after 15 seconds, including 
 
 test('browser recovery is the only primary beside a linked selection or a chosen insert', async () => {
   const app = harness({ console: { statuses: { drafts: 401 } } }); await settle();
-  app.element('sync').dispatch('click'); await settle();
+  startSend(app); await settle();
   app.element('settings').open = true; app.element('settings').dispatch('toggle');
   assert.equal(app.element('connect-browser').className, 'primary wide');
-  assert.equal(app.element('sync').className, 'secondary');
+  assert.equal(app.element('selection-bar').hidden, true);
   assert.equal(app.element('send').className, 'secondary');
 
   const inserting = harness(); await openInsert(inserting);
@@ -6363,44 +6356,30 @@ test('browser recovery is the only primary beside a linked selection or a chosen
   assert.equal(inserting.element('insert').className, 'secondary');
 });
 
-// Batch 2: the linked cell has a distinct Sync and non-rebinding Send, and a different cell never syncs by shortcut.
-test('linked Send hides its footer, keeps a plain upload, and guards Cmd+Enter on another cell', async () => {
-  const app = harness({ console: { draft: boundDraft } });
-  await settle();
-  const linked = 'hero.artwork · old · Light · b';
-  assert.equal(app.element('send-bar').hidden, true);
-  assert.equal(app.element('sync').className, 'primary');
-  assert.equal(app.element('send-plain').hidden, false);
-  assert.equal(app.element('send-plain').title, `Uploads this layer to ${linked}’s draft without replacing your earlier sends in other cells.`);
-  app.element('send-plain').dispatch('click');
-  app.element('send-plain').dispatch('click');
-  await settle();
-  assert.equal(app.drafts().length, 1, 'busy rules prevent a second upload');
-  assert.equal(app.drafts()[0].body.rebind, false);
-  assert.equal(app.element('sync-meta').textContent, 'Draft has different art now. Sync replaces it with this layer.');
-  pick(app, 'appearance', 'dark');
+// Repeat sends and new destinations use the same deliberate action.
+test('linked Send keeps one footer and Cmd+Enter sends only the displayed destination', async () => {
+  const app = harness({ console: { draft: body => boundDraft(body) } }); await settle();
   assert.equal(app.element('send-bar').hidden, false);
+  assert.equal(app.element('selection-bar').hidden, true);
   assert.equal(app.element('send-plain').hidden, true);
   assert.equal(app.element('send').className, 'primary');
-  assert.equal(app.element('sync').className, 'secondary');
-  assert.equal(app.element('send-relink').textContent, `Sends this layer to the draft of hero.artwork · old · Dark · b and links it there. Until then it stays linked to ${linked}.`);
+  app.element('send').dispatch('click'); app.element('send').dispatch('click'); await settle();
+  assert.equal(app.drafts().length, 1, 'busy rules prevent a second upload');
+  assert.equal(app.drafts()[0].body.rebind, false);
+  await pick(app, 'appearance', 'dark');
+  assert.equal(app.element('send-bar').hidden, false);
+  assert.equal(app.element('send').className, 'primary');
+  assert.ok(sendFeedback(app).includes('dark'));
   app.element('appearance').focus();
-  assert.equal(app.keydown({ key: 'Enter', metaKey: true }).defaultPrevented, true);
-  await settle();
-  assert.equal(app.drafts().length, 1);
-  assert.equal(app.exportMessages().length, 1, 'the keyboard guard changes nothing on the canvas');
-  assert.equal(app.element('status').textContent, `Cmd+Enter syncs ${linked}. Choose Send to draft to send to hero.artwork · old · Dark · b.`);
-  pick(app, 'appearance', 'light');
-  assert.equal(app.element('send-bar').hidden, true);
-  app.keydown({ key: 'Enter', metaKey: true });
-  await settle();
-  assert.equal(app.drafts().at(-1).body.rebind, true);
-  pick(app, 'placement', '');
-  assert.equal(app.element('send-bar').hidden, true, 'an empty picker does not differ');
-  assert.equal(off(app, 'send-plain'), true);
-  pick(app, 'placement', placement.key);
-  assert.doesNotThrow(() => pick(app, 'appearance', 'stale'));
-  assert.equal(app.element('send-bar').hidden, false, 'invalid bindings differ without breaking the renderer');
+  assert.equal(app.keydown({ key: 'Enter', metaKey: true }).defaultPrevented, true); await settle();
+  assert.equal(app.drafts().length, 2);
+  assert.deepEqual(app.drafts()[1].body.bind, { slotKey: placement.key, state: 'old', appearance: 'dark', arm: 'b' });
+  assert.equal(app.drafts()[1].body.rebind, false);
+  await pick(app, 'placement', '');
+  assert.equal(app.element('send-bar').hidden, false, 'the footer never moves');
+  assert.equal(off(app, 'send'), true);
+  await pick(app, 'placement', placement.key);
+  await assert.doesNotReject(() => pick(app, 'appearance', 'stale'));
 });
 
 test('Insert notes describe fill, skipped layers, replace links, and the smallest fitting scale', async () => {
@@ -6411,7 +6390,7 @@ test('Insert notes describe fill, skipped layers, replace links, and the smalles
   assert.equal(app.element('insert-note').textContent, 'Replaces the image in Layer 81:1. It stays linked to home.card.');
   rowFor(app, placement.key).dispatch('click');
   assert.equal(app.element('insert-note').textContent, 'Replaces the image in Layer 81:1 and relinks it from home.card to hero.artwork · old · Any · Control.');
-  pick(app, 'insert-appearance', 'dark');
+  await pick(app, 'insert-appearance', 'dark');
   assert.match(app.element('insert-note').textContent, /to hero.artwork · old · Dark · Control\.$/);
   const coast = libraryAsset(8, 'Coast', 400, 200);
   app.console.library = [coast.asset];
@@ -6461,7 +6440,7 @@ test('Send ratio names the resulting size and suggests a different placement onl
   for (const height of [844, 170]) {
     const banner = { ...placement, key: 'home.banner', width: 1170, height: 480, states: null, defaultState: null, variants: null };
     const app = harness({ remembered: null, selection: [{ ...node, width: 390, height }], console: { placements: [banner] } });
-    await settle(); pick(app, 'placement', banner.key);
+    await settle(); await pick(app, 'placement', banner.key);
     assert.equal(app.element('aspect-text').textContent.replaceAll('\u00a0', ' '), `This frame is 390 × ${height}. home.banner needs 2.44 : 1 (1170 × 480). Match ratio makes it 390 × 160.${height === 844 ? ' Or choose a placement that fits.' : ''}`);
   }
 });
@@ -6618,7 +6597,7 @@ test('Batch 3 review F2: a reveal abandoned for Send never overrides later Inser
   app.element('tab-insert').dispatch('click'); await settle();
   app.element('env-staging').dispatch('click');
   rowFor(app, other.key).dispatch('click');
-  pick(app, 'insert-appearance', 'light');
+  await pick(app, 'insert-appearance', 'light');
   app.element('insert-search').value = 'other';
   app.element('insert-search').dispatch('input'); await settle();
   app.element('insert-search').focus();
@@ -6666,7 +6645,7 @@ test('Batch 3 review F2: a title reveal that starts a stale full load focuses it
   assert.equal(app.element('env-production').getAttribute('aria-checked'), 'true');
 });
 
-for (const kind of ['quiet', 'full']) test(`Batch 3 review F5: a ${kind} artwork read cannot clear a newer Sync token refusal`, async () => {
+for (const kind of ['quiet', 'full']) test(`Batch 3 review F5: a ${kind} artwork read cannot clear a newer Send token refusal`, async () => {
   const app = batch3(); await settle();
   if (kind === 'full') { app.element('tab-insert').dispatch('click'); await settle(); }
   const gate = deferred(); app.console.gates.artwork = gate;
@@ -6674,8 +6653,10 @@ for (const kind of ['quiet', 'full']) test(`Batch 3 review F5: a ${kind} artwork
   else app.element('insert-refresh').dispatch('click');
   await settle();
   assert.equal(artworkReads(app).length, 2);
+  delete app.console.gates.artwork;
+  app.advance(1);
   app.console.statuses.drafts = 401;
-  app.element('sync').dispatch('click'); await settle();
+  startSend(app); await settle();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.element('error').textContent, refusedPastedText);
   app.element('settings').open = true; app.element('settings').dispatch('toggle');
@@ -6686,9 +6667,10 @@ for (const kind of ['quiet', 'full']) test(`Batch 3 review F5: a ${kind} artwork
   assert.equal(app.element('connect-browser').className, 'primary wide', 'a response to the older read keeps recovery primary');
   assert.equal(app.element('connection-error').hidden, false);
   assert.equal(app.element('connection-error').textContent, refusedPastedText);
-  assert.equal(app.element('sync').className, 'secondary');
+  assert.equal(app.element('send').className, 'secondary');
   assert.equal(app.element('error-action').textContent, 'Connect again');
-  assert.match(app.element('sync-meta').textContent, /in Production \(release 13\)/, 'the artwork itself is still accepted');
+  app.element('tab-insert').dispatch('click'); await settle();
+  assert.match(app.element('sync-meta').textContent, /in Production \(release 12\)/, 'the preflight snapshot is newer than the delayed read');
 });
 
 // ---- Batch 3: current artwork on either tab, Update, publication status, and placement navigation ----
@@ -6707,17 +6689,19 @@ function batch3({ environment = 'production', stale = false, layer = {}, link = 
 }
 const rowThumb = (app, key = placement.key) => descendants(rowFor(app, key)).find(item => item.tagName === 'IMG');
 
-test('Batch 3: artwork loads once per generation on Send, survives Images search, and aborts on connection change', async () => {
-  const app = batch3({ console: { gates: { artwork: deferred() } } });
+test('Batch 3: artwork covers the opening link on Send, survives Images search, and aborts on connection change', async () => {
+  const app = batch3({ prefs: { tab: 'send' }, console: { gates: { artwork: deferred() } } });
   await settle();
-  assert.equal(artworkReads(app).length, 1);
+  const opening = artworkReads(app).length;
+  assert.equal(opening, 2, 'the initial read is superseded once the linked layer is observed');
+  assert.equal(artworkReads(app)[0].signal.aborted, true);
   assert.equal(app.element('panel-send').hidden, false);
   app.element('tab-insert').dispatch('click');
   app.element('browse-images').dispatch('click');
-  pick(app, 'insert-search', 'coast');
+  await pick(app, 'insert-search', 'coast');
   app.element('insert-search').dispatch('input'); app.fireTimers(300);
   await settle();
-  assert.equal(artworkReads(app)[0].signal.aborted, false, 'Images does not cancel the quiet artwork request');
+  assert.equal(artworkReads(app).at(-1).signal.aborted, false, 'Images does not cancel the current quiet artwork request');
   app.console.gates.artwork.resolve();
   await settle();
   assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(2));
@@ -6725,7 +6709,7 @@ test('Batch 3: artwork loads once per generation on Send, survives Images search
   app.element('tab-send').dispatch('click');
   app.element('tab-insert').dispatch('click');
   await settle();
-  assert.equal(artworkReads(app).length, 1);
+  assert.equal(artworkReads(app).length, opening);
   app.advance(60000); app.console.gates.artwork = deferred(); app.focusWindow();
   await settle();
   const quiet = artworkReads(app).at(-1);
@@ -6738,36 +6722,37 @@ test('Batch 3: artwork loads once per generation on Send, survives Images search
 
 test('Batch 3: quiet artwork refresh throttles focus and visibility from completion, including failures', async () => {
   const app = batch3(); await settle();
-  assert.equal(artworkReads(app).length, 1);
+  const opening = artworkReads(app).length;
+  assert.equal(opening, 2);
   app.advance(59999); app.focusWindow(); app.setVisibility('visible'); app.selectionChanged(); await settle();
-  assert.equal(artworkReads(app).length, 1);
+  assert.equal(artworkReads(app).length, opening);
   app.advance(1); app.console.gates.artwork = deferred(); app.focusWindow(); await settle();
-  assert.equal(artworkReads(app).length, 2);
+  assert.equal(artworkReads(app).length, opening + 1);
   assert.equal(app.element('insert-list').getAttribute('aria-busy'), null);
   app.advance(10000); app.setVisibility('visible'); app.selectionChanged(); await settle();
-  assert.equal(artworkReads(app).length, 2, 'one request while the earlier refresh waits');
+  assert.equal(artworkReads(app).length, opening + 1, 'one request while the earlier refresh waits');
   app.console.gates.artwork.resolve(); await settle();
-  app.advance(59999); app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, 2);
+  app.advance(59999); app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, opening + 1);
   const before = app.element('sync-thumb').src;
   app.console.statuses.artwork = 503;
-  app.advance(1); app.setVisibility('hidden'); await settle(); assert.equal(artworkReads(app).length, 2);
+  app.advance(1); app.setVisibility('hidden'); await settle(); assert.equal(artworkReads(app).length, opening + 1);
   app.setVisibility('visible'); await settle();
-  assert.equal(artworkReads(app).length, 3);
+  assert.equal(artworkReads(app).length, opening + 2);
   assert.equal(app.element('sync-thumb').src, before, 'failure retains the previous artwork');
   assert.equal(app.element('error').hidden, true);
   assert.equal(app.element('connection-error').hidden, true);
-  app.focusWindow(); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, 3);
+  app.focusWindow(); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, opening + 2);
   delete app.console.statuses.artwork;
-  app.advance(60000); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, 3, 'reselection does not refresh the same link');
-  app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, 4, 'focus refreshes old art');
+  app.advance(60000); app.selectionChanged(); await settle(); assert.equal(artworkReads(app).length, opening + 2, 'reselection does not refresh the same link');
+  app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, opening + 3, 'focus refreshes old art');
   app.element('tab-insert').dispatch('click'); await settle();
   app.element('insert-refresh').dispatch('click'); await settle();
   const full = artworkReads(app).length;
   app.advance(59999); app.focusWindow(); await settle(); assert.equal(artworkReads(app).length, full, 'full load completion resets the throttle too');
 });
 
-test('Batch 3: Send and Sync refresh the bound draft preview and row without Refresh', async () => {
-  for (const action of ['sync', 'send-plain']) {
+test('Batch 3: Send and the Insert review action refresh the bound draft preview and row without Refresh', async () => {
+  for (const action of ['sync', 'send']) {
     const app = batch3({ environment: 'draft', prefs: { tab: 'insert', environment: 'draft', environmentChosen: true } }); await settle();
     const next = rendition(sentArt, 777, 'image/png', 1000, 1000, pngHeader(1000, 1000));
     app.console.renditions.push(next.served);
@@ -6778,9 +6763,10 @@ test('Batch 3: Send and Sync refresh the bound draft preview and row without Ref
     };
     const reads = artworkReads(app).length;
     const oldRow = rowThumb(app).getAttribute('data-sha');
-    if (action === 'send-plain') app.element('tab-send').dispatch('click');
-    app.element(action).dispatch('click'); await settle();
-    assert.equal(artworkReads(app).length, reads + 1, action);
+    if (action === 'sync') app.element('sync').dispatch('click');
+    startSend(app); await settle();
+    assert.equal(artworkReads(app).length, reads + 3, `${action}: preflight, post-send refresh, then the new link’s fresh read`);
+    app.element('tab-insert').dispatch('click'); await settle();
     assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(777));
     assert.ok(app.requests.some(request => request.route === 'rendition' && request.url.includes(`/${sentArt}/renditions/${sha(777)}`)));
     app.element('tab-insert').dispatch('click'); await settle();
@@ -6802,13 +6788,14 @@ test('Batch 3: Update replaces Production art in place, keeps crop and link envi
   assert.equal(app.element('sync-update').hidden, false);
   assert.equal(app.element('sync-update').className, 'primary small');
   assert.equal(app.element('sync').className, 'secondary');
-  assert.equal(app.element('sync').title, 'Sync replaces this layer’s earlier art across Draft.');
+  assert.equal(app.element('sync').title, 'Review the selected layer and its draft destination.');
   assert.equal(app.element('sync-console').hidden, true);
   assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(13));
-  assert.equal(app.element('selection-bar').title, 'Update puts this Production art in the layer. Sync updates Draft only; publishing stays in the console.');
+  assert.equal(app.element('selection-bar').title, 'Use Production artwork replaces this layer’s image. Send to draft opens the outgoing destination for review.');
   app.element('insert-search').focus(); app.keydown({ key: 'Enter', metaKey: true }); await settle();
-  assert.equal(app.element('status').textContent, 'Update first, or choose Sync to draft to replace Draft’s art with this layer.');
+  assert.equal(app.element('panel-send').hidden, false);
   assert.equal(app.exportMessages().length, 0);
+  app.element('tab-insert').dispatch('click'); await settle();
   const commits = app.undoCommits.length;
   app.element('sync-update').dispatch('click'); await settle();
   assert.deepEqual(app.insertMessages().at(-1).update, { from: baseArt });
@@ -6855,17 +6842,17 @@ test('Batch 3: a canvas Cmd+Z of an Update offers Update again without a new sel
   assert.equal(app.undoCommits.length, 1);
 });
 
-test('Batch 3: Update alone says Updating while every conflicting action waits and the Insert footer keeps its label', async () => {
+test('Batch 3: Use artwork alone owns its busy label while conflicting actions wait and the Insert footer keeps its label', async () => {
   const app = batch3({ stale: true, prefs: { tab: 'insert' } }); await settle();
   rowFor(app, placement.key).dispatch('click');
   const label = app.element('insert').textContent;
   app.console.gates.rendition = deferred();
   app.element('sync-update').dispatch('click'); await settle();
-  assert.equal(app.element('sync-update').textContent, 'Updating…');
+  assert.equal(app.element('sync-update').textContent, 'Using artwork…');
   assert.equal(app.element('sync-update').getAttribute('aria-busy'), 'true');
   assert.equal(app.element('insert').textContent, label);
   assert.equal(app.element('insert').getAttribute('aria-busy'), null);
-  for (const id of ['sync-update', 'sync', 'insert', 'insert-new', 'send', 'send-plain', 'sync-match', 'match-ratio', 'connect', 'disconnect']) {
+  for (const id of ['sync-update', 'sync', 'insert', 'insert-new', 'send', 'sync-match', 'match-ratio', 'connect', 'disconnect']) {
     assert.equal(off(app, id), true, id); app.element(id).dispatch('click');
   }
   drag(rowFor(app, placement.key)); await settle(); assert.equal(app.pluginDrops.length, 0);
@@ -6876,7 +6863,7 @@ test('Batch 3: Update alone says Updating while every conflicting action waits a
 });
 
 for (const change of ['asset', 'cell', 'environment', 'children', 'hidden']) test(`Batch 3: Update refuses a layer whose ${change} changed after the UI checked`, async () => {
-  const app = batch3({ stale: true }); await settle();
+  const app = batch3({ stale: true, prefs: { tab: 'insert' } }); await settle();
   if (change === 'children') app.layer.children = [{ id: 'child', type: 'RECTANGLE' }];
   else if (change === 'hidden') app.layer.fills = [{ ...app.layer.fills[0], visible: false }];
   else {
@@ -6895,15 +6882,15 @@ for (const change of ['asset', 'cell', 'environment', 'children', 'hidden']) tes
 
 test('Batch 3: Update requires a visible image and no children; empty environment art has its own meta', async () => {
   for (const layer of [{ fills: [] }, { fills: [{ type: 'IMAGE', imageHash: 'hidden', visible: false }] }, { children: [{ id: 'child', type: 'RECTANGLE', width: 20, height: 20 }] }]) {
-    const app = batch3({ environment: 'draft', link: { assetId: armArt }, layer }); await settle();
+    const app = batch3({ environment: 'draft', link: { assetId: armArt }, layer, prefs: { tab: 'insert' } }); await settle();
     assert.equal(app.element('sync-update').hidden, true);
-    assert.equal(app.element('sync-meta').textContent, 'Draft has different art now. Sync replaces it with this layer.');
-    const production = batch3({ stale: true, layer }); await settle();
+    assert.equal(app.element('sync-meta').textContent, 'Draft has different art now. Review it in Send before replacing it.');
+    const production = batch3({ stale: true, layer, prefs: { tab: 'insert' } }); await settle();
     assert.equal(production.element('sync-update').hidden, true);
     assert.doesNotMatch(production.element('sync-meta').textContent, /Draft has different/);
   }
   for (const environment of ['draft', 'staging', 'production']) {
-    const app = batch3({ environment });
+    const app = batch3({ environment, prefs: { tab: 'insert' } });
     for (const cell of app.console.artwork.placements[0].cells) cell[environment] = null;
     await settle();
     assert.equal(app.element('sync-update').hidden, true);
@@ -6928,7 +6915,7 @@ test('Batch 3: publication status prefers Production then Staging then Draft wit
     [['draft', 'staging'], 'in Staging, not in Production'],
     [['draft'], 'in Draft, not published'],
   ]) {
-    const app = batch3({ environment: 'draft' });
+    const app = batch3({ environment: 'draft', prefs: { tab: 'insert' } });
     for (const cell of app.console.artwork.placements[0].cells) for (const env of ['draft', 'staging', 'production']) cell[env] = environments.includes(env) ? cellArt(baseArt, null, null) : null;
     await settle();
     assert.equal(app.element('sync-meta').textContent, `old · Any · Control · ${expected}`);
@@ -6951,12 +6938,12 @@ test('Batch 3: title reveals a linked or copied Production cell from an Images s
     assert.equal(rowFor(app, placement.key).getAttribute('aria-selected'), 'true');
     if (!copy) assert.equal(app.element('insert').textContent, 'Replace image');
   }
-  const other = batch3({ link: { appId: 'another-app' } }); await settle();
+  const other = batch3({ link: { appId: 'another-app' }, prefs: { tab: 'insert' } }); await settle();
   assert.equal(other.element('sync-title').disabled, true);
 });
 
 test('Batch 3: Open in console uses artwork slotId only, falls back to image before it loads, and supports remembered targets', async () => {
-  const app = batch3({ console: { placements: [{ ...placement, slotId: uuid(400) }], gates: { artwork: deferred() } } });
+  const app = batch3({ prefs: { tab: 'insert' }, console: { placements: [{ ...placement, slotId: uuid(400) }], gates: { artwork: deferred() } } });
   await settle();
   assert.equal(app.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${baseArt}`);
   app.console.artwork.placements[0].slotId = uuid(401);
@@ -6965,7 +6952,7 @@ test('Batch 3: Open in console uses artwork slotId only, falls back to image bef
   delete app.console.artwork.placements[0].slotId;
   app.advance(60000); app.focusWindow(); await settle();
   assert.equal(app.element('sync-console').href, `${connection.origin}/w/org-one/app-a/images/${baseArt}`);
-  const remembered = harness(); remembered.console.artwork.placements[0].slotId = uuid(402); await settle();
+  const remembered = harness({ prefs: { tab: 'insert' } }); remembered.console.artwork.placements[0].slotId = uuid(402); await settle();
   assert.equal(remembered.element('sync-console').hidden, false);
   assert.equal(remembered.element('sync-console').href, `${connection.origin}/w/org-one/app-a/placements/${uuid(402)}`);
 });
@@ -6973,28 +6960,35 @@ test('Batch 3: Open in console uses artwork slotId only, falls back to image bef
 test('Batch 3: Match ratio remains primary ahead of Update on Insert and Send', async () => {
   for (const tab of ['insert', 'send']) {
     const app = batch3({ stale: true, layer: { width: 1000, height: 800 }, prefs: { tab } }); await settle();
-    assert.equal(app.element('sync-update').className, 'secondary small');
-    assert.equal(app.element(tab === 'insert' ? 'sync-match' : 'match-ratio').className, 'primary small');
-    assert.equal(app.element('sync').className, 'secondary');
-    assert.equal(app.element('sync-console').hidden, true);
-    assert.equal(off(app, 'sync'), true);
+    if (tab === 'insert') {
+      assert.equal(app.element('sync-update').className, 'secondary small');
+      assert.equal(app.element('sync-match').className, 'primary small');
+      assert.equal(app.element('sync').className, 'secondary');
+      assert.equal(app.element('sync-console').hidden, true);
+    } else {
+      assert.equal(app.element('selection-bar').hidden, true);
+      assert.equal(app.element('ratio').hidden, false);
+    }
+    assert.equal(off(app, 'send'), true);
     app.element(tab === 'insert' ? 'sync-match' : 'match-ratio').dispatch('click'); await settle();
     assert.equal(app.layer.height, 1000);
+    app.element('tab-insert').dispatch('click'); await settle();
     assert.equal(app.element('sync-update').className, 'primary small');
   }
 });
 
 test('Batch 3: a remembered different cell suppresses Update and linked-art messages', async () => {
-  const app = batch3({ stale: true, remembered: rememberedB }); await settle();
+  const app = batch3({ stale: true, remembered: rememberedB, prefs: { tab: 'insert' } }); await settle();
   assert.equal(app.element('sync-update').hidden, true);
   assert.doesNotMatch(app.element('sync-meta').textContent, /different art/);
+  app.element('tab-send').dispatch('click'); await settle();
   app.keydown({ key: 'Enter', metaKey: true }); await settle();
   assert.equal(app.drafts().length, 1);
   assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'new', appearance: 'dark', arm: 'c' });
 });
 
 test('Batch 3: title reveal waits for artwork and retains its cell and environment', async () => {
-  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: deferred() } } }); await settle();
+  const app = batch3({ prefs: { tab: 'insert' }, link: { appearance: 'dark' }, console: { gates: { artwork: deferred() } } }); await settle();
   app.element('sync-title').dispatch('click'); await settle();
   assert.equal(app.element('panel-insert').hidden, false);
   assert.equal(artworkReads(app).length, 1, 'the pending quiet artwork request is reused');
@@ -7007,13 +7001,14 @@ test('Batch 3: title reveal waits for artwork and retains its cell and environme
 
 test('Batch 3: a refused save restarts a quiet Send artwork load discarded while the save waited', async () => {
   const app = batch3({ failingWrites: ['assetlib.connection.v1'], console: { gates: { artwork: deferred() } } }); await settle();
+  const opening = artworkReads(app).length;
   const write = app.delayConnectionWrite();
   app.saveConnection({ ...connection, token: tok('batch3-refused') }); await settle();
   app.console.gates.artwork.resolve(); await settle();
-  assert.equal(artworkReads(app).length, 1);
+  assert.equal(artworkReads(app).length, opening);
   write.resolve(); await settle();
-  assert.equal(artworkReads(app).length, 2);
-  assert.ok(app.element('sync-thumb').src);
+  assert.equal(artworkReads(app).length, opening + 1);
+  assert.ok(app.element('send-current-thumb').src);
   assert.equal(app.element('connection-error').textContent, SAVE_REFUSED);
 });
 
@@ -7034,34 +7029,36 @@ test('Batch 3: a pending drop refuses a separate Update without committing its p
   assert.equal(linkOf(placeholder).assetId, cardArt);
 });
 
-test('Batch 3: a bound Sync during Refresh queues one quiet artwork reload after the full load', async () => {
+test('Batch 3: Send during Refresh waits for its preflight and refreshes artwork after the send', async () => {
   const app = batch3({ prefs: { tab: 'insert' }, console: { draft: boundDraft } }); await settle();
   app.console.gates.artwork = deferred();
   app.element('insert-refresh').dispatch('click'); await settle();
   const loading = artworkReads(app).length;
-  app.element('sync').dispatch('click'); await settle();
-  assert.equal(app.drafts().length, 1);
-  assert.equal(artworkReads(app).length, loading, 'the full load owns artwork until it ends');
+  startSend(app); await settle();
+  assert.equal(app.drafts().length, 0, 'no upload until the current draft has been checked');
+  assert.equal(artworkReads(app).length, loading + 1, 'Send checks current artwork independently');
   app.console.gates.artwork.resolve(); await settle();
-  assert.equal(artworkReads(app).length, loading + 1, 'the bound Sync gets a later quiet read');
+  assert.equal(app.drafts().length, 1);
+  assert.equal(artworkReads(app).length, loading + 3, 'the successful send refreshes again after its new link is observed');
 });
 
 test('Batch 3: an initial quiet failure after switching to Placements runs one full load with its normal error state', async () => {
   const app = batch3({ console: { gates: { artwork: deferred() }, statuses: { artwork: 404 } } }); await settle();
+  const opening = artworkReads(app).length;
   app.element('tab-insert').dispatch('click'); await settle();
-  assert.equal(artworkReads(app).length, 1);
+  assert.equal(artworkReads(app).length, opening);
   app.console.gates.artwork.resolve(); await settle();
-  assert.equal(artworkReads(app).length, 2);
+  assert.equal(artworkReads(app).length, opening + 1);
   assert.equal(app.element('insert-empty').hidden, false);
   assert.equal(app.element('insert-empty-title').textContent, 'Insert isn’t available here');
   assert.equal(app.element('error').hidden, true);
 });
 
 test('Batch 3: a missing linked asset previews its own environment, and a removed title is plain text', async () => {
-  const app = batch3({ environment: 'staging', link: { assetId: uuid(987), appearance: 'light', arm: 'b' }, layer: { fills: [] } }); await settle();
+  const app = batch3({ prefs: { tab: 'insert' }, environment: 'staging', link: { assetId: uuid(987), appearance: 'light', arm: 'b' }, layer: { fills: [] } }); await settle();
   assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(2), 'Staging base art, not the different Draft arm art');
   assert.notEqual(app.element('sync-thumb').getAttribute('data-sha'), sha(13));
-  const removed = batch3({ console: { placements: [] } }); await settle();
+  const removed = batch3({ prefs: { tab: 'insert' }, console: { placements: [] } }); await settle();
   assert.equal(removed.element('sync-title').disabled, true);
   assert.equal(removed.element('sync-update').hidden, true);
 });
@@ -7098,19 +7095,19 @@ test('a stale tokenless probe leaves Disconnect Undo’s connection test busy', 
 });
 
 // Batch 4 review regressions: operation ownership and default-state coordinates.
-test('Batch 4 R2: a plain Send owns the busy label and remains available-looking until it finishes', async () => {
+test('Batch 4 R2: Send owns the busy label and ignores repeated clicks until it finishes', async () => {
   const app = harness({ console: { draft: boundDraft } }); await settle();
   const gate = app.delayExport();
-  app.element('send-plain').dispatch('click'); await settle();
-  assert.equal(app.element('send-plain').textContent, 'Sending…');
-  assert.equal(app.element('send-plain').getAttribute('aria-busy'), 'true');
-  assert.equal(off(app, 'send-plain'), false);
-  assert.equal(app.element('send').getAttribute('aria-busy'), null);
-  app.element('send-plain').dispatch('click'); await settle();
+  startSend(app); await settle();
+  assert.equal(app.element('send').textContent, 'Sending 1 of 1…');
+  assert.equal(app.element('send').getAttribute('aria-busy'), 'true');
+  assert.equal(off(app, 'send'), true);
+  assert.equal(app.element('send-plain').hidden, true);
+  app.element('send').dispatch('click'); await settle();
   assert.equal(app.exportMessages().length, 1);
   gate.resolve(); await settle();
-  assert.equal(app.element('send-plain').textContent, 'Send as a new image instead');
-  assert.equal(app.element('send-plain').getAttribute('aria-busy'), null);
+  assert.equal(app.element('send').textContent, 'Send to draft');
+  assert.equal(app.element('send').getAttribute('aria-busy'), null);
 });
 
 test('Batch 4 R3: a Default-state Send finds its named artwork cell for publication status and Update', async () => {
@@ -7120,10 +7117,11 @@ test('Batch 4 R3: a Default-state Send finds its named artwork cell for publicat
       data.placements[0].cells.find(cell => cell.state === 'old' && cell.appearance === null && cell.arm === null).draft = cellArt(sentArt, null, null);
       return boundDraft(body);
     } } });
-  await settle(); pick(app, 'placement', placement.key);
+  await settle(); await pick(app, 'placement', placement.key);
   app.element('send').dispatch('click'); await settle();
   assert.equal(app.drafts()[0].body.bind.state, null);
   assert.equal(JSON.parse(app.figma.currentPage.selection[0].getPluginData(LINK_KEY)).state, null);
+  app.element('tab-insert').dispatch('click'); await settle();
   assert.equal(app.element('sync-meta').textContent, 'old · Any · Control · in Draft, not published');
   data.placements[0].cells.find(cell => cell.state === 'old' && cell.appearance === null && cell.arm === null).draft = cellArt(armArt, null, null);
   app.element('tab-insert').dispatch('click'); app.element('insert-refresh').dispatch('click'); await settle();
@@ -7131,23 +7129,24 @@ test('Batch 4 R3: a Default-state Send finds its named artwork cell for publicat
   assert.equal(app.element('sync-meta').textContent, 'Draft has different art now');
 });
 
-test('Batch 4 R3: choosing Default for the linked default state keeps Sync primary and Cmd+Enter syncs', async () => {
+test('Batch 4 R3: choosing Default for the linked default state keeps Send primary and Cmd+Enter sends', async () => {
   const app = harness({ console: { draft: boundDraft } }); await settle();
-  pick(app, 'state', '');
-  assert.equal(app.element('send-bar').hidden, true);
-  assert.equal(app.element('sync').className, 'primary');
+  await pick(app, 'state', '');
+  assert.equal(app.element('send-bar').hidden, false);
+  assert.equal(app.element('send').className, 'primary');
   app.keydown({ key: 'Enter', metaKey: true }); await settle();
   assert.equal(app.drafts().length, 1);
-  assert.equal(app.drafts()[0].body.rebind, true);
+  assert.equal(app.drafts()[0].body.rebind, false);
 });
 
 test('Batch 4 R5: Cmd+Enter on another picked cell keeps a running operation status', async () => {
   const app = harness({ console: { draft: boundDraft } }); await settle();
   const gate = app.delayExport();
-  app.element('sync').dispatch('click'); await settle();
-  pick(app, 'appearance', 'dark');
+  startSend(app); await settle();
+  await pick(app, 'appearance', 'dark');
   const status = app.element('status').textContent;
-  assert.equal(status, 'Exporting selected artwork…');
+  assert.ok(status, 'the active operation owns a status');
+  assert.match(sendFeedback(app), /Exporting/);
   app.keydown({ key: 'Enter', metaKey: true });
   assert.equal(app.element('status').textContent, status);
   gate.resolve(); await settle();
@@ -7225,8 +7224,8 @@ test('Batch 4: Send shows own, inherited, and null Draft art only after artwork 
   const app = harness({ remembered: null, console: { artwork: data, gates: { artwork: deferred() } } });
   app.setVisible(() => false);
   await settle();
-  pick(app, 'placement', placement.key);
-  pick(app, 'state', 'old'); pick(app, 'appearance', 'light'); pick(app, 'arm', 'b');
+  await pick(app, 'placement', placement.key);
+  await pick(app, 'state', 'old'); await pick(app, 'appearance', 'light'); await pick(app, 'arm', 'b');
   assert.equal(app.element('send-current').hidden, true);
   app.console.gates.artwork.resolve(); await settle();
   assert.equal(app.element('send-current').hidden, false);
@@ -7234,13 +7233,13 @@ test('Batch 4: Send shows own, inherited, and null Draft art only after artwork 
   assert.equal(app.element('send-current-preview').className, 'thumb');
   assert.ok(app.requests.some(request => request.route === 'rendition' && request.url.endsWith(sha(13))), 'current art loads its preview outside the scrolling list');
   assert.ok(app.element('send-current-thumb').src.startsWith('data:image/webp'));
-  pick(app, 'appearance', 'dark'); await settle();
+  await pick(app, 'appearance', 'dark'); await settle();
   assert.equal(app.element('send-current-text').textContent, 'Now in Draft: inherits Control · Any art');
-  pick(app, 'arm', 'c'); await settle();
+  await pick(app, 'arm', 'c'); await settle();
   assert.equal(app.element('send-current-text').textContent, 'Nothing in Draft yet');
   assert.equal(app.element('send-current-preview').className, 'thumb slot');
   assert.equal(app.element('send-current-thumb').getAttribute('src'), null);
-  pick(app, 'placement', '');
+  await pick(app, 'placement', '');
   assert.equal(app.element('send-current').hidden, true);
 });
 
@@ -7252,7 +7251,7 @@ test('Batch 4: an empty shown cell offers Send selected layer here with the exac
   await openInsert(app, { keep: true });
   app.element('env-draft').click();
   rowFor(app, placement.key).dispatch('click');
-  pick(app, 'insert-state', 'new'); pick(app, 'insert-appearance', 'dark'); pick(app, 'insert-arm', 'c');
+  await pick(app, 'insert-state', 'new'); await pick(app, 'insert-appearance', 'dark'); await pick(app, 'insert-arm', 'c');
   assert.equal(app.element('insert-note').textContent, 'No image in Draft for this cell yet.');
   assert.equal(app.element('insert-send-here').hidden, false);
   app.element('insert-send-here').dispatch('click');
@@ -7272,7 +7271,7 @@ test('Batch 4: an empty shown cell offers Send selected layer here with the exac
   app.select([{ ...node, width: 0 }]); await settle();
   assert.equal(app.element('insert-send-here').hidden, true, 'a layer without visible export area is not offered');
   app.select([node]); await settle();
-  app.element('env-draft').dispatch('click'); pick(app, 'insert-arm', 'b');
+  app.element('env-draft').dispatch('click'); await pick(app, 'insert-arm', 'b');
   assert.equal(app.element('insert-send-here').hidden, true, 'inherited art is present, never an empty cell');
 });
 
@@ -7287,14 +7286,14 @@ test('Batch 4 R3: Insert keeps the link for null default state and copy Send exc
     { state: 'old', appearance: null, arm: null, draft: cellArt(baseArt, null, null), staging: null, production: null },
     { state: 'new', appearance: null, arm: null, draft: null, staging: null, production: null },
   ] }] };
-  const copy = batch3({ link: { state: null }, layer: { id: '99:1' }, console: { placements: [p], artwork: data } });
+  const copy = batch3({ prefs: { tab: 'insert' }, link: { state: null }, layer: { id: '99:1' }, console: { placements: [p], artwork: data } });
   await settle();
   copy.element('sync-send').dispatch('click');
   assert.equal(copy.element('state').value, 'new', 'the named default cell is the copy’s original, not another empty cell');
 });
 
 test('Batch 4 R3: revealing a null-state sent link picks the named default state in Insert', async () => {
-  const app = batch3({ link: { state: null } }); await settle();
+  const app = batch3({ prefs: { tab: 'insert' }, link: { state: null } }); await settle();
   app.element('sync-title').dispatch('click');
   assert.equal(chosenCell(app).state, 'old');
   assert.equal(chosenCell(app).appearance, '');
@@ -7304,7 +7303,7 @@ test('Batch 4 R3: revealing a null-state sent link picks the named default state
   assert.equal(chosenCell(app).state, 'old', 'a refresh keeps the canonical cell state');
 });
 
-test('Batch 4 4.1: Send groups placements by screen and fits first, preserving a choice when the selection changes', async () => {
+test('Batch 4 4.1: Send groups placements by screen and fits first, preserving each layer’s own choice', async () => {
   const banner = { ...placement, key: 'home.banner', width: 1170, height: 480 };
   const catalog = [banner, { ...placement, key: 'travel.coast', screen: 'Travel' }, placement,
     { ...placement, key: 'travel.detail', screen: 'Travel' }, { ...placement, key: 'onboarding.hero', screen: 'Onboarding' }];
@@ -7315,15 +7314,19 @@ test('Batch 4 4.1: Send groups placements by screen and fits first, preserving a
   assert.deepEqual(groups().map(group => group.children.map(option => option.value)),
     [['home.banner'], ['hero.artwork'], ['travel.coast', 'travel.detail'], ['onboarding.hero']]);
   assert.equal(app.element('placement').value, '', 'the layer name never chooses a destination');
-  pick(app, 'placement', 'travel.coast');
-  pick(app, 'state', 'new'); pick(app, 'appearance', 'dark'); pick(app, 'arm', 'c');
+  await pick(app, 'placement', 'travel.coast');
+  await pick(app, 'state', 'new'); await pick(app, 'appearance', 'dark'); await pick(app, 'arm', 'c');
+  const original = app.figma.currentPage.selection[0];
   app.select([]); await settle();
   assert.deepEqual(groups().map(group => group.label), ['Home', 'Travel', 'Onboarding']);
+  assert.equal(app.element('placement').value, '');
+  const another = app.figma.createFrame(); another.resize(390, 160);
+  app.select([another]); await settle();
+  assert.equal(groups()[0].label, 'Fits this layer');
+  assert.equal(app.element('placement').value, '', 'a new layer does not inherit another layer’s destination');
+  app.select([original]); await settle();
   assert.equal(app.element('placement').value, 'travel.coast');
   assert.deepEqual(['state', 'appearance', 'arm'].map(id => app.element(id).value), ['new', 'dark', 'c']);
-  app.select([{ ...node, id: '71:1', width: 390, height: 160 }]); await settle();
-  assert.equal(groups()[0].label, 'Fits this layer');
-  assert.equal(app.element('placement').value, 'travel.coast');
   const remembered = harness(); await settle();
   assert.equal(remembered.element('placement').value, placement.key);
   assert.equal(remembered.element('state').value, rememberedA.state);
@@ -7346,10 +7349,10 @@ test('Batch 4 4.1: Send cell suffixes distinguish own, inherited and null Draft 
   assert.equal(label('appearance', 'dark'), 'Dark (not set)');
   assert.equal(label('appearance', ''), 'Any (inherits)');
   assert.equal(label('arm', 'c'), 'c (inherits)');
-  pick(app, 'arm', '');
+  await pick(app, 'arm', '');
   assert.equal(label('appearance', 'dark'), 'Dark (inherits)');
   assert.equal(label('appearance', ''), 'Any');
-  pick(app, 'appearance', '');
+  await pick(app, 'appearance', '');
   assert.equal(label('state', 'new'), 'new');
 });
 
@@ -7367,8 +7370,10 @@ test('Batch 4: Send here keeps an explicit Send visible when the empty cell is a
   assert.equal(app.element('sync').className, 'secondary');
   assert.equal(app.activeElement(), app.element('send'));
   app.keydown({ key: 'Enter', metaKey: true }); await settle();
-  assert.equal(app.exportMessages().length, 0, 'Cmd+Enter does not turn the explicit Send into a Sync');
+  assert.equal(app.exportMessages().length, 0, 'the changed Draft must be reviewed before exporting');
   assert.equal(app.drafts().length, 0);
+  const review = descendants(app.element('send-review')).find(element => element.textContent === 'Use this layer instead');
+  assert.ok(review); review.click(); await settle();
   app.element('send').dispatch('click'); await settle();
   assert.equal(app.drafts().length, 1);
   assert.equal(app.drafts()[0].body.rebind, false);
@@ -7379,9 +7384,11 @@ test('Batch 4: Send here keeps an explicit Send visible when the empty cell is a
 for (const fails of [false, true]) test(`F1: a synced link waits for fresh artwork${fails ? ' even when its quiet read fails' : ''}`, async () => {
   const app = batch3({ environment: 'draft', console: { draft: boundDraft } }); await settle();
   app.advance(10000);
-  const gate = deferred(); app.console.gates.artwork = gate;
-  app.element('sync').dispatch('click'); await settle();
+  const gate = deferred();
+  app.console.draft = body => { app.console.gates.artwork = gate; return boundDraft(body); };
+  startSend(app); await settle();
   assert.equal(linkOf(app.layer).assetId, sentArt);
+  app.element('tab-insert').dispatch('click'); await settle();
   assert.equal(app.element('sync-update').hidden, true);
   assert.doesNotMatch(app.element('sync-meta').textContent, /different art now|no longer has art/);
   assert.match(app.element('sync-meta').textContent, /sent to Draft$/);
@@ -7400,7 +7407,7 @@ for (const fails of [false, true]) test(`F1: a synced link waits for fresh artwo
 });
 
 test('F1: a newly seen teammate link forces one read before offering different Draft art', async () => {
-  const app = batch3({ environment: 'draft' }); await settle();
+  const app = batch3({ prefs: { tab: 'insert' }, environment: 'draft' }); await settle();
   app.advance(10000);
   const gate = deferred(); app.console.gates.artwork = gate;
   const link = { ...linkOf(app.layer), assetId: sentArt, insertedAt: '2099-01-01T00:00:00.000Z' };
@@ -7429,9 +7436,11 @@ test('F1: a first Send into an empty Draft cell keeps fallback meta until a fres
     selection: [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'first-send', scaleMode: 'FILL' }] }] });
   await settle();
   time += 10000;
-  app.console.gates.artwork = deferred();
-  pick(app, 'placement', placement.key); app.element('send').dispatch('click'); await settle();
+  const fresh = deferred();
+  app.console.draft = body => { app.console.gates.artwork = fresh; return boundDraft(body); };
+  await pick(app, 'placement', placement.key); app.element('send').dispatch('click'); await settle();
   assert.equal(linkOf(app.figma.currentPage.selection[0]).assetId, sentArt);
+  app.element('tab-insert').dispatch('click'); await settle();
   assert.equal(app.element('sync-update').hidden, true);
   assert.doesNotMatch(app.element('sync-meta').textContent, /no longer has art|different art now/);
   assert.match(app.element('sync-meta').textContent, /sent to Draft$/);
@@ -7442,6 +7451,7 @@ test('F1: a first Send into an empty Draft cell keeps fallback meta until a fres
 
 test('F1: a full read started before a new link stays stale even when it completes later', async () => {
   const app = batch3({ environment: 'draft', prefs: { tab: 'insert' } }); await settle();
+  const reads = artworkReads(app).length;
   const full = deferred(); app.console.gates.artwork = full;
   app.element('insert-refresh').dispatch('click'); await settle();
   app.advance(10000);
@@ -7451,14 +7461,14 @@ test('F1: a full read started before a new link stays stale even when it complet
   full.resolve(); await settle();
   assert.equal(app.element('sync-update').hidden, true, 'completion time cannot make the older request fresh');
   assert.doesNotMatch(app.element('sync-meta').textContent, /different art now|no longer has art/);
-  assert.equal(artworkReads(app).length, 3, 'the full read is followed by one read covering the new link');
+  assert.equal(artworkReads(app).length, reads + 2, 'the full read is followed by one read covering the new link');
   for (const cell of app.console.artwork.placements[0].cells) cell.draft = cellArt(sentArt, null, null);
   fresh.resolve(); await settle();
   assert.match(app.element('sync-meta').textContent, /in Draft, not published$/);
 });
 
 test('F4: a linked TEXT with an image fill never offers Update', async () => {
-  const app = batch3({ stale: true, layer: { type: 'TEXT' } }); await settle();
+  const app = batch3({ prefs: { tab: 'insert' }, stale: true, layer: { type: 'TEXT' } }); await settle();
   assert.equal(lastSelection(app).link.image, true, 'the layer has an image paint');
   assert.equal(lastSelection(app).insertTarget.mode, 'new');
   assert.equal(app.element('sync-update').hidden, true);
@@ -7469,7 +7479,7 @@ test('F4: a linked TEXT with an image fill never offers Update', async () => {
 
 test('F2: a failed quiet read discards an abandoned reveal before a later full load', async () => {
   const gate = deferred();
-  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: gate }, statuses: { artwork: 500 } } });
+  const app = batch3({ prefs: { tab: 'insert' }, link: { appearance: 'dark' }, console: { gates: { artwork: gate }, statuses: { artwork: 500 } } });
   await settle();
   app.element('sync-title').dispatch('click'); await settle();
   app.element('insert-search').value = 'keep this search'; app.element('insert-search').dispatch('input');
@@ -7484,7 +7494,8 @@ test('F2: a failed quiet read discards an abandoned reveal before a later full l
 });
 
 test('F1: freshness follows each node and environment, and forgets the oldest link past 500', async () => {
-  const app = batch3(); await settle();
+  const app = batch3({ prefs: { tab: 'insert' } }); await settle();
+  const reads = artworkReads(app).length;
   const original = clone(lastSelection(app));
   const deliver = selection => app.deliver({ type: 'selection', connectionGeneration: 0, selection });
   const gate = deferred(); app.console.gates.artwork = gate;
@@ -7497,11 +7508,11 @@ test('F1: freshness follows each node and environment, and forgets the oldest li
     deliver(selection);
   }
   await settle();
-  assert.equal(artworkReads(app).length, 2, 'one quiet read covers links seen at its start time');
+  assert.equal(artworkReads(app).length, reads + 1, 'one quiet read covers links seen at its start time');
   assert.equal(app.element('sync-meta').textContent, 'old · Any · Control · Production art', 'another node cannot borrow the first node’s status');
   app.advance(1); deliver(original); await settle();
-  assert.equal(artworkReads(app).length, 3, 'the oldest of 501 links was evicted with its read tracking');
-  assert.equal(artworkReads(app)[1].signal.aborted, true, 'an in-flight read from before this observation is superseded');
+  assert.equal(artworkReads(app).length, reads + 2, 'the oldest of 501 links was evicted with its read tracking');
+  assert.equal(artworkReads(app)[reads].signal.aborted, true, 'an in-flight read from before this observation is superseded');
   gate.resolve(); await settle();
   assert.match(app.element('sync-meta').textContent, /in Production \(release 12\)/);
   app.advance(1);
@@ -7509,23 +7520,24 @@ test('F1: freshness follows each node and environment, and forgets the oldest li
   const staging = clone(original);
   staging.link.environment = 'staging'; staging.remembered.insertedFrom.environment = 'staging';
   deliver(staging); await settle();
-  assert.equal(artworkReads(app).length, 4, 'a changed environment is a new link observation');
+  assert.equal(artworkReads(app).length, reads + 3, 'a changed environment is a new link observation');
   assert.equal(app.element('sync-meta').textContent, 'old · Any · Control · Staging art');
   app.console.gates.artwork.resolve(); await settle();
   assert.match(app.element('sync-meta').textContent, /in Production \(release 12\)/);
 });
 
 test('F1: a link first seen during a connection retest gets its quiet read when the test ends', async () => {
-  const app = batch3({ environment: 'draft' }); await settle();
+  const app = batch3({ prefs: { tab: 'insert' }, environment: 'draft' }); await settle();
+  const reads = artworkReads(app).length;
   app.advance(10000);
   const gate = deferred(); app.console.gates.placements = gate;
   app.element('connection-form').dispatch('submit'); await settle();
-  assert.equal(off(app, 'sync'), true, 'the same connection is being tested');
+  assert.equal(off(app, 'send'), true, 'the same connection is being tested');
   app.layer.setPluginData(LINK_KEY, JSON.stringify({ ...linkOf(app.layer), assetId: sentArt }));
   app.selectionChanged(); await settle();
-  assert.equal(artworkReads(app).length, 1, 'the link read waits for the connection test');
+  assert.equal(artworkReads(app).length, reads, 'the link read waits for the connection test');
   gate.resolve(); await settle();
-  assert.equal(artworkReads(app).length, 2, 'completion honors the link seen while actions waited');
+  assert.equal(artworkReads(app).length, reads + 1, 'completion honors the link seen while actions waited');
   assert.equal(app.element('sync-update').hidden, false, 'the fresh read now confirms different art');
 });
 
@@ -7546,8 +7558,9 @@ test('Fits this layer follows a resize of the same layer', async () => {
   await settle();
   const fits = () => app.element('placement').children.find(child => child.tagName === 'OPTGROUP' && child.label === 'Fits this layer')?.children.map(option => option.value);
   assert.deepEqual(fits(), ['home.banner']);
-  pick(app, 'placement', 'home.banner');
-  app.select([{ ...node, id: '72:1', width: 390, height: 390 }]); await settle();
+  await pick(app, 'placement', 'home.banner');
+  app.figma.currentPage.selection[0].height = 390;
+  app.selectionChanged(); await settle();
   assert.deepEqual(fits(), ['hero.artwork']);
   assert.equal(app.element('placement').value, 'home.banner', 'the choice stays');
 });
@@ -7568,10 +7581,11 @@ test('Cmd+Enter keeps the status line while an Update runs', async () => {
 
 test('a title reveal survives a failed first quiet read when the full load that follows succeeds', async () => {
   const gate = deferred();
-  const app = batch3({ link: { appearance: 'dark' }, console: { gates: { artwork: gate } } });
+  const app = batch3({ prefs: { tab: 'send' }, link: { appearance: 'dark' }, console: { gates: { artwork: gate } } });
   let failing = Infinity;
   Object.defineProperty(app.console.statuses, 'artwork', { configurable: true, enumerable: true, get: () => (artworkReads(app).length <= failing ? 500 : undefined) });
   await settle();
+  app.element('tab-insert').dispatch('click'); await settle();
   app.element('sync-title').dispatch('click'); await settle();
   failing = artworkReads(app).length;
   gate.resolve(); await settle();
@@ -7619,7 +7633,7 @@ test('phase 1 file inventory reports connection, insert, Send, page changes and 
   assert.deepEqual(errorsFor(app, 7003), ['That layer is no longer in this file. Refresh the list.']);
   const inserted = await insertHeroCell(app);
   assert.ok(fileIndex(app).entries.some(entry => entry.nodeId === inserted.id));
-  app.console.draft = boundDraft; app.element('sync').click(); await settle();
+  app.console.draft = boundDraft; startSend(app); await settle();
   assert.equal(fileIndex(app).entries.find(entry => entry.nodeId === inserted.id).assetId, sentArt);
 });
 test('phase 1 inventory skips other apps, bounds at 2000, and scans selection changes once per second', async () => {
@@ -7716,7 +7730,7 @@ test('phase 1 local placement instances edit their main component in one undo st
     const [main, selected] = app.figma.currentPage.children; app.select([selected]); await openInsert(app, { keep: true }); rowFor(app, placement.key).click();
     assert.equal(app.element('insert').textContent, image ? 'Replace in component' : 'Fill component');
     assert.match(app.element('insert-note').textContent, /Changes the main component.*every instance follows/);
-    pick(app, 'insert-appearance', 'light'); pick(app, 'insert-arm', 'b');
+    await pick(app, 'insert-appearance', 'light'); await pick(app, 'insert-arm', 'b');
     await choose(app);
     assert.equal(topImage(main), 'hash-1'); assert.equal(topImage(selected), 'instance'); assert.equal(selected.getPluginData(LINK_KEY), '');
     assert.equal(linkOf(main).arm, 'b'); assert.match(main.description, /Assetlib placement hero.artwork/);
@@ -7751,7 +7765,7 @@ test('phase 1 Send snaps 3×, caps native raster density and long edge, and step
     [1000, 750, null, 33, [2044]], [400, 300, { width: 100, height: 75 }, 33, [400]], [400, 300, null, (n, s) => s.constraint.value > 400 ? 3300001 : 33, [1200, 800, 400]]]) {
     const app = harness({ remembered: null, selection: [{ ...node, width, height, fills: raster ? [{ type: 'IMAGE', imageHash: 'native', scaleMode: 'FILL' }] : [] }],
       imageSizes: raster ? { native: raster } : {}, exportBytes: typeof bytes === 'function' ? bytes : () => bytes, console: { placements: [p] } }); await settle();
-    pick(app, 'placement', p.key); app.element('send').click(); await settle();
+    await pick(app, 'placement', p.key); app.element('send').click(); await settle();
     assert.deepEqual(app.exports.map(settings => settings.constraint.value), expected);
     assert.equal(app.requests.filter(request => request.route === 'drafts').length, 1);
   }
@@ -7796,7 +7810,7 @@ test('phase 1 raster density reads descendants, paint modes, visible images and 
     const app = harness({ remembered: null, console: { placements: [p] }, imageSizes: { child: { width: 200, height: 300 }, hidden: { width: 9999, height: 9999 } },
       exportBytes: () => 33, selection: [{ ...node, width: 400, height: 300, fills: [{ type: 'IMAGE', imageHash: 'missing', scaleMode: 'FILL' }],
         children: [{ ...node, id: '95:2', width: 100, height: 300, fills: [{ type: 'IMAGE', imageHash: 'child', scaleMode: mode }, { type: 'IMAGE', imageHash: 'hidden', scaleMode: 'FIT', visible: false }] }] }] });
-    await settle(); pick(app, 'placement', p.key); app.element('send').click(); await settle();
+    await settle(); await pick(app, 'placement', p.key); app.element('send').click(); await settle();
     assert.equal(app.exports[0].constraint.value, expected, mode);
   }
 });
@@ -7830,7 +7844,7 @@ test('phase 1 a truncated index claims no absence, and Send ignores a hidden ras
   const app = harness({ remembered: null, imageSizes: { native: { width: 100, height: 75 } }, exportBytes: () => 33, console: { placements: [p] },
     selection: [{ ...node, width: 400, height: 300, fills: [], children: [{ ...node, id: '1:9', width: 400, height: 300, visible: false, fills: [{ type: 'IMAGE', imageHash: 'native', scaleMode: 'FILL' }] }] }] });
   await settle();
-  pick(app, 'placement', p.key); app.element('send').click(); await settle();
+  await pick(app, 'placement', p.key); app.element('send').click(); await settle();
   assert.deepEqual(app.exports.map(settings => settings.constraint.value), [1200], 'a hidden low-resolution image does not lower the export');
 });
 test('phase 1 a scan reply from an older connection ends its request, so Refresh asks again', async () => {
@@ -7868,7 +7882,7 @@ test('staging reads, draft sends, browser links and saved tokens stay on staging
   assert.equal(app.element('chip-console').hidden, false);
   assert.equal(app.element('chip-console').textContent, 'Staging');
   assert.equal(app.element('open-console').href, `${stagingOrigin}/w/org-one/app-a/overview`);
-  app.element('sync').click(); await settle();
+  startSend(app); await settle();
   assert.ok(app.requests.some(request => request.route === 'drafts'));
   assert.ok(app.requests.every(request => request.url.startsWith(`${stagingOrigin}/`)));
   assert.ok(app.requests.filter(request => request.authorization).every(request => request.authorization === `Bearer ${config.token}`));
@@ -7919,13 +7933,13 @@ test('Send filters 500 placements by key or screen without changing the chosen d
   const app = harness({ remembered: null, console: { placements }, prefs: { tab: 'send' } });
   await settle();
   assert.equal(app.element('placement-search-field').hidden, false);
-  pick(app, 'placement', 'screen4.hero');
+  await pick(app, 'placement', 'screen4.hero');
   const filter = app.element('placement-search');
   filter.value = 'screen499'; filter.dispatch('input');
   const values = () => app.element('placement').options.map(option => option.value);
   assert.deepEqual(values(), ['', 'screen4.hero', 'screen499.hero']);
   assert.equal(app.element('placement').value, 'screen4.hero');
-  pick(app, 'placement', 'screen499.hero');
+  await pick(app, 'placement', 'screen499.hero');
   assert.deepEqual(values(), ['', 'screen499.hero']);
   filter.value = 'Screen 498'; filter.dispatch('input');
   assert.deepEqual(values(), ['', 'screen498.hero', 'screen499.hero']);

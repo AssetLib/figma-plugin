@@ -63,6 +63,7 @@ export function buildDraftBody(input: {
   bytesBase64: string;
   settings: ExportSettings;
   rebind: boolean;
+  expectedAssetId?: string | null;
 }): DraftBody {
   const { node, fileKey, placement, bytesBase64, settings, rebind } = input;
   if (!validFileKey(fileKey)) throw new Error('Paste this file’s link before sending.');
@@ -83,6 +84,7 @@ export function buildDraftBody(input: {
       export: { format: 'PNG', constraint: { ...settings.constraint } } },
     bind: validateBinding(placement, input.bind),
     rebind,
+    ...(input.expectedAssetId !== undefined ? { expectedAssetId: input.expectedAssetId } : {}),
   };
   assertDraftBodyLimit(body);
   return body;

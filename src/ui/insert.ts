@@ -135,7 +135,7 @@ function shortDate(value: string): string {
 }
 /** Each environment's tooltip: what it is, and its release when one is published. */
 function environmentTitle(name: EnvironmentName): string {
-  if (name === 'draft') return 'Draft: unpublished art. Send and Sync change Draft; your app gets it only after someone publishes.';
+  if (name === 'draft') return 'Draft: unpublished art. Sending changes Draft; your app gets it only after someone publishes.';
   if (artwork && !published(name)) return `Nothing published to ${environmentLabel(name)} yet.`;
   const meta = artwork?.environments[name];
   const release = meta ? ` Release ${meta.sequence}${shortDate(meta.createdAt) ? `, ${shortDate(meta.createdAt)}` : ''}.` : '';
@@ -364,6 +364,12 @@ export function draftArtState(key: string, coordinate: CellCoordinate): 'own' | 
   return !cell ? null : !cell.draft ? 'empty' : owns(cell.draft, cell) ? 'own' : 'inherits';
 }
 
+/** The currently displayed effective Draft image, including inheritance. Unknown stays distinct from empty. */
+export function draftSnapshot(key: string, coordinate: CellCoordinate): { assetId: string | null } | null {
+  const cell = currentCell(key, coordinate);
+  return cell ? { assetId: cell.draft?.assetId ?? null } : null;
+}
+
 /** The chosen Send cell's current Draft art, loaded whenever the form shows it. */
 export function renderSendCurrent(): void {
   const choice = sendChoice();
@@ -471,6 +477,10 @@ function currentLink(): SelectedLink | null {
   return link;
 }
 function seenKey(link: InsertLink): string { return `${state.selection.node?.id}|${link.assetId}|${link.environment}`; }
+let artworkOrder = 0;
+let freshLinkQueued = false;
+/** Orders observations and request starts even when they share a clock millisecond. */
+export function beginArtworkRead(): number { return ++artworkOrder; }
 function artworkCurrentFor(link: InsertLink): boolean {
   const seen = seenLinks.get(seenKey(link));
   return artworkFrom !== null && seen !== undefined && artworkFrom >= seen;
@@ -481,7 +491,7 @@ export function noteLinkSeen(): void {
   if (!hasCurrentSelection() || !node || link?.kind !== 'linked') return;
   const key = seenKey(link);
   if (!seenLinks.has(key)) {
-    seenLinks.set(key, Date.now());
+    seenLinks.set(key, ++artworkOrder);
     if (seenLinks.size > 500) {
       const oldest = seenLinks.keys().next().value!;
       seenLinks.delete(oldest); checkedLinks.delete(oldest);
@@ -489,7 +499,15 @@ export function noteLinkSeen(): void {
   }
   if (!artworkCurrentFor(link) && !checkedLinks.has(key) && !state.ops.connecting) {
     checkedLinks.add(key);
-    if (quietFrom === null || quietFrom < seenLinks.get(key)!) ensureArtwork(true);
+    if (!freshLinkQueued) {
+      freshLinkQueued = true;
+      void Promise.resolve().then(() => {
+        freshLinkQueued = false;
+        const current = currentLink();
+        const seen = current && seenLinks.get(seenKey(current));
+        if (seen !== undefined && seen !== null && !artworkCurrentFor(current!) && (quietFrom === null || quietFrom < seen)) ensureArtwork(true);
+      });
+    }
   }
   scheduleRender();
 }
@@ -520,7 +538,7 @@ export function linkArtworkMeta(link: SelectedLink): string | null {
   const art = cell[link.environment];
   if (!art) return `${environmentLabel(link.environment)} no longer has art for this cell.`;
   return link.environment === 'draft' && (!link.image || link.children > 0) && art.assetId !== link.assetId
-    ? 'Draft has different art now. Sync replaces it with this layer.' : null;
+    ? 'Draft has different art now. Review it in Send before replacing it.' : null;
 }
 /** Where this layer's image is published, with Production taking precedence over Staging and Draft. */
 export function linkStatus(link: InsertLink, coordinate: CellCoordinate = link): string | null {
@@ -792,6 +810,7 @@ export function refreshArtworkIfStale(): void {
   ensureArtwork(true);
 }
 function acceptArtwork(payload: unknown, generation: number, from: number, attention: number): void {
+  if (generation !== state.connectionGeneration || (artworkFrom !== null && from < artworkFrom)) return;
   artwork = parseArtwork(payload);
   artworkGeneration = generation;
   artworkFrom = from;
@@ -805,6 +824,11 @@ function acceptArtwork(payload: unknown, generation: number, from: number, atten
     }
   }
   if (attention === state.attentionCount) markConnected();
+}
+/** Send reviews the same snapshot that its conditional write will compare. */
+export function reviewSendArtwork(payload: unknown, generation: number, from: number, attention: number): void {
+  acceptArtwork(payload, generation, from, attention);
+  scheduleRender(true);
 }
 function finishReveal(): void {
   const reveal = pendingReveal;
@@ -820,7 +844,7 @@ async function loadArtworkQuietly(): Promise<void> {
   if (!config || generation === null) return;
   const ticket = ++quietTicket;
   quietLoading = true;
-  const from = Date.now(), attention = state.attentionCount;
+  const from = beginArtworkRead(), attention = state.attentionCount;
   quietFrom = from;
   artworkRequested(from);
   let dropped = false;
@@ -930,7 +954,7 @@ async function loadArtwork(): Promise<void> {
   quietFrom = null;
   artworkListStale = true;
   scheduleRender(true);
-  const from = Date.now(), attention = state.attentionCount;
+  const from = beginArtworkRead(), attention = state.attentionCount;
   artworkRequested(from);
   try {
     // A new list load or a connection change aborts this one; whoever replaced it owns the list.

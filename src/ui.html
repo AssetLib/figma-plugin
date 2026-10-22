@@ -248,6 +248,24 @@
     /* Nothing to send: a dashed slot saying why, not a filled card. */
     .selection-card.empty { border-style: dashed; }
     .selection-card.empty .title { color: var(--al-text-meta); font-weight: 400; }
+    .send-items { display: grid; gap: 8px; max-height: 248px; overflow: auto; padding: 2px; margin: -2px; }
+    .send-items:empty { display: none; }
+    .send-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
+    .send-row[aria-current="true"] { border-color: var(--text); }
+    .send-row-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .send-row-preview { flex: none; width: 40px; height: 32px; }
+    .send-row-body { display: grid; gap: 2px; flex: 1; min-width: 0; }
+    .send-row-header .text-action { min-width: 0; max-width: 100%; height: auto; min-height: 24px; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+    .send-row-header .title { min-width: 0; }
+    .send-row-meta { color: var(--al-text-meta); overflow-wrap: anywhere; }
+    .send-row-status { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; min-width: 0; }
+    .send-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+    .send-row-actions:empty { display: none; }
+    .send-row[data-state="sending"] .send-row-status::before { content: ''; width: 10px; height: 10px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+    .send-review { display: grid; gap: 8px; }
+    .send-review-preview { display: flex; gap: 12px; }
+    .send-review-preview > div { flex: 1; min-width: 0; display: grid; gap: 4px; }
+    .send-review-preview .thumb { width: 100%; height: 72px; }
     #export-note:empty { display: none; }
     .inline-form { display: flex; align-items: end; gap: 8px; margin-top: 8px; }
     .inline-form .field { flex: 1; }
@@ -275,7 +293,7 @@
     .messages:not(:has(> :not([hidden]))) { display: none; }
     /* The Sync bar: 48 px, its actions wrapping under the text when the window is too narrow for both. */
     .selection-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 48px; padding: 8px 12px; border-top: 1px solid var(--border); }
-    /* Focused itself (opened from Sync to Assetlib with nothing to press), its ring sits inside it. */
+    /* Focused itself, the linked-artwork bar keeps its ring inside its bounds. */
     .selection-bar:focus:not(:focus-visible) { outline: none; }
     .selection-bar:focus-visible { outline-offset: -2px; }
     .bar-text { flex: 1 1 120px; display: grid; min-width: 0; }
@@ -284,7 +302,7 @@
     .bar-title:disabled { color: inherit; cursor: default; }
     /* Why it can't sync (a ratio, with what Match ratio makes of it; a copy) takes up to three lines rather than be cut short. */
     .bar-text .meta { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-    .bar-actions { display: flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; }
+    .bar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; max-width: 100%; margin-left: auto; }
     @media (min-width: 400px) { .selection-bar[data-compact="true"] .meta { display: block; white-space: nowrap; text-overflow: ellipsis; } }
     /* The wrong-file line under the file link field, and the file the document is linked to. */
     .file-mismatch { display: grid; justify-items: start; gap: 8px; margin-top: 8px; }
@@ -322,7 +340,7 @@
     #insert-new { flex: none; margin-left: auto; }
     .footer-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0; }
     .footer-actions > button { flex: 1 1 0; max-width: 220px; }
-    /* The primary action sits on the right, whichever of Send and Sync it is. */
+    /* Send keeps the same action at the bottom for first and repeat sends. */
     .footer-actions > .primary { order: 2; }
 
     #pairing-status { display: flex; align-items: center; gap: 6px; }
@@ -333,6 +351,7 @@
       * { transition: none !important; }
       #pairing-spinner { display: none; }
       .spinner, #insert-refresh[data-busy="true"] svg { animation: none; }
+      .send-row[data-state="sending"] .send-row-status::before { animation: none; }
       /* The running label ends in "…" already. */
       .primary[aria-busy="true"]::before, .text-action[aria-busy="true"]::before { display: none !important; }
       .spinner { border: 0; width: auto; height: auto; } .spinner::after { content: '…'; }
@@ -471,7 +490,7 @@
       <div id="file-scope" class="meta" hidden>This page only. <button id="file-all" class="text-action" type="button">Include all pages</button></div>
       <p id="file-limit" class="meta" hidden>Showing the first 2,000 linked layers.</p>
       <div id="list-region" class="list-region">
-        <div id="intro" class="info intro" hidden><p>Placements come from app code. Send and Sync update Draft. Choose an environment to view published art.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">Figma guide</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
+        <div id="intro" class="info intro" hidden><p>Placements come from app code. Send updates Draft. Choose an environment to view published art.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">Figma guide</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>
         <div id="insert-list"></div>
         <div id="image-grid" class="grid" hidden></div>
         <button id="images-more" class="secondary" type="button" hidden>Load more</button>
@@ -492,14 +511,16 @@
     <main id="panel-send" class="view" role="tabpanel" aria-labelledby="tab-send" hidden>
       <div class="send-scroll">
         <section id="selection-card" class="selection-card" aria-labelledby="selection-title">
-          <h2 id="selection-title" class="visually-hidden">Selected layer</h2>
+          <h2 id="selection-title" class="visually-hidden">Selected artwork</h2>
           <p id="selection-name" class="title">Reading selection…</p>
           <p id="selection-meta" class="meta"></p>
         </section>
-        <!-- Asked for once per document, at its first Send or Sync, when Figma doesn't give the plugin the file's key. -->
+        <div id="send-items" class="send-items" role="list" aria-label="Selected artwork"></div>
+        <!-- Asked for once per document when Figma doesn't give the plugin the file's key. -->
         <div id="file-fallback" class="info" hidden>
-          <p>Link this file once so Assetlib can trace art back to it. In Figma, press <span id="copy-link-key">Cmd+L</span> to copy the file’s link, then paste it here.</p>
-          <form id="file-form" class="inline-form"><label class="field">File link<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off" spellcheck="false" aria-describedby="file-mismatch"></label><button class="secondary" type="submit">Link file</button></form>
+          <p>Link this file once so Assetlib can trace art back to it. In Figma, choose <strong>Share → Copy link</strong>, then paste it here.</p>
+          <form id="file-form" class="inline-form"><label class="field">File link<input id="file-url" type="url" required placeholder="https://www.figma.com/design/…" autocomplete="off" spellcheck="false" aria-describedby="file-link-help file-mismatch"></label></form>
+          <p id="file-link-help" class="meta">The link saves automatically. You can also copy it with <span id="copy-link-key">Cmd+L</span>.</p>
           <div id="file-mismatch-box" class="file-mismatch" hidden><p id="file-mismatch"></p><button id="file-anyway" class="secondary small" type="button">Use anyway</button></div>
         </div>
         <div id="file-line" class="file-line" hidden><p class="meta"><span id="file-name"></span> · <button id="file-change" class="text-action" type="button">Change</button></p><p id="file-session" class="meta" hidden></p></div>
@@ -513,6 +534,7 @@
           <label id="arm-label" class="picker" hidden>A/B arm<select id="arm"></select></label>
         </div>
         <div id="send-current" class="current-art" hidden><span id="send-current-preview" class="thumb"><img id="send-current-thumb" alt=""></span><p id="send-current-text" class="meta"></p></div>
+        <div id="send-review" class="send-review" hidden></div>
         <button id="send-plain" class="text-action" type="button" hidden>Send as a new image instead</button>
         <p id="export-note" class="meta"></p>
         <p id="send-relink" class="meta" hidden></p>
@@ -525,7 +547,7 @@
     <div id="messages" class="messages">
       <div id="error-box" class="error" hidden><p id="error" tabindex="-1" hidden></p><button id="error-action" class="secondary small" type="button" hidden></button></div>
     </div>
-    <!-- The selected layer's link, on both tabs: Sync it to its cell's draft, or why it can't be. -->
+    <!-- Insert shows the selected layer's link and directions; Send owns all outgoing review and results. -->
     <section id="selection-bar" class="selection-bar" tabindex="-1" aria-labelledby="sync-title" hidden>
       <span id="sync-preview" class="thumb"><img id="sync-thumb" alt=""></span>
       <div class="bar-text"><button id="sync-title" class="title bar-title" type="button"></button><p id="sync-meta" class="meta"></p></div>
@@ -534,8 +556,8 @@
         <button id="sync-match" class="secondary small" type="button" hidden>Match ratio</button>
         <button id="sync-send" class="secondary small" type="button" hidden></button>
         <button id="sync-switch" class="secondary small" type="button" hidden>Switch workspace</button>
-        <button id="sync-update" class="secondary small" type="button" hidden>Update</button>
-        <button id="sync" class="primary" type="button" aria-disabled="true" hidden>Sync to draft</button>
+        <button id="sync-update" class="secondary small" type="button" hidden>Use artwork</button>
+        <button id="sync" class="primary" type="button" aria-disabled="true" hidden>Send to draft</button>
       </div>
     </section>
     <div id="hint-bar" class="hint-bar" hidden>

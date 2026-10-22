@@ -947,9 +947,9 @@ test('a link is in the connected app on the legacy host too, and its relaunch de
   assert.equal(linkInApp(link, { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app' }), true);
   assert.equal(linkInApp(link, { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'other' }), false);
   assert.equal(linkMatches(link, { origin: PRODUCTION_ORIGIN, orgId: 'org', appId: 'app' }, '1:3'), false, 'a copy is in the app, but not matched');
-  assert.equal(syncDescription(link), 'home.banner, from Production. Sync sends edits to its draft.');
+  assert.equal(syncDescription(link), 'home.banner, from Production. Review this layer and send edits to its draft.');
   assert.equal(syncDescription({ placementKey: 'onboarding.hero', state: 'welcome', appearance: 'dark', arm: 'b', environment: 'staging' }),
-    'onboarding.hero · welcome · Dark · b, from Staging. Sync sends edits to its draft.');
+    'onboarding.hero · welcome · Dark · b, from Staging. Review this layer and send edits to its draft.');
   const longest = syncDescription({ placementKey: `k${'x'.repeat(119)}`, state: `s${'x'.repeat(39)}`, appearance: 'light', arm: `a${'x'.repeat(19)}`, environment: 'production' });
   assert.ok(longest.length <= 1000, String(longest.length));
 });
@@ -1055,7 +1055,7 @@ test('the plugin menu opens the remembered tab, Insert, or Send and keeps both r
     { name: 'Insert artwork…', command: 'insert' }, { name: 'Send selection to draft…', command: 'send' },
   ]);
   assert.deepEqual(manifest.relaunchButtons, [
-    { command: 'sync', name: 'Sync to Assetlib' }, { command: 'open', name: 'Open Assetlib' },
+    { command: 'sync', name: 'Send to draft…' }, { command: 'open', name: 'Open Assetlib' },
   ]);
   assert.equal(manifest.id, '1690264758934826227');
 });

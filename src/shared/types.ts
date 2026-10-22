@@ -90,6 +90,7 @@ export interface DraftBody {
   };
   bind: CellBinding;
   rebind: boolean;
+  expectedAssetId?: string | null;
 }
 
 export interface DraftResult {

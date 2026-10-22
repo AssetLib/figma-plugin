@@ -23,10 +23,10 @@ const UPDATE_CHANGED = 'This layer changed since the plugin checked it. Select i
 const PLACEHOLDER_FILL: SolidPaint = { type: 'SOLID', color: { r: 238 / 255, g: 240 / 255, b: 243 / 255 } };
 // Layers a drop can go inside. An instance, or anything inside one, takes no new layers; a component set only variants.
 const DROP_PARENTS = ['FRAME', 'GROUP', 'SECTION', 'COMPONENT'];
-export const INSTANCE_LAYERS = 'Filled. Layers inside instances can’t be linked, so Sync isn’t available for them.';
+export const INSTANCE_LAYERS = 'Filled. Layers inside instances can’t be linked.';
 // Layers outside an instance whose plugin data Figma refused.
 export function notLinked(count: number): string {
-  return `Filled. Figma didn’t let ${count === 1 ? 'one layer' : `${count} layers`} be linked, so Sync isn’t available for ${count === 1 ? 'it' : 'them'}.`;
+  return `Filled. Figma didn’t let ${count === 1 ? 'one layer' : `${count} layers`} be linked.`;
 }
 export const NOT_UNDONE = 'Not undone. These layers changed after the fill.';
 export const UNDO_REFUSED = 'Not undone. Figma didn’t let the plugin change these layers back.';
@@ -215,8 +215,8 @@ function fill(config: Connection, target: Extract<InsertDestination, { kind: 'fi
   const art = link ? link.placementKey : name;
   const others = skipped === 1 ? 'one' : skipped;
   const notice = skipped && unlinked.length
-    ? `Filled ${filled.length} of ${layers.length} layers. Figma couldn’t fill the other ${others}, and Sync isn’t available for ${
-      unlinked.length === filled.length ? (filled.length === 1 ? 'it' : 'them') : `${unlinked.length === 1 ? 'one' : unlinked.length} of them`}.`
+    ? `Filled ${filled.length} of ${layers.length} layers. Figma couldn’t fill the other ${others} or link ${
+      unlinked.length === 1 ? 'one filled layer' : `${unlinked.length} filled layers`}.`
     : skipped ? `Filled ${filled.length} of ${layers.length} layers with ${art}. Figma couldn’t fill the other ${others}.`
       : unlinked.length ? (unlinked.some(node => insideInstance(node.id)) ? INSTANCE_LAYERS : notLinked(unlinked.length))
         : update && link ? `Updated ${first.name} with the latest ${environmentLabel(link.environment)} art`

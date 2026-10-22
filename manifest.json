@@ -15,7 +15,7 @@
     { "name": "Send selection to draft…", "command": "send" }
   ],
   "relaunchButtons": [
-    { "command": "sync", "name": "Sync to Assetlib" },
+    { "command": "sync", "name": "Send to draft…" },
     { "command": "open", "name": "Open Assetlib" }
   ],
   "networkAccess": {
