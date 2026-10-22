@@ -669,11 +669,15 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
   const pages = () => app.requests.filter(request => request.route === 'assets').map(request => request.url.slice(`${connection.origin}/api/apps/org-one/app-a/`.length));
   assert.deepEqual(pages(), ['assets?limit=24']);
   assert.equal(tilesOf(app).length, 24);
+  assert.equal(app.element('browse-summary').textContent, '24 images loaded · more available');
+  assert.equal(app.element('art-filters').hidden, true);
+  assert.equal(app.element('insert-search').placeholder, 'Search image names');
   assert.equal(app.element('images-more').hidden, false);
   app.element('images-more').dispatch('click');
   await settle();
   assert.equal(pages()[1], `assets?limit=24&cursor=${entries[23].asset.id}`);
   assert.equal(tilesOf(app).length, 30);
+  assert.equal(app.element('browse-summary').textContent, '30 images');
   assert.equal(app.element('images-more').hidden, true);
 
   app.element('insert-search').value = ' Coast ';
@@ -683,6 +687,7 @@ test('Images mode pages with limit, cursor, and q, and a library insert is not l
   await settle();
   assert.equal(pages()[2], 'assets?limit=24&q=Coast');
   assert.equal(tilesOf(app).length, 10);
+  assert.equal(app.element('browse-summary').textContent, '10 images matching your search');
 
   tilesOf(app)[0].dispatch('click');
   assert.equal(app.element('insert-title').textContent, 'Coast 0');
@@ -7936,4 +7941,40 @@ test('Send filters 500 placements by key or screen without changing the chosen d
   assert.equal(values().length, 501);
   app.element('send').click(); await settle();
   assert.equal(app.requests.filter(request => request.route === 'drafts').at(-1).body.bind.slotKey, 'screen499.hero');
+});
+
+test('placement artwork filters count matching placements across cells and environments and recover from no results', async () => {
+  const data = artwork();
+  const partlySet = { ...data.placements[0], cells: heroCells().map((cell, index) => ({ ...cell, draft: index === 17 ? cell.draft : null, staging: null })) };
+  const empty = { ...partlySet, key: 'home.empty', cells: partlySet.cells.map(cell => ({ ...cell, draft: null })) };
+  const inherited = { ...data.placements[0], key: 'travel.hero', screen: 'Travel' };
+  data.placements = [partlySet, empty, inherited];
+  const app = harness({ prefs: { tab: 'insert', environment: 'draft', environmentChosen: true }, console: { artwork: data } });
+  await settle();
+  const counts = () => ['art-all', 'art-with', 'art-empty'].map(id => app.element(id).textContent);
+  const keys = () => descendants(app.element('insert-list')).filter(item => item.getAttribute?.('data-key')).map(item => item.getAttribute('data-key'));
+  assert.deepEqual(counts(), ['All 3', 'With art 2', 'No art 1']);
+  assert.equal(app.element('browse-summary').textContent, '3 of 3 placements · Draft');
+  app.element('art-with').click();
+  assert.deepEqual(keys(), ['hero.artwork', 'travel.hero'], 'art in an alternate or inherited cell counts');
+  assert.equal(app.element('browse-summary').textContent, '2 of 3 placements · Draft');
+  app.element('insert-search').value = 'Home';
+  app.element('insert-search').dispatch('input');
+  assert.deepEqual(counts(), ['All 2', 'With art 1', 'No art 1']);
+  assert.deepEqual(keys(), ['hero.artwork']);
+  app.element('env-staging').click();
+  assert.deepEqual(counts(), ['All 2', 'With art 0', 'No art 2']);
+  assert.deepEqual(keys(), []);
+  assert.equal(app.element('insert-clear').textContent, 'Clear filters');
+  assert.equal(app.element('browse-summary').textContent, '0 of 3 placements · Staging');
+  app.element('insert-clear').click();
+  assert.equal(app.element('insert-search').value, '');
+  assert.equal(app.element('art-all').getAttribute('aria-checked'), 'true');
+  assert.equal(keys().length, 3);
+  app.element('art-with').focus();
+  app.keydown({ key: 'ArrowRight' }, app.element('art-filters'));
+  assert.equal(app.element('art-empty').getAttribute('aria-checked'), 'true');
+  assert.deepEqual(keys(), ['hero.artwork', 'home.empty']);
+  assert.equal(app.element('art-empty').getAttribute('tabindex'), '0');
+  assert.equal(app.element('art-all').getAttribute('tabindex'), '-1');
 });

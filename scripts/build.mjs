@@ -13,7 +13,8 @@ const dev = watching || args.has('--dev');
 // Release budget, embedded font included; raised from 176 KB on October 13, 2026 for the usability release:
 // Connect recovery, explanations, Update from Assetlib, the Send picker.
 // Raised on October 14, 2026: phase 1: cell strip and In this file.
-const MAX_UI_BYTES = 196_000;
+// Raised on October 21, 2026 for counted artwork filters and browse result context.
+const MAX_UI_BYTES = 200_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 const MAX_MAIN_BYTES = 50_000;
 const root = fileURLToPath(new URL('../', import.meta.url));
