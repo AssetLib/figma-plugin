@@ -3503,3 +3503,20 @@ for (const theme of ['light', 'dark']) test(`artwork filter counts, keyboard cho
     if (shots) await page.screenshot(join(shots, `artwork-discovery-${theme}.png`));
   } finally { await page.close(); }
 });
+
+test('the narrow image grid keeps two columns with a space-taking scrollbar', async () => {
+  const page = await openUi({ preferences: { browse: 'images' } }, { width: 320, height: 480 });
+  try {
+    await page.waitFor(`${tiles} === 24`);
+    await page.evaluate(`(() => { const style = document.createElement('style');
+      style.textContent = '#list-region { overflow-y: scroll; } #list-region::-webkit-scrollbar { width: 17px; }';
+      document.head.appendChild(style); })()`);
+    await page.frames();
+    assert.equal(await page.evaluate(`(() => { const list = document.getElementById('list-region'); return list.offsetWidth - list.clientWidth; })()`), 17, 'the scrollbar reserves layout space');
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('image-grid')).gridTemplateColumns.split(' ').length`), 2);
+    assert.equal(await page.evaluate(`document.getElementById('list-region').scrollWidth <= document.getElementById('list-region').clientWidth`), true);
+    await page.click('#image-grid .tile');
+    await page.press('ArrowDown');
+    assert.equal(await page.focused(), await page.evaluate(`__harness.uuid(3)`), 'down moves one two-tile row');
+  } finally { await page.close(); }
+});
