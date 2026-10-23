@@ -12,6 +12,7 @@ import {
   noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, reviewSendArtwork, resetInsert, rowFor, savePreferences,
 } from './insert.js';
 import { applyFileUrl, applySelection, choiceSaved, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
+import { initPlacementPicker, placementSearchChanged, renderPlacementPicker } from './send-picker.js';
 import { actionsBlocked, state } from './state.js';
 import { initSyncBar, launched, renderSyncBar, syncFromKeyboard } from './syncbar.js';
 import type { ReadFailure } from './state.js';
@@ -43,6 +44,7 @@ function render(): void {
   renderConnect();
   renderSend(problemInSettings());
   renderSendCurrent();
+  renderPlacementPicker();
   renderInsertControls();
   renderInsertBar();
   renderSyncBar();
@@ -245,7 +247,8 @@ element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
 initConnect();
 const showSend = () => setTab('send');
-initSend({ refused: (text = TOKEN_NO_LONGER_ACCEPTED) => needsAttention({ text, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState, draftSnapshot, reviewArtwork: reviewSendArtwork, beginArtworkRead });
+initPlacementPicker();
+initSend({ placementSearchChanged, refused: (text = TOKEN_NO_LONGER_ACCEPTED) => needsAttention({ text, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState, draftSnapshot, reviewArtwork: reviewSendArtwork, beginArtworkRead });
 initSyncBar({ showSend, showInsert: () => setTab('insert') });
 initInsert(() => { setTab('send'); tabSend.focus(); });
 post({ type: 'init' });

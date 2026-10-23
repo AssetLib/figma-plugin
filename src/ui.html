@@ -250,7 +250,20 @@
 
     /* Send. */
     /* One column as wide as the panel: an auto column would grow to the longest unbreakable text and widen the form. */
-    .send-scroll { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 12px; padding: 4px 12px 12px; }
+    .send-scroll { flex: 1; min-height: 0; overflow: auto; display: grid; grid-auto-rows: max-content; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 12px; padding: 4px 12px 12px; }
+    .placement-toggle { width: 100%; justify-content: space-between; text-align: left; }
+    .placement-toggle::after { content: '⌄'; flex: none; margin-left: 8px; }
+    .placement-panel { min-width: 0; display: grid; gap: 8px; }
+    .placement-options { max-height: 288px; overflow: auto; border: 1px solid var(--border); border-radius: 5px; }
+    .placement-options:empty { display: none; }
+    .placement-option { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; align-items: center; min-height: 80px; padding: 8px; cursor: pointer; }
+    .placement-option:hover { background: var(--bg-secondary); }
+    .placement-option[aria-selected="true"] { background: var(--bg-tertiary); }
+    .placement-option:focus-visible { outline-offset: -2px; }
+    .placement-option .thumb-box { width: 72px; height: 56px; }
+    .placement-option-copy { min-width: 0; display: grid; gap: 3px; }
+    .placement-option-copy .title { white-space: normal; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+    .placement-option-copy .meta { overflow-wrap: anywhere; }
     .selection-card { display: grid; gap: 2px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
     /* Nothing to send: a dashed slot saying why, not a filled card. */
     .selection-card.empty { border-style: dashed; }
@@ -545,7 +558,12 @@
         <!-- Why Send has no placements: the connection test failed. Shown here only while the connection settings are closed. -->
         <div id="send-problem" class="error" tabindex="-1" hidden><p id="send-problem-text"></p><button id="send-retry" class="secondary small" type="button" hidden>Try again</button><button id="send-token" class="secondary small" type="button" hidden>Update token</button></div>
         <label id="placement-search-field" class="field">Find placement<input id="placement-search" type="search" placeholder="Search by key or screen" autocomplete="off" spellcheck="false"></label>
-        <label class="field">Placement<select id="placement" disabled><option value="">Choose placement…</option></select></label>
+        <div class="field"><label id="placement-label" for="placement-toggle">Placement</label><button id="placement-toggle" class="secondary placement-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="placement-options">Choose placement…</button><select id="placement" hidden disabled aria-label="Placement"><option value="">Choose placement…</option></select></div>
+        <div id="placement-panel" class="placement-panel" hidden>
+          <div id="placement-options" class="placement-options" role="listbox" aria-labelledby="placement-label"></div>
+          <p id="placement-empty" class="meta" role="status" hidden>No matching placements.</p>
+          <button id="placement-clear" class="text-action" type="button" hidden>Clear search</button>
+        </div>
         <div class="pickers">
           <label id="state-label" class="picker" hidden>State<select id="state"></select></label>
           <label id="appearance-label" class="picker" hidden>Appearance<select id="appearance"></select></label>
@@ -574,7 +592,7 @@
         <button id="sync-match" class="secondary small" type="button" hidden>Match ratio</button>
         <button id="sync-send" class="secondary small" type="button" hidden></button>
         <button id="sync-switch" class="secondary small" type="button" hidden>Switch workspace</button>
-        <button id="sync-update" class="secondary small" type="button" hidden>Use artwork</button>
+        <button id="sync-update" class="secondary small" type="button" hidden>Update Figma layer</button>
         <button id="sync" class="primary" type="button" aria-disabled="true" hidden>Send to draft</button>
       </div>
     </section>

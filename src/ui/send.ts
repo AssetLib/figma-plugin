@@ -170,6 +170,16 @@ function buildPlacementOptions(): void {
     ...(fits.children.length ? [fits] : []), ...[...groups.values()].filter(group => group.children.length));
   if (state.placements.some(item => item.key === chosen)) placementPicker.value = chosen;
 }
+/** The visual picker shares the existing destination and cell-saving path. */
+export function chooseSendPlacement(key: string): void {
+  if (placementPicker.disabled || actionsBlocked() || !state.placements.some(item => item.key === key) || placementPicker.value === key) return;
+  placementPicker.value = key;
+  buildPlacementOptions(); updateCellPickers(); savePicker();
+}
+export function clearPlacementSearch(): void {
+  placementSearch.value = ''; buildPlacementOptions(); scheduleRender();
+}
+
 /** No placements, with `text` in the picker saying why. */
 export function clearPlacements(text: string): void {
   state.placements = [];
@@ -447,7 +457,7 @@ export function failSend(requestId: number, message: string): boolean {
 }
 
 export function initSend(actions: { refused: (text?: string) => void; retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void; artworkChanged: () => void;
-  draftArtState: typeof draftArtState; draftSnapshot: (key: string, cell: CellBinding) => { assetId: string | null } | null; reviewArtwork: (payload: unknown, generation: number, from: number, attention: number) => void; beginArtworkRead: () => number }): void {
+  placementSearchChanged: () => void; draftArtState: typeof draftArtState; draftSnapshot: (key: string, cell: CellBinding) => { assetId: string | null } | null; reviewArtwork: (payload: unknown, generation: number, from: number, attention: number) => void; beginArtworkRead: () => number }): void {
   showSend = actions.showSend;
   draftArtState = actions.draftArtState;
   initQueue({ choose: selectRow, needFile: askForFile, setupReady: () => pendingFile === null && mismatch === null
@@ -489,7 +499,7 @@ export function initSend(actions: { refused: (text?: string) => void; retry: () 
     scheduleRender(); flushRender(); fileUrl.focus();
     setStatus('Link this file to show its scanned layers in the console.');
   });
-  placementSearch.addEventListener('input', () => { buildPlacementOptions(); scheduleRender(); });
+  placementSearch.addEventListener('input', () => { buildPlacementOptions(); actions.placementSearchChanged(); scheduleRender(); });
   placementPicker.addEventListener('change', () => { if (actionsBlocked()) return; buildPlacementOptions(); updateCellPickers(); savePicker(); });
   sendButton.addEventListener('click', () => { savePicker(); void sendSelection(); });
   element('send-plain').addEventListener('click', () => { void sendSelection(); });

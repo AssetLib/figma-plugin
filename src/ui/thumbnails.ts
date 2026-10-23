@@ -24,20 +24,21 @@ const thumbnailRetrying = new Set<string>();
 const thumbnailRetries = new Map<string, number>();
 const thumbnailFailed = new Set<string>();
 // The images inside the current rows and tiles, so a rebuild can stop observing them.
-let listImages: HTMLImageElement[] = [];
+const listImages = new Map<Element, HTMLImageElement[]>();
 // Jobs not yet started; the last one is taken first.
 let thumbnailQueue: ThumbnailJob[] = [];
 let thumbnailsPaused = false;
 let thumbnailEpoch = 0;
-let thumbnailObserver: IntersectionObserver | null = null;
+const thumbnailObservers = new Map<Element, IntersectionObserver>();
 
 function mediaType(value: string): string { return value.split(';')[0]!.trim().toLowerCase(); }
 
 export function resetThumbnails(): void {
   thumbnails.clear(); thumbnailWaiting.clear(); thumbnailVisible.clear(); thumbnailActive.clear(); thumbnailRetrying.clear();
-  thumbnailRetries.clear(); thumbnailFailed.clear(); thumbnailQueue = []; listImages = [];
+  thumbnailRetries.clear(); thumbnailFailed.clear(); thumbnailQueue = []; listImages.clear();
   thumbnailsPaused = false; thumbnailEpoch += 1; state.previewNote = '';
-  thumbnailObserver?.disconnect(); thumbnailObserver = null;
+  for (const observer of thumbnailObservers.values()) observer.disconnect();
+  thumbnailObservers.clear();
 }
 function observingThumbnails(): boolean { return typeof IntersectionObserver === 'function'; }
 function thumbnailWanted(sha256: string): boolean {
@@ -56,7 +57,7 @@ function pruneThumbnails(): void {
   thumbnailQueue = thumbnailQueue.filter(job => thumbnailWanted(job.rendition.sha256));
 }
 /** Shows an asset's preview in `img`. A list image (`observed`) loads once it nears the list's view; any other at once. */
-export function showThumbnail(img: HTMLImageElement, asset: LibraryAsset | null, observed = false): void {
+export function showThumbnail(img: HTMLImageElement, asset: LibraryAsset | null, observed: boolean | HTMLElement = false): void {
   const rendition = asset ? thumbnailRendition(asset) : null;
   const previous = img.getAttribute('data-sha');
   if (previous && previous !== rendition?.sha256) { stopWaiting(img); pruneThumbnails(); }
@@ -76,8 +77,10 @@ export function showThumbnail(img: HTMLImageElement, asset: LibraryAsset | null,
   if (!observingThumbnails() || !observed) { alwaysVisible.add(img); queueThumbnail(job); pumpThumbnails(); return; }
   // The list scrolls inside #list-region, so that is the root: the 300 px lookahead applies to its view. (An explicit
   // root also keeps the margin in Figma's cross-origin iframe, where the implicit root ignores it.)
-  thumbnailObserver ??= new IntersectionObserver(thumbnailsIntersected, { root: element('list-region'), rootMargin: '300px 0px' });
-  thumbnailObserver.observe(img);
+  const root = observed === true ? element('list-region') : observed;
+  let observer = thumbnailObservers.get(root);
+  if (!observer) { observer = new IntersectionObserver(thumbnailsIntersected, { root, rootMargin: '300px 0px' }); thumbnailObservers.set(root, observer); }
+  observer.observe(img);
 }
 function thumbnailsIntersected(entries: IntersectionObserverEntry[]): void {
   const shown: ThumbnailJob[] = [];
@@ -177,7 +180,7 @@ function failThumbnail(sha256: string): void { thumbnailFailed.add(sha256); thum
 export function retryFailedThumbnails(): void { thumbnailFailed.clear(); thumbnailRetries.clear(); }
 
 /** A row or tile's thumbnail; `slot` draws an empty slot for a cell with nothing in this environment. */
-export function thumbnailFrame(asset: LibraryAsset | null, slot = false, ratio?: { width: number; height: number }, observed = true, bounds = { width: 56, height: 40 }): HTMLElement {
+export function thumbnailFrame(asset: LibraryAsset | null, slot = false, ratio?: { width: number; height: number }, observed: boolean | HTMLElement = true, bounds = { width: 56, height: 40 }): HTMLElement {
   const frame = document.createElement('span');
   frame.className = slot ? 'thumb slot' : 'thumb';
   if (ratio) {
@@ -189,14 +192,17 @@ export function thumbnailFrame(asset: LibraryAsset | null, slot = false, ratio?:
   // The row or tile is what drags onto the canvas, never its preview's data: URL.
   img.draggable = false;
   frame.append(img);
-  if (observed) listImages.push(img);
+  if (observed) {
+    const root = observed === true ? element('list-region') : observed;
+    const images = listImages.get(root) ?? []; images.push(img); listImages.set(root, images);
+  }
   showThumbnail(img, asset, observed);
   return frame;
 }
 
 /** Before the list is rebuilt: its images stop waiting for previews, and jobs only they wanted are dropped. */
-export function releaseListImages(): void {
-  for (const img of listImages) { thumbnailObserver?.unobserve(img); thumbnailVisible.delete(img); stopWaiting(img); }
-  listImages = [];
+export function releaseListImages(root: HTMLElement = element('list-region')): void {
+  for (const img of listImages.get(root) ?? []) { thumbnailObservers.get(root)?.unobserve(img); thumbnailVisible.delete(img); stopWaiting(img); }
+  listImages.delete(root);
   pruneThumbnails();
 }

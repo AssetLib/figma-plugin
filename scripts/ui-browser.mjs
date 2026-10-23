@@ -1391,6 +1391,7 @@ test('controls inside a callout stand apart from it, and hover shows in Figma’
     });
   })`;
   async function hover(page, selector) {
+    await page.evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'nearest' })`);
     const box = await page.evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
     await page.frames();
@@ -2738,7 +2739,7 @@ test('incoming artwork stays primary and Cmd+Enter opens Send for review without
       assert.deepEqual(await page.evaluate(inkPrimaries), ['sync-update']);
       assert.equal(await page.evaluate(`document.getElementById('sync').classList.contains('secondary')`), true);
       assert.equal(await page.evaluate(`document.getElementById('sync').title`), 'Review the selected layer and its draft destination.');
-      assert.equal(await page.evaluate(`document.getElementById('selection-bar').title`), 'Use Production artwork replaces this layer’s image. Send to draft opens the outgoing destination for review.');
+      assert.equal(await page.evaluate(`document.getElementById('selection-bar').title`), 'Update Figma layer replaces this layer’s image with Production artwork. Send to draft opens the outgoing destination for review.');
       assert.equal(await page.evaluate(shown('sync-console')), false);
       assert.equal(await page.evaluate(syncFits), true, `${mode}, ${width} px`);
       if (width === 420) assert.ok(await page.evaluate(`document.getElementById('selection-bar').clientHeight <= 88`), 'explicit incoming and outgoing actions fit in at most two rows');
@@ -2765,7 +2766,7 @@ test('only Update shows Updating and its spinner while Insert, Sync, Send, Match
     assert.deepEqual(await page.evaluate(inkPrimaries), ['sync-update']);
     await page.click('#sync-update');
     await page.waitFor(`document.getElementById('sync-update').getAttribute('aria-busy') === 'true'`);
-    assert.equal(await page.evaluate(textOf('sync-update')), 'Using artwork…');
+    assert.equal(await page.evaluate(textOf('sync-update')), 'Updating Figma layer…');
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('sync-update'), '::before').content !== 'none'`), true, 'the running action has its spinner');
     assert.equal(await page.evaluate(textOf('insert')), 'Replace image');
     assert.deepEqual(await page.evaluate(`['insert', 'sync', 'send', 'sync-match'].map(id => {
@@ -3465,8 +3466,7 @@ for (const theme of ['light', 'dark']) test(`staging and Send search remain clea
       await page.click('#placement-search'); await page.type('slot499'); await page.frames();
       assert.equal(await page.focused(), 'placement-search');
       assert.deepEqual(await page.evaluate(`[...document.getElementById('placement').options].map(option => option.value)`), ['', 'screen62.slot499']);
-      await page.press('Tab'); assert.equal(await page.focused(), 'placement');
-      await page.press('s'); await page.frames();
+      await page.press('ArrowDown'); await page.press('Enter'); await page.frames();
       assert.equal(await page.evaluate(valueOf('placement')), 'screen62.slot499');
       await page.click('#placement-search'); await page.evaluate(`document.getElementById('placement-search').select()`); await page.type('no match'); await page.frames();
       assert.equal(await page.evaluate(valueOf('placement-search')), 'no match');
@@ -3519,4 +3519,68 @@ test('the narrow image grid keeps two columns with a space-taking scrollbar', as
     await page.press('ArrowDown');
     assert.equal(await page.focused(), await page.evaluate(`__harness.uuid(3)`), 'down moves one two-tile row');
   } finally { await page.close(); }
+});
+
+for (const theme of ['light', 'dark']) test(`visual Send picker previews destinations and chooses explicitly (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const node = { id: '90:1', name: 'Hero artwork', type: 'FRAME', width: 390, height: 520 };
+    const page = await openUi({ declared: true, preferences: { tab: 'send' }, selection: { ...DEFAULTS.selection, node, reason: null } }, { width, height: 720, theme });
+    try {
+      await page.waitFor(`document.getElementById('placement').options.length === 8`);
+      await page.click('#placement-toggle');
+      await page.waitFor(`document.querySelectorAll('#placement-options [role=option]').length === 7`);
+      const first = '#placement-options [role=option]';
+      assert.match(await page.evaluate(`document.querySelector('${first}').textContent`), /onboarding\.hero.*Onboarding.*3:4.*Fits this layer.*Draft/);
+      await page.waitFor(`document.querySelector('${first} img').src.startsWith('data:')`);
+      assert.equal(await page.evaluate(valueOf('placement')), '');
+      await page.click('#placement-search'); await page.press('ArrowDown'); await page.press('ArrowDown');
+      assert.equal(await page.evaluate(valueOf('placement')), '', 'arrow focus does not change the destination');
+      await page.press('Escape');
+      assert.equal(await page.focused(), 'placement-toggle');
+      assert.equal(await page.evaluate(valueOf('placement')), '');
+      await page.click('#placement-search'); await page.type('home.banner'); await page.press('ArrowDown'); await page.press('Enter'); await page.frames();
+      assert.equal(await page.evaluate(valueOf('placement')), 'home.banner');
+      assert.equal(await page.evaluate(shown('placement-panel')), false);
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+      await page.click('#placement-search'); await page.evaluate(`document.getElementById('placement-search').select()`); await page.type('nothing matches');
+      assert.match(await page.evaluate(textOf('placement-panel')), /No matching placements/);
+      assert.match(await page.evaluate(textOf('placement-options')), /current choice/);
+      assert.equal(await page.evaluate(valueOf('placement')), 'home.banner');
+      await page.click('#placement-clear');
+      assert.equal(await page.evaluate(valueOf('placement-search')), '');
+      assert.ok(await page.evaluate(`document.getElementById('send-items').clientHeight >= document.querySelector('#send-items .send-row').offsetHeight`), 'the destination review row keeps its height while choices are open');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
+      if (shots) await page.screenshot(join(shots, `send-visual-picker-${theme}-${width}.png`));
+    } finally { await page.close(); }
+  }
+});
+
+test('visual Send choices distinguish unknown, empty and inherited Draft art and load only nearby previews', async () => {
+  const node = { id: '90:2', name: 'Hero', type: 'FRAME', width: 390, height: 520 };
+  const page = await openUi({ declared: true, unset: ['home.tile'], hold: ['artwork'], preferences: { tab: 'send' }, selection: { ...DEFAULTS.selection, node, reason: null } });
+  try {
+    await page.waitFor(`!document.getElementById('placement-toggle').disabled`);
+    await page.click('#placement-toggle');
+    assert.match(await page.evaluate(textOf('placement-options')), /Draft artwork not loaded/);
+    assert.doesNotMatch(await page.evaluate(textOf('placement-options')), /No Draft art/);
+    await page.evaluate(`__harness.release('artwork')`);
+    await page.waitFor(`document.querySelector('#placement-options [data-key="home.tile"]').textContent.includes('No Draft art')`);
+    await page.click('#placement-options [data-key="onboarding.hero"]');
+    await page.evaluate(choose('appearance', 'dark')); await page.frames();
+    await page.click('#placement-toggle');
+    assert.match(await page.evaluate(`document.querySelector('#placement-options [data-key="onboarding.hero"]').textContent`), /Draft artwork.*Dark.*inherited/);
+    assert.equal(await page.evaluate(valueOf('appearance')), 'dark');
+    await page.press('Escape');
+    assert.equal(await page.evaluate(valueOf('appearance')), 'dark');
+  } finally { await page.close(); }
+  const many = await openUi({ placements: 500, preferences: { tab: 'send' }, selection: { ...DEFAULTS.selection, node: { ...node, width: 500, height: 500 }, reason: null } });
+  try {
+    await many.waitFor(`!document.getElementById('placement-toggle').disabled`);
+    await many.click('#placement-toggle');
+    await many.waitFor(`document.querySelector('#placement-options img')?.src.startsWith('data:')`);
+    assert.ok(await many.evaluate(`__harness.log.filter(entry => entry.route === 'rendition').length < 20`), '500 candidates do not fetch every preview');
+    await many.evaluate(`document.getElementById('placement-options').scrollTop = document.getElementById('placement-options').scrollHeight`);
+    await many.waitFor(`document.querySelector('#placement-options [data-key="screen62.slot499"] img')?.src.startsWith('data:')`);
+    assert.ok(await many.evaluate(`__harness.log.filter(entry => entry.route === 'rendition').length < 40`), 'scrolling loads the newly nearby previews');
+  } finally { await many.close(); }
 });

@@ -54,7 +54,7 @@ export function renderSyncBar(): void {
   element('sync-meta').textContent = meta;
   element('sync-meta').hidden = !meta;
   // The whole of what a narrow window shortens, on hover.
-  bar.title = update ? `Use ${environmentLabel(update.environment)} artwork replaces this layer’s image. Send to draft opens the outgoing destination for review.`
+  bar.title = update ? `Update Figma layer replaces this layer’s image with ${environmentLabel(update.environment)} artwork. Send to draft opens the outgoing destination for review.`
     : linked ? `${linked.detail}${meta ? ` ${meta}` : ''} Send to draft opens the destination for review.` : [title, meta].filter(Boolean).join(' ');
   bar.setAttribute('data-compact', String(Boolean(linked && !ratio && !artMeta)));
   const art = update?.asset ?? (linked ? linkedArt(linked.key, linked.cell, linked.assetId, linked.environment) : shown?.kind === 'copy' ? linkedArt(shown.key, shown.link, shown.link.assetId, shown.link.environment) : null);
@@ -66,7 +66,8 @@ export function renderSyncBar(): void {
   setUnavailable(syncButton, actionsBlocked());
   syncButton.title = 'Review the selected layer and its draft destination.';
   updateButton.hidden = !update;
-  setBusy(updateButton, isUpdating() ? 'Using artwork…' : `Use ${update ? environmentLabel(update.environment) : ''} artwork`, isUpdating());
+  setBusy(updateButton, isUpdating() ? 'Updating Figma layer…' : 'Update Figma layer', isUpdating());
+  updateButton.title = update ? `Replace this Figma layer’s image with ${environmentLabel(update.environment)} artwork. Its crop, size, and position stay the same.` : '';
   setUnavailable(updateButton, !update || actionsBlocked());
   const footer = !element('insert-bar').hidden;
   const recovering = state.tokenRefused && element<HTMLDetailsElement>('settings').open && !state.pairingActive;
@@ -131,6 +132,6 @@ export function initSyncBar(actions: { showSend: () => void; showInsert: () => v
     else return;
     showSend();
     flushRender();
-    element(current.kind === 'copy' ? ['state', 'appearance', 'arm'].find(id => !element(`${id}-label`).hidden) ?? 'send' : 'placement').focus();
+    element(current.kind === 'copy' ? ['state', 'appearance', 'arm'].find(id => !element(`${id}-label`).hidden) ?? 'send' : 'placement-toggle').focus();
   });
 }

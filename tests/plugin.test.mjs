@@ -2338,7 +2338,7 @@ test('a click on an unavailable Send or Sync does nothing, as on a disabled butt
   assert.equal(gone.element('sync-send').textContent, 'Send elsewhere…');
   gone.element('sync-send').dispatch('click');
   assert.equal(gone.element('placement').value, '', 'nothing is chosen for it');
-  assert.equal(gone.activeElement(), gone.element('placement'));
+  assert.equal(gone.activeElement(), gone.element('placement-toggle'));
 });
 
 test('renders are coalesced into one animation frame', async () => {
@@ -6793,11 +6793,12 @@ test('Batch 3: Update replaces Production art in place, keeps crop and link envi
   assert.equal(app.element('sync-meta').textContent, 'Production has different art now');
   assert.equal(app.element('sync-update').hidden, false);
   assert.equal(app.element('sync-update').className, 'primary small');
+  assert.equal(app.element('sync-update').textContent, 'Update Figma layer');
   assert.equal(app.element('sync').className, 'secondary');
   assert.equal(app.element('sync').title, 'Review the selected layer and its draft destination.');
   assert.equal(app.element('sync-console').hidden, true);
   assert.equal(app.element('sync-thumb').getAttribute('data-sha'), sha(13));
-  assert.equal(app.element('selection-bar').title, 'Use Production artwork replaces this layer’s image. Send to draft opens the outgoing destination for review.');
+  assert.equal(app.element('selection-bar').title, 'Update Figma layer replaces this layer’s image with Production artwork. Send to draft opens the outgoing destination for review.');
   app.element('insert-search').focus(); app.keydown({ key: 'Enter', metaKey: true }); await settle();
   assert.equal(app.element('panel-send').hidden, false);
   assert.equal(app.exportMessages().length, 0);
@@ -6854,7 +6855,7 @@ test('Batch 3: Use artwork alone owns its busy label while conflicting actions w
   const label = app.element('insert').textContent;
   app.console.gates.rendition = deferred();
   app.element('sync-update').dispatch('click'); await settle();
-  assert.equal(app.element('sync-update').textContent, 'Using artwork…');
+  assert.equal(app.element('sync-update').textContent, 'Updating Figma layer…');
   assert.equal(app.element('sync-update').getAttribute('aria-busy'), 'true');
   assert.equal(app.element('insert').textContent, label);
   assert.equal(app.element('insert').getAttribute('aria-busy'), null);
@@ -6980,6 +6981,7 @@ test('Batch 3: Match ratio remains primary ahead of Update on Insert and Send', 
     assert.equal(app.layer.height, 1000);
     app.element('tab-insert').dispatch('click'); await settle();
     assert.equal(app.element('sync-update').className, 'primary small');
+    assert.equal(app.element('sync-update').textContent, 'Update Figma layer');
   }
 });
 
@@ -8121,4 +8123,47 @@ test('placement artwork filters count matching placements across cells and envir
   assert.deepEqual(keys(), ['hero.artwork', 'home.empty']);
   assert.equal(app.element('art-empty').getAttribute('tabindex'), '0');
   assert.equal(app.element('art-all').getAttribute('tabindex'), '-1');
+});
+
+test('visual Send destinations preview Draft before choosing and preserve the chosen cell', async () => {
+  const app = harness({ remembered: null, prefs: { tab: 'send' } });
+  await settle();
+  app.element('placement-toggle').click(); await settle();
+  const options = () => descendants(app.element('placement-options')).filter(item => item.getAttribute?.('role') === 'option');
+  assert.equal(options().length, 1);
+  assert.match(textOf(options()[0]), /hero\.artwork/);
+  assert.match(textOf(options()[0]), /Home.*1:1.*Fits this layer/);
+  assert.match(textOf(options()[0]), /Draft.*old/);
+  assert.equal(app.element('placement').value, '', 'opening the visual chooser does not choose');
+  options()[0].click(); await settle();
+  assert.equal(app.element('placement').value, placement.key);
+  await pick(app, 'state', 'new'); await pick(app, 'appearance', 'light'); await pick(app, 'arm', 'b');
+  app.element('placement-toggle').click(); await settle();
+  options()[0].click(); await settle();
+  assert.deepEqual(['state', 'appearance', 'arm'].map(id => app.element(id).value), ['new', 'light', 'b'], 'rechoosing a placement preserves its reviewed cell');
+  assert.equal(app.requests.filter(request => request.route === 'drafts').length, 0, 'browsing and choosing only save setup');
+});
+
+test('visual Send preview observers leave Insert previews intact and release closed choices', async () => {
+  const app = harness({ remembered: null, prefs: { tab: 'insert' } });
+  app.setVisible(() => false); await settle();
+  const insertObserver = [...app.observers].find(observer => observer.options.root === app.element('list-region'));
+  assert.ok(insertObserver?.targets.size);
+  app.element('tab-send').click(); app.element('placement-toggle').click(); await settle();
+  const sendObserver = [...app.observers].find(observer => observer.options.root === app.element('placement-options'));
+  assert.ok(sendObserver?.targets.size);
+  const insertTargets = insertObserver.targets.size;
+  app.element('placement-toggle').click(); await settle();
+  assert.equal(sendObserver.targets.size, 0, 'closing removes preview observers and waiting jobs');
+  assert.equal(insertObserver.targets.size, insertTargets, 'the other scroll root stays observed');
+});
+
+test('Send shortcut from visual choices keeps the reviewed destination instead of the focused candidate', async () => {
+  const other = { ...placement, key: 'home.other' };
+  const app = harness({ console: { placements: [placement, other], draft: boundDraft } });
+  await settle();
+  app.element('placement-toggle').click(); await settle();
+  const option = descendants(app.element('placement-options')).find(item => item.getAttribute?.('data-key') === other.key);
+  option.focus(); app.keydown({ key: 'Enter', metaKey: true }); await settle();
+  assert.equal(app.requests.filter(request => request.route === 'drafts').at(-1)?.body.bind.slotKey, placement.key);
 });

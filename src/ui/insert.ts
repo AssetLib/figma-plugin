@@ -374,6 +374,18 @@ export function draftSnapshot(key: string, coordinate: CellCoordinate): { assetI
   return cell ? { assetId: cell.draft?.assetId ?? null } : null;
 }
 
+/** A candidate shows the cell choosing it would use; unknown artwork is never described as empty. */
+export function sendPlacementPreview(key: string, coordinate: CellCoordinate): { asset: LibraryAsset | null; caption: string; empty: boolean } {
+  const placement = currentPlacement(key);
+  const cell = placement && findCell(placement, coordinate);
+  if (!cell || !artwork) return { asset: null, caption: 'Draft artwork not loaded', empty: false };
+  const art = cell.draft;
+  const asset = artworkAsset(artwork, art);
+  const axes = [placement?.states?.length ? cell.state : null, placement?.variants?.appearance?.length ? appearanceLabel(cell.appearance) : null, placement?.variants?.arm?.length ? cell.arm ?? 'Control' : null].filter(Boolean);
+  const caption = [!art ? 'No Draft art' : !asset ? 'Draft preview unavailable' : 'Draft artwork', ...axes, art && !owns(art, cell) ? 'inherited' : null].filter(Boolean).join(' · ');
+  return { asset, empty: !art, caption };
+}
+
 /** The chosen Send cell's current Draft art, loaded whenever the form shows it. */
 export function renderSendCurrent(): void {
   const choice = sendChoice();
