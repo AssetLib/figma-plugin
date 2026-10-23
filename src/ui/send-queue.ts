@@ -33,6 +33,16 @@ let snapshot: (key: string, cell: CellBinding) => { assetId: string | null } | n
 
 export function initQueue(actions: { choose: () => void; needFile: () => void; setupReady: () => boolean; artworkChanged: () => void; refused: (text?: string) => void; reconnect: () => void; reviewArtwork: typeof reviewArtwork; beginArtworkRead: () => number; snapshot: typeof snapshot }): void {
   ({ choose, needFile, setupReady, artworkChanged, refused, reconnect, reviewArtwork, beginArtworkRead, snapshot } = actions);
+  element('send-next-issue').addEventListener('click', () => {
+    if (actionsBlocked()) return;
+    const start = rows.findIndex(row => row.node.id === activeId);
+    const next = [...rows.slice(start + 1), ...rows.slice(0, start + 1)].find(needsAttention);
+    if (!next) return;
+    activeId = next.node.id; choose(); scheduleRender();
+    const view = rowElements.get(next.node.id);
+    view?.name.focus(); view?.root.scrollIntoView({ block: 'nearest' });
+    setStatus(`${next.node.name}: ${problem(next) ?? next.saveError ?? next.detail}`);
+  });
 }
 export function activeSendRow(): SendRow | null { return rows.find(row => row.node.id === activeId) ?? rows[0] ?? null; }
 export function sendRows(): readonly SendRow[] { return rows; }
@@ -137,6 +147,9 @@ function candidates(): SendRow[] {
   const included = rows.filter(row => row.included);
   return included.every(row => row.status === 'sent') ? included : included.filter(row => row.status === 'ready' || row.status === 'failed');
 }
+function needsAttention(row: SendRow): boolean {
+  return row.included && Boolean(problem(row) || row.saveError || ['conflict', 'failed', 'partial', 'unknown'].includes(row.status));
+}
 export function queueAvailable(): boolean {
   return Boolean(state.connection && hasCurrentSelection() && setupReady() && !actionsBlocked() && !state.tokenRefused && !state.selection.truncated
     && !rows.some(row => row.included && (problem(row) || row.saving !== undefined)) && candidates().length);
@@ -182,6 +195,11 @@ async function retryReview(row: SendRow): Promise<void> {
 export function renderQueue(): void {
   const list = element('send-items');
   list.hidden = !rows.length;
+  const issues = rows.filter(needsAttention).length;
+  element('send-attention-bar').hidden = rows.length < 2;
+  element('send-attention').textContent = `Needs attention (${issues})`;
+  element('send-next-issue').hidden = !issues;
+  setUnavailable(element('send-next-issue'), actionsBlocked());
   for (const row of rows) {
     seedExpected(row);
     let view = rowElements.get(row.node.id);

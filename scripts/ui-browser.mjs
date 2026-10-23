@@ -326,6 +326,7 @@ function installFakes(config) {
   const notices = [];
   const choices = new Map();
   const exported = new Map();
+  let selectionRevision = 0;
   const reply = message => window.postMessage({ pluginMessage: message }, '*');
   // config.selection may leave out insertTarget: nothing selected for Insert, so a new frame.
   const selection = () => {
@@ -333,7 +334,7 @@ function installFakes(config) {
     const sendNodes = (current.sendNodes ?? (current.node ? [{ node: current.node, reason: current.reason, remembered: current.remembered, link: current.link ?? null }] : []))
       .map(item => ({ ...item, choice: choices.get(item.node.id) ?? item.choice ?? null }));
     return { type: 'selection', connectionGeneration: generation,
-      selection: { insertTarget: { mode: 'new', label: 'Insert', count: 0, nodeIds: [] }, ...current, sendNodes,
+      selection: { insertTarget: { mode: 'new', label: 'Insert', count: 0, nodeIds: [] }, ...current, revision: ++selectionRevision, sendNodes,
         selectionIds: sendNodes.map(item => item.node.id).sort(), choice: current.node ? choices.get(current.node.id) ?? current.choice ?? null : null } };
   };
   // Where each insert went (message.target), and the version it downloaded, for the tests to read.
@@ -399,6 +400,12 @@ function installFakes(config) {
         choices.set(message.nodeId, { fileKey: message.fileKey, nodeId: message.nodeId, placementKey: message.placementKey,
           state: message.state, appearance: message.appearance, arm: message.arm, insertedFrom: null });
         reply({ type: 'send-choice-saved', requestId: message.requestId }); reply(selection()); break;
+      case 'preview-selection': {
+        const selected = (config.selection.sendNodes ?? [{ node: config.selection.node }]).find(item => item.node?.id === message.nodeId)?.node;
+        const scale = selected ? Math.min(1, 256 / Math.max(selected.width, selected.height)) : 0;
+        reply({ ...message, type: 'selection-preview', bytes: selected ? previewPng(Math.max(1, Math.round(selected.width * scale)), Math.max(1, Math.round(selected.height * scale)), 4) : null });
+        break;
+      }
       case 'export': {
         exported.set(message.requestId, message);
         const node = message.node, placement = message.placement;
@@ -3131,7 +3138,9 @@ test('Send cell suffixes and the current Draft preview distinguish own, inherite
   try {
     await page.waitFor(`document.getElementById('placement').options.length === 8`);
     await page.evaluate(choose('placement', 'onboarding.hero')); await page.frames();
-    assert.equal(await page.evaluate(shown('send-current')), false, 'unknown artwork shows no current-art claim');
+    assert.equal(await page.evaluate(shown('send-current')), true);
+    assert.equal(await page.evaluate(textOf('send-current-text')), 'Draft artwork not loaded', 'unknown artwork is explicit rather than empty');
+    assert.equal(await page.evaluate(`document.getElementById('send-current-thumb').hasAttribute('src')`), false);
     assert.equal(await page.evaluate(`${labels('appearance')}.some(([, label]) => label.endsWith(' (not set)') || label.endsWith(' (inherits)'))`), false);
     await page.waitFor(`__harness.log.some(entry => entry.route === 'artwork')`);
     await page.evaluate(`__harness.release('artwork')`);
@@ -3140,9 +3149,9 @@ test('Send cell suffixes and the current Draft preview distinguish own, inherite
     assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'rendition' && entry.url.includes('/00000000-0000-4000-8000-000000010000/'))`), true);
     assert.deepEqual(await page.evaluate(labels('appearance')), [['', 'Any'], ['light', 'Light (inherits)'], ['dark', 'Dark (not set)']]);
     assert.deepEqual(await page.evaluate(labels('arm')), [['', 'Control'], ['b', 'b (inherits)']]);
-    assert.deepEqual(await page.evaluate(`(() => { const r = document.getElementById('send-current-preview').getBoundingClientRect(); return [r.width, r.height]; })()`), [32, 32]);
-    assert.equal(await page.evaluate(`(() => { const form = document.querySelector('#panel-send .send-scroll');
-      return form.scrollHeight <= form.clientHeight + 1 && document.documentElement.scrollHeight === innerHeight; })()`), true, 'the common Send form fits 420 × 720 without scrolling');
+    assert.equal(await page.evaluate(`(() => { const r = document.getElementById('send-current-preview').getBoundingClientRect(); return r.width >= 100 && r.height >= 100; })()`), true, 'the current Draft has room to compare its artwork');
+    assert.equal(await page.evaluate(`document.documentElement.scrollHeight === innerHeight`), true, 'the form scrolls inside the fixed plugin shell');
+    assert.equal(await page.evaluate(inViewport('send')), true, 'the Send action remains visible');
     await page.evaluate(choose('appearance', 'dark')); await page.frames();
     assert.equal(await page.evaluate(textOf('send-current-text')), 'Nothing in Draft yet');
     assert.equal(await page.evaluate(`document.getElementById('send-current-preview').className`), 'thumb slot');
@@ -3583,4 +3592,62 @@ test('visual Send choices distinguish unknown, empty and inherited Draft art and
     await many.waitFor(`document.querySelector('#placement-options [data-key="screen62.slot499"] img')?.src.startsWith('data:')`);
     assert.ok(await many.evaluate(`__harness.log.filter(entry => entry.route === 'rendition').length < 40`), 'scrolling loads the newly nearby previews');
   } finally { await many.close(); }
+});
+
+for (const theme of ['light', 'dark']) test(`decision support filters and batch issue navigation (${theme})`, async () => {
+  if (shots) await mkdir(shots, { recursive: true });
+  for (const width of [320, 420]) {
+    const nodes = [{ id: '91:1', name: 'Banner artwork', type: 'FRAME', width: 390, height: 160 },
+      { id: '91:2', name: 'Square artwork', type: 'FRAME', width: 180, height: 180 }];
+    const selection = { ...DEFAULTS.selection, reason: null, sendNodes: nodes.map(node => ({ node, reason: null, remembered: null, link: null })) };
+    const page = await openUi({ selection, unset: ['home.tile'], preferences: { tab: 'send' } }, { width, height: 720, theme });
+    try {
+      await page.waitFor(`${textOf('send-attention')} === 'Needs attention (2)' && !document.getElementById('placement-toggle').disabled`);
+      await page.click('#placement-toggle');
+      await page.waitFor(`${textOf('placement-filter-empty')} === 'No Draft artwork (1)'`);
+      assert.equal(await page.evaluate(textOf('placement-filter-all')), 'All (7)');
+      assert.equal(await page.evaluate(textOf('placement-filter-fit')), 'Fits this layer (1)');
+      await page.click('#placement-filter-fit');
+      assert.equal(await page.evaluate(`document.querySelectorAll('#placement-options [role=option]').length`), 1);
+      await page.click('#placement-options [data-key="home.banner"]');
+      await page.waitFor(`${textOf('send-attention')} === 'Needs attention (1)'`);
+      await page.click('#placement-toggle'); await page.click('#placement-filter-empty');
+      assert.match(await page.evaluate(textOf('placement-options')), /home.banner \(current choice\)/);
+      assert.equal(await page.evaluate(valueOf('placement')), 'home.banner');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
+      if (shots) await page.screenshot(join(shots, `decision-filters-${theme}-${width}.png`));
+      await page.click('#placement-filter-all'); await page.press('ArrowRight');
+      assert.equal(await page.evaluate(`document.getElementById('placement-filter-fit').getAttribute('aria-checked')`), 'true');
+      await page.click('#send-next-issue');
+      assert.equal(await page.evaluate(`document.querySelector('#send-items [aria-current="true"]').getAttribute('data-node-id')`), '91:2');
+      assert.equal(await page.evaluate(valueOf('placement')), '');
+      await page.waitFor(`${textOf('send-layer-name')} === 'Square artwork' && document.getElementById('send-layer-thumb').src.startsWith('data:image/png')`);
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+      assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'drafts')`), false);
+      if (shots) await page.screenshot(join(shots, `decision-next-issue-${theme}-${width}.png`));
+    } finally { await page.close(); }
+  }
+});
+
+for (const theme of ['light', 'dark']) test(`decision support compares both images beside the conflict choice (${theme})`, async () => {
+  if (shots) await mkdir(shots, { recursive: true });
+  for (const width of [320, 420]) {
+    const page = await openUi({ selection: linkedSelection({ id: '92:1', name: 'Updated banner artwork', type: 'FRAME', width: 390, height: 160 }), preferences: { tab: 'send' } }, { width, height: 720, theme });
+    try {
+      await page.waitFor(`document.getElementById('send-layer-thumb').src.startsWith('data:image/png') && document.getElementById('send-current-thumb').src.startsWith('data:image/png') && document.getElementById('send').getAttribute('aria-disabled') !== 'true'`);
+      assert.equal(await page.evaluate(shown('send-attention-bar')), false);
+      const before = await page.evaluate(`__harness.received.filter(type => type === 'preview-selection').length`);
+      await page.click('#send-preview-refresh');
+      await page.waitFor(`__harness.received.filter(type => type === 'preview-selection').length === ${before + 1} && ${textOf('send-layer-status')} === 'Local preview'`);
+      await page.evaluate(`__harness.artwork.placements.find(item => item.key === 'home.banner').cells[0].draft.assetId = __harness.uuid(10003)`);
+      await page.click('#send');
+      await page.waitFor(shown('send-review'));
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false, 'a conflict preview does not export for Send');
+      assert.equal(await page.evaluate(`__harness.log.some(entry => entry.route === 'drafts')`), false);
+      await page.evaluate(`document.getElementById('send-review').scrollIntoView({ block: 'end' })`);
+      assert.equal(await page.evaluate(`(() => { const left = document.getElementById('send-layer-thumb').getBoundingClientRect(); const right = document.getElementById('send-current-thumb').getBoundingClientRect(); return left.width >= 100 && right.width >= 100 && left.right <= right.left && left.height >= 100; })()`), true);
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
+      if (shots) await page.screenshot(join(shots, `decision-comparison-${theme}-${width}.png`));
+    } finally { await page.close(); }
+  }
 });

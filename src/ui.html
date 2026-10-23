@@ -254,6 +254,8 @@
     .placement-toggle { width: 100%; justify-content: space-between; text-align: left; }
     .placement-toggle::after { content: '⌄'; flex: none; margin-left: 8px; }
     .placement-panel { min-width: 0; display: grid; gap: 8px; }
+    .placement-filters { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+    .placement-filters [aria-checked="true"] { background: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
     .placement-options { max-height: 288px; overflow: auto; border: 1px solid var(--border); border-radius: 5px; }
     .placement-options:empty { display: none; }
     .placement-option { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; align-items: center; min-height: 80px; padding: 8px; cursor: pointer; }
@@ -273,8 +275,7 @@
     .send-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
     .send-row[aria-current="true"] { border-color: var(--text); }
     .send-row-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .send-row-preview { flex: none; width: 40px; height: 32px; }
-    .send-row-body { display: grid; gap: 2px; flex: 1; min-width: 0; }
+    .send-attention { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .send-row-header .text-action { min-width: 0; max-width: 100%; height: auto; min-height: 24px; white-space: normal; overflow-wrap: anywhere; text-align: left; }
     .send-row-header .title { min-width: 0; }
     .send-row-meta { color: var(--al-text-meta); overflow-wrap: anywhere; }
@@ -283,9 +284,11 @@
     .send-row-actions:empty { display: none; }
     .send-row[data-state="sending"] .send-row-status::before { content: ''; width: 10px; height: 10px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
     .send-review { display: grid; gap: 8px; }
-    .send-review-preview { display: flex; gap: 12px; }
-    .send-review-preview > div { flex: 1; min-width: 0; display: grid; gap: 4px; }
-    .send-review-preview .thumb { width: 100%; height: 72px; }
+    .send-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+    .send-comparison > div { min-width: 0; display: grid; align-content: start; gap: 6px; }
+    .send-comparison .thumb { width: 100%; height: 104px; }
+    .send-comparison p { overflow-wrap: anywhere; }
+    .send-comparison .text-action { justify-self: start; }
     #export-note:empty { display: none; }
     .inline-form { display: flex; align-items: end; gap: 8px; margin-top: 8px; }
     .inline-form .field { flex: 1; }
@@ -294,9 +297,6 @@
     .pickers:not(:has(> :not([hidden]))) { display: none; }
     .picker { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--al-text-meta); white-space: nowrap; }
     .picker select { width: auto; max-width: 140px; height: 24px; padding: 0 2px; color: var(--text); }
-    .current-art { display: flex; align-items: center; gap: 8px; }
-    .current-art .thumb { flex: none; }
-    .current-art p { min-width: 0; }
     .result { display: grid; gap: 4px; }
     .result details summary { cursor: pointer; width: max-content; }
     .result ul { margin: 4px 0 0; padding-left: 16px; }
@@ -546,6 +546,7 @@
           <p id="selection-name" class="title">Reading selection…</p>
           <p id="selection-meta" class="meta"></p>
         </section>
+        <div id="send-attention-bar" class="send-attention" hidden><p id="send-attention" class="meta"></p><button id="send-next-issue" class="text-action" type="button">Next issue</button></div>
         <div id="send-items" class="send-items" role="list" aria-label="Selected artwork"></div>
         <!-- Asked for once per document when Figma doesn't give the plugin the file's key. -->
         <div id="file-fallback" class="info" hidden>
@@ -560,6 +561,11 @@
         <label id="placement-search-field" class="field">Find placement<input id="placement-search" type="search" placeholder="Search by key or screen" autocomplete="off" spellcheck="false"></label>
         <div class="field"><label id="placement-label" for="placement-toggle">Placement</label><button id="placement-toggle" class="secondary placement-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="placement-options">Choose placement…</button><select id="placement" hidden disabled aria-label="Placement"><option value="">Choose placement…</option></select></div>
         <div id="placement-panel" class="placement-panel" hidden>
+          <div id="placement-filters" class="placement-filters" role="radiogroup" aria-label="Filter destinations">
+            <button id="placement-filter-all" class="secondary small" type="button" role="radio" aria-checked="true">All</button>
+            <button id="placement-filter-fit" class="secondary small" type="button" role="radio" aria-checked="false">Fits this layer</button>
+            <button id="placement-filter-empty" class="secondary small" type="button" role="radio" aria-checked="false" title="Candidates use their default cell; the current destination uses its selected cell. Inherited artwork counts as art.">No Draft artwork</button>
+          </div>
           <div id="placement-options" class="placement-options" role="listbox" aria-labelledby="placement-label"></div>
           <p id="placement-empty" class="meta" role="status" hidden>No matching placements.</p>
           <button id="placement-clear" class="text-action" type="button" hidden>Clear search</button>
@@ -569,7 +575,11 @@
           <label id="appearance-label" class="picker" hidden>Appearance<select id="appearance"></select></label>
           <label id="arm-label" class="picker" hidden>A/B arm<select id="arm"></select></label>
         </div>
-        <div id="send-current" class="current-art" hidden><span id="send-current-preview" class="thumb"><img id="send-current-thumb" alt=""></span><p id="send-current-text" class="meta"></p></div>
+        <section id="send-comparison" class="send-comparison" aria-label="Compare artwork before sending" hidden>
+          <div><p class="title">Selected Figma layer</p><span class="thumb"><img id="send-layer-thumb" alt=""></span><p id="send-layer-name" class="meta"></p><p id="send-layer-status" class="meta"></p><button id="send-preview-refresh" class="text-action" type="button">Refresh preview</button></div>
+          <div id="send-current" hidden><p class="title">Current Draft</p><span id="send-current-preview" class="thumb"><img id="send-current-thumb" alt=""></span><p id="send-current-text" class="meta"></p></div>
+          <p id="send-comparison-empty" class="meta">Choose a destination to compare Draft artwork.</p>
+        </section>
         <div id="send-review" class="send-review" hidden></div>
         <button id="send-plain" class="text-action" type="button" hidden>Send as a new image instead</button>
         <p id="export-note" class="meta"></p>

@@ -48,6 +48,7 @@ export type FileLinks = { type: 'file-links'; connectionGeneration: number; scop
 export type FileState = { source: 'figma' | 'document' | 'session' | null; name: string };
 
 export type SelectionState = {
+  revision?: number;
   node: NodeSelection | null;
   reason: string | null;
   fileKey: string | null;
@@ -71,6 +72,7 @@ export const MAX_SEND_NODES = 50;
 // Every message that main can refuse carries a requestId, and main's error names it, so an error ends only that operation.
 export type UiMessage =
   | { type: 'init' }
+  | { type: 'preview-selection'; requestId: number; connectionGeneration: number; revision: number; nodeId: string }
   | { type: 'scan-file'; requestId: number; allPages: boolean }
   | { type: 'select-node'; requestId: number; nodeId: string }
   | { type: 'save-connection'; requestId: number; connection: Connection }
@@ -136,6 +138,7 @@ export type MainMessage =
   // all (`adopted`: another window saved the request's connection, which is this window's now).
   | { type: 'turn'; requestId: number; turn: 'poll' | 'wait' | 'adopted'; after: number }
   | { type: 'selection'; connectionGeneration: number; selection: SelectionState }
+  | { type: 'selection-preview'; requestId: number; connectionGeneration: number; revision: number; nodeId: string; bytes: Uint8Array | null }
   // `session`: the document couldn't keep the key (a view-only file), so it lasts until the plugin closes.
   | { type: 'file-saved'; requestId: number; fileKey: string; session: boolean }
   // The pasted link's file name (`slug`) isn't this file's (`name`); nothing was saved.
@@ -212,6 +215,7 @@ export function parseUiMessage(value: unknown): UiMessage {
   const ok = (() => {
     switch (m.type) {
       case 'init': return true;
+      case 'preview-selection': return requestId(m.requestId) && generation(m.connectionGeneration) && generation(m.revision) && validNodeId(m.nodeId);
       case 'save-connection': return requestId(m.requestId) && isRecord(m.connection)
         && text(m.connection.origin) && text(m.connection.orgId) && text(m.connection.appId) && text(m.connection.token);
       case 'scan-file': return requestId(m.requestId) && typeof m.allPages === 'boolean';

@@ -1,6 +1,6 @@
 // Visual choices use Send's existing destination state; browsing never saves a choice or starts an upload.
 import { aspectMismatch, baseCoordinate, ratioName } from '../shared/index.js';
-import { element, scheduleRender } from './dom.js';
+import { arrowKeys, element, rovingStops, scheduleRender } from './dom.js';
 import { sendPlacementPreview } from './insert.js';
 import { chooseSendPlacement, clearPlacementSearch, sendChoice } from './send.js';
 import { activeSendRow } from './send-queue.js';
@@ -17,6 +17,9 @@ let owner = '';
 let query = '';
 let signature = '';
 let options: HTMLElement[] = [];
+let filter: 'all' | 'fit' | 'empty' = 'all';
+const filters = ['all', 'fit', 'empty'] as const;
+const filterButtons = filters.map(name => element<HTMLButtonElement>(`placement-filter-${name}`));
 
 function close(): void { open = false; scheduleRender(); toggle.focus(); }
 function focusOption(index: number): void {
@@ -32,6 +35,7 @@ function node(tag: 'span' | 'div', className: string, text = ''): HTMLElement {
 export function renderPlacementPicker(): void {
   const row = activeSendRow();
   const currentOwner = `${state.connectionGeneration}:${row?.node.id ?? ''}`;
+  if (currentOwner !== owner) filter = 'all';
   if (currentOwner !== owner || state.prefs.tab !== 'send' || !state.connection || picker.disabled) open = false;
   owner = currentOwner; query = search.value;
   toggle.disabled = picker.disabled;
@@ -52,15 +56,29 @@ export function renderPlacementPicker(): void {
     const fit = row && !row.reason ? aspectMismatch(row.node, placement) ? 'Different ratio' : 'Fits this layer' : '';
     return [{ placement, preview, matches, fit }];
   });
+  const searched = candidates.filter(item => item.matches);
+  const unknown = searched.some(item => item.preview.caption === 'Draft artwork not loaded');
+  if (unknown && filter === 'empty') filter = 'all';
+  const counts = [searched.length, searched.filter(item => item.fit === 'Fits this layer').length, searched.filter(item => item.preview.empty).length];
+  const labels = ['All', 'Fits this layer', 'No Draft artwork'];
+  filterButtons.forEach((button, index) => {
+    button.textContent = `${labels[index]} (${index === 2 && unknown ? '…' : counts[index]})`;
+    button.disabled = picker.disabled || (index === 2 && unknown) || (index === 1 && (!row || Boolean(row.reason)));
+    button.setAttribute('aria-checked', String(filter === filters[index]));
+  });
+  rovingStops(filterButtons);
+  for (const item of candidates) item.matches = item.matches && (filter === 'all' || (filter === 'fit' ? item.fit === 'Fits this layer' : item.preview.empty));
+  const visible = candidates.filter(item => item.matches || item.placement.key === choice?.placementKey);
   element('placement-empty').hidden = candidates.some(item => item.matches);
-  element('placement-clear').hidden = !query;
-  const nextSignature = JSON.stringify([owner, query, choice, candidates.map(({ placement: p, preview, fit }) => [p.key, p.screen, p.width, p.height, preview.caption, preview.asset?.id, preview.asset?.renditions.map(item => item.sha256), fit])]);
+  element('placement-clear').hidden = !query && filter === 'all';
+  element('placement-clear').textContent = filter === 'all' ? 'Clear search' : 'Clear filters';
+  const nextSignature = JSON.stringify([owner, query, filter, choice, visible.map(({ placement: p, preview, fit }) => [p.key, p.screen, p.width, p.height, preview.caption, preview.asset?.id, preview.asset?.renditions.map(item => item.sha256), fit])]);
   if (signature === nextSignature) return;
   signature = nextSignature;
   const focused = options.find(item => item === document.activeElement)?.getAttribute('data-key');
   releaseListImages(list); options = [];
   const groups = new Map<string, HTMLElement>();
-  for (const { placement, preview, matches, fit } of candidates) {
+  for (const { placement, preview, matches, fit } of visible) {
     const heading = fit === 'Fits this layer' ? fit : placement.screen;
     let group = groups.get(heading);
     if (!group) {
@@ -105,5 +123,9 @@ export function initPlacementPicker(): void {
     if (event.key === 'ArrowDown' && !picker.disabled) { event.preventDefault(); open = true; renderPlacementPicker(); focusOption(0); }
     else if (event.key === 'Escape' && open) { event.preventDefault(); close(); }
   });
-  element('placement-clear').addEventListener('click', () => { clearPlacementSearch(); search.focus(); });
+  filterButtons.forEach((button, index) => {
+    button.addEventListener('click', () => { if (button.disabled) return; filter = filters[index]!; scheduleRender(); });
+  });
+  arrowKeys(element('placement-filters'), filterButtons, 'radios');
+  element('placement-clear').addEventListener('click', () => { filter = 'all'; clearPlacementSearch(); search.focus(); });
 }

@@ -13,6 +13,7 @@ import { LINK_KEY, main, post } from './state.js';
 export type StoredTarget = Omit<RememberedTarget, 'fileKey' | 'insertedFrom'> & { fileKey: string };
 
 let selectionRevision = 0;
+export function currentSelectionRevision(): number { return selectionRevision; }
 // The canvas part of the last report started. The canvas check compares it before reading storage again.
 let reported: string | null = null;
 // Layers a fill or replace relinked in this run whose earlier stored targets aren't deleted yet: the file key wasn't
@@ -229,7 +230,7 @@ export async function reportSelection(): Promise<void> {
   if (revision !== selectionRevision || generation !== main.connectionGeneration) return;
   const remembered = view.node ? sendNodes[0]?.remembered ?? null : null;
   const choice = view.node ? sendNodes[0]?.choice ?? null : null;
-  post({ type: 'selection', connectionGeneration: generation, selection: { ...view, remembered, choice, sendNodes, insertTarget: target } });
+  post({ type: 'selection', connectionGeneration: generation, selection: { ...view, revision, remembered, choice, sendNodes, insertTarget: target } });
 }
 
 /** True after a canvas edit Figma sent the plugin no event for, including an edit to any member of a batch. */

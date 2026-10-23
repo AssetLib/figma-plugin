@@ -7226,7 +7226,7 @@ test('every menu or Sync launch without a connection shows the first-run screen'
   }
 });
 
-test('Batch 4: Send shows own, inherited, and null Draft art only after artwork loads', async () => {
+test('Batch 4: Send distinguishes unknown, own, inherited, and null Draft artwork', async () => {
   const data = artwork();
   data.placements[0].cells.find(cell => cell.state === 'old' && cell.appearance === 'dark' && cell.arm === 'c').draft = null;
   const app = harness({ remembered: null, console: { artwork: data, gates: { artwork: deferred() } } });
@@ -7234,7 +7234,8 @@ test('Batch 4: Send shows own, inherited, and null Draft art only after artwork 
   await settle();
   await pick(app, 'placement', placement.key);
   await pick(app, 'state', 'old'); await pick(app, 'appearance', 'light'); await pick(app, 'arm', 'b');
-  assert.equal(app.element('send-current').hidden, true);
+  assert.equal(app.element('send-current').hidden, false);
+  assert.equal(app.element('send-current-text').textContent, 'Draft artwork not loaded');
   app.console.gates.artwork.resolve(); await settle();
   assert.equal(app.element('send-current').hidden, false);
   assert.equal(app.element('send-current-text').textContent, 'Now in Draft');
@@ -8166,4 +8167,114 @@ test('Send shortcut from visual choices keeps the reviewed destination instead o
   const option = descendants(app.element('placement-options')).find(item => item.getAttribute?.('data-key') === other.key);
   option.focus(); app.keydown({ key: 'Enter', metaKey: true }); await settle();
   assert.equal(app.requests.filter(request => request.route === 'drafts').at(-1)?.body.bind.slotKey, placement.key);
+});
+
+test('decision support previews selected artwork locally without sending or changing the canvas', async () => {
+  const app = harness(); await settle();
+  assert.match(app.element('send-layer-thumb').src, /^data:image\/png;base64,/);
+  assert.equal(app.element('send-comparison').hidden, false);
+  assert.equal(app.exportMessages().length, 0);
+  assert.equal(app.drafts().length, 0);
+  assert.equal(app.undoCommits.length, 0);
+  assert.ok(app.previewExports.every(settings => settings.constraint.value <= 1));
+});
+
+test('decision support filters count matching candidates without changing the saved destination', async () => {
+  const empty = { ...placement, key: 'home.empty', width: 2000 };
+  const app = harness({ console: { placements: [placement, empty] } }); await settle();
+  app.element('placement-toggle').click(); await settle();
+  assert.equal(app.element('placement-filter-all').textContent, 'All (2)');
+  assert.equal(app.element('placement-filter-fit').textContent, 'Fits this layer (1)');
+  assert.equal(app.element('placement-filter-empty').textContent, 'No Draft artwork (1)');
+  app.element('placement-filter-empty').click(); await settle();
+  assert.match(textOf(app.element('placement-options')), /hero\.artwork \(current choice\)/);
+  assert.equal(app.element('placement').value, placement.key);
+  assert.equal(app.drafts().length, 0);
+});
+
+test('decision support finds the next included batch issue without changing destinations', async () => {
+  const app = harness({ remembered: null, selection: [node, { ...node, id: '12:35', name: 'Second layer' }] }); await settle();
+  assert.equal(app.element('send-attention').textContent, 'Needs attention (2)');
+  app.element('send-next-issue').click(); await settle();
+  const rows = descendants(app.element('send-items')).filter(item => item.getAttribute?.('role') === 'listitem');
+  assert.equal(rows[1].getAttribute('aria-current'), 'true');
+  assert.equal(app.element('placement').value, '');
+  descendants(rows[1]).find(item => item.textContent === 'Skip').click(); await settle();
+  assert.equal(app.element('send-attention').textContent, 'Needs attention (1)');
+  app.select([app.figma.currentPage.selection[0]]); await settle();
+  assert.equal(app.element('send-attention-bar').hidden, true);
+  assert.equal(app.drafts().length, 0);
+});
+
+test('decision support serializes local previews and ignores a late answer for another active layer', async () => {
+  const gate = deferred(); let calls = 0;
+  const app = harness({ selection: [node, { ...node, id: '12:35', name: 'Second layer', width: 500 }], previewBytes: async (item, settings) => {
+    if (++calls === 1) await gate.promise;
+    return pngHeader(Math.round(item.width * settings.constraint.value), Math.round(item.height * settings.constraint.value));
+  } }); await settle();
+  const rows = app.element('send-items').children;
+  descendants(rows[1]).find(item => item.tagName === 'BUTTON' && item.textContent === 'Second layer').click(); await settle();
+  assert.equal(app.previewExports.length, 1, 'only one preview export may run at a time');
+  gate.resolve(); await settle();
+  const previews = app.mainMessages.filter(message => message.type === 'selection-preview');
+  assert.equal(app.previewExports.length, 2);
+  assert.equal(previews.at(-1).nodeId, '12:35');
+  assert.equal(app.element('send-layer-thumb').src, `data:image/png;base64,${Buffer.from(pngHeader(128, 256)).toString('base64')}`);
+  app.deliver(previews[0]); await settle();
+  assert.equal(app.element('send-layer-name').textContent, 'Second layer');
+  assert.equal(app.element('send-layer-thumb').src, `data:image/png;base64,${Buffer.from(pngHeader(128, 256)).toString('base64')}`);
+  assert.equal(app.drafts().length, 0);
+});
+
+test('decision support rejects a preview after a canvas edit or connection change', async () => {
+  for (const change of ['canvas', 'connection']) {
+    const gate = deferred(); let calls = 0;
+    const app = harness({ previewBytes: async () => { if (++calls === 1) await gate.promise; return pngHeader(256, 256); } }); await settle();
+    if (change === 'canvas') app.figma.currentPage.selection[0].name = 'Changed during preview';
+    else { app.saveConnection({ ...connection, appId: 'app-b', token: tok('preview_b') }); await settle(); }
+    gate.resolve(); await settle();
+    const first = app.mainMessages.find(message => message.type === 'selection-preview');
+    assert.equal(first.bytes, null, `${change}: main never returns stale preview bytes`);
+    if (change === 'canvas') {
+      assert.equal(app.element('send-layer-status').textContent, 'Preview unavailable');
+      app.tick(); await settle();
+      assert.equal(app.element('send-layer-name').textContent, 'Changed during preview');
+    }
+    assert.equal(app.drafts().length, 0);
+  }
+});
+
+test('decision support refuses oversized, invalid, and unselected preview output without blocking Send', async () => {
+  for (const bytes of [pngHeader(257, 256), new Uint8Array(262145), new Uint8Array(12)]) {
+    const app = harness({ previewBytes: () => bytes }); await settle();
+    assert.equal(app.element('send-layer-status').textContent, 'Preview unavailable');
+    assert.equal(app.element('send-layer-thumb').getAttribute('src'), null);
+    assert.equal(off(app, 'send'), false);
+    const selected = app.mainMessages.find(message => message.type === 'selection');
+    const count = app.previewExports.length;
+    app.postToMain({ type: 'preview-selection', requestId: 9999, nodeId: '99:99', connectionGeneration: selected.connectionGeneration, revision: selected.selection.revision });
+    await settle();
+    assert.equal(app.previewExports.length, count);
+    assert.equal(app.mainMessages.find(message => message.type === 'selection-preview' && message.requestId === 9999).bytes, null);
+  }
+});
+
+test('decision support empty counts wait for artwork and follow search without counting the retained choice', async () => {
+  const empty = { ...placement, key: 'home.empty', width: 2000 };
+  const gate = deferred();
+  const app = harness({ console: { placements: [placement, empty], gates: { artwork: gate } } }); await settle();
+  app.element('placement-toggle').click(); await settle();
+  assert.equal(app.element('placement-filter-empty').textContent, 'No Draft artwork (…)');
+  assert.equal(app.element('placement-filter-empty').disabled, true);
+  gate.resolve(); await settle();
+  app.element('placement-search').value = 'home.empty'; app.element('placement-search').dispatch('input'); await settle();
+  assert.equal(app.element('placement-filter-all').textContent, 'All (1)');
+  assert.equal(app.element('placement-filter-fit').textContent, 'Fits this layer (0)');
+  assert.equal(app.element('placement-filter-empty').textContent, 'No Draft artwork (1)');
+  assert.equal(app.element('placement').value, placement.key);
+  app.element('placement-filter-fit').click(); await settle();
+  assert.equal(app.element('placement-empty').hidden, false);
+  assert.match(textOf(app.element('placement-options')), /current choice/);
+  app.element('placement-clear').click(); await settle();
+  assert.equal(app.element('placement-filter-all').textContent, 'All (2)');
 });

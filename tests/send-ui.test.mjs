@@ -176,3 +176,22 @@ test('a server conflict after preflight refreshes the draft and requires another
   assert.equal(drafts(app).length, 2);assert.equal(drafts(app)[1].body.expectedAssetId, replacement);
   assert.equal(rowState(app, 0), 'sent');
 });
+
+test('batch issue navigation includes ratio problems and draft conflicts without sending them', async () => {
+  const app = await harness();
+  app.figma.currentPage.selection[1].width = 200; app.tick(); await settle();
+  assert.equal(app.element('send-attention').textContent, 'Needs attention (1)');
+  app.element('send-next-issue').click(); await settle();
+  assert.equal(row(app, 1).getAttribute('aria-current'), 'true');
+  app.figma.currentPage.selection[1].width = 100; app.tick(); await settle();
+  app.setDraft(placements[0].key, uuid(85)); await send(app);
+  assert.equal(rowState(app, 0), 'conflict');
+  assert.equal(rowState(app, 1), 'sent');
+  assert.equal(app.element('send-attention').textContent, 'Needs attention (1)');
+  const count = drafts(app).length;
+  app.element('send-next-issue').click(); await settle();
+  assert.equal(row(app, 0).getAttribute('aria-current'), 'true');
+  assert.equal(app.element('send-review').hidden, false);
+  assert.equal(app.element('send-comparison').hidden, false);
+  assert.equal(drafts(app).length, count);
+});

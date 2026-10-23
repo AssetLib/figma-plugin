@@ -391,10 +391,10 @@ export function renderSendCurrent(): void {
   const choice = sendChoice();
   const cell = choice && currentCell(choice.placementKey, choice.cell);
   const current = element('send-current');
-  current.hidden = state.prefs.tab !== 'send' || !state.connection || !cell;
+  current.hidden = state.prefs.tab !== 'send' || !state.connection || !choice;
   const art = cell?.draft ?? null;
-  element('send-current-preview').className = art ? 'thumb' : 'thumb slot';
-  element('send-current-text').textContent = !art ? 'Nothing in Draft yet' : owns(art, cell!) ? 'Now in Draft'
+  element('send-current-preview').className = art || !cell ? 'thumb' : 'thumb slot';
+  element('send-current-text').textContent = !cell ? 'Draft artwork not loaded' : !art ? 'Nothing in Draft yet' : owns(art, cell) ? 'Now in Draft'
     : `Now in Draft: inherits ${art.via.arm ?? 'Control'} · ${appearanceLabel(art.via.appearance)} art`;
   showThumbnail(element<HTMLImageElement>('send-current-thumb'), current.hidden || !artwork ? null : artworkAsset(artwork, art));
 }

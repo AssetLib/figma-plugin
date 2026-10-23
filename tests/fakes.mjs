@@ -342,7 +342,7 @@ function abortError() { return Object.assign(new Error('The operation was aborte
  * they wait for runFrames(). `now` replaces both sides' clock, and `store` is client storage shared with another harness.
  */
 export function createHarness({
-  mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', fileKeyUnavailable = false, selection = [], exportBytes = () => new Uint8Array(0),
+  mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', fileKeyUnavailable = false, selection = [], exportBytes = () => new Uint8Array(0), previewBytes,
   createImageBitmap, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, zoom: 1 },
   pages = [], imageSizes = {}, command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false, now, store: sharedStore,
 }) {
@@ -373,6 +373,7 @@ export function createHarness({
   const uiMessages = [];
   const requests = [];
   const exports = [];
+  const previewExports = [];
   const pendingReads = [];
   const notices = [];
   const images = [];
@@ -442,6 +443,10 @@ export function createHarness({
       },
       async getMainComponentAsync() { return typeof component === 'string' ? figma.getNodeByIdAsync(component) : component ? (this.resolvedMain ??= makeNode(component, this.parent)) : null; },
       async exportAsync(settings) {
+        if (settings.constraint.type === 'SCALE') {
+          previewExports.push(clone(settings));
+          return previewBytes ? await previewBytes(this, settings) : pngHeader(Math.max(1, Math.round(this.width * settings.constraint.value)), Math.max(1, Math.round(this.height * settings.constraint.value)));
+        }
         exports.push(clone(settings));
         if (exportGate) await exportGate.promise;
         const result = exportBytes(this, settings, exports.length);
@@ -645,7 +650,7 @@ export function createHarness({
     },
   }, { filename: 'ui.bundle.js' });
   return {
-    figma, loadedPages, document, element, elements, mainMessages, uiMessages, requests, exports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers, intervals,
+    figma, loadedPages, document, element, elements, mainMessages, uiMessages, requests, exports, previewExports, pendingReads, deliver, storage: store, notices, images, frames, scrolls, bitmaps, timers, intervals,
     canvases, resizes, undoCommits, notifications, undoTriggers, externalUrls, uiResizes, uiShown, relaunches, pluginDrops, window,
     observers: intersections.observers, setVisible: intersections.setVisible,
     activeElement: () => focusState.active,

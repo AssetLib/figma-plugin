@@ -13,6 +13,7 @@ import {
 } from './insert.js';
 import { applyFileUrl, applySelection, choiceSaved, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { initPlacementPicker, placementSearchChanged, renderPlacementPicker } from './send-picker.js';
+import { acceptSelectionPreview, initSendPreview, renderSendPreview } from './send-preview.js';
 import { actionsBlocked, state } from './state.js';
 import { initSyncBar, launched, renderSyncBar, syncFromKeyboard } from './syncbar.js';
 import type { ReadFailure } from './state.js';
@@ -44,6 +45,7 @@ function render(): void {
   renderConnect();
   renderSend(problemInSettings());
   renderSendCurrent();
+  renderSendPreview();
   renderPlacementPicker();
   renderInsertControls();
   renderInsertBar();
@@ -128,6 +130,7 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
       if (message.connectionGeneration === state.connectionGeneration) noteLinkSeen();
       break;
     case 'file-links': acceptFileLinks(message); break;
+    case 'selection-preview': acceptSelectionPreview(message); break;
     case 'file-saved': fileSaved(message); break;
     case 'send-choice-saved': choiceSaved(message); break;
     case 'file-mismatch': fileMismatch(message); break;
@@ -248,6 +251,7 @@ initConnection();
 initConnect();
 const showSend = () => setTab('send');
 initPlacementPicker();
+initSendPreview();
 initSend({ placementSearchChanged, refused: (text = TOKEN_NO_LONGER_ACCEPTED) => needsAttention({ text, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState, draftSnapshot, reviewArtwork: reviewSendArtwork, beginArtworkRead });
 initSyncBar({ showSend, showInsert: () => setTab('insert') });
 initInsert(() => { setTab('send'); tabSend.focus(); });
