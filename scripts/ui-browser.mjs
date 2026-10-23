@@ -160,13 +160,14 @@ function installFakes(config) {
   const bodies = new Map();
   const asset = (n, name, width, height) => {
     const insert = pngHeader(width, height);
-    const previewHeight = Math.max(1, Math.round((64 * height) / width));
-    const preview = previewPng(64, previewHeight, n);
+    const previewWidth = config.inspection ? 390 : 64;
+    const previewHeight = Math.max(1, Math.round((previewWidth * height) / width));
+    const preview = previewPng(previewWidth, previewHeight, n);
     bodies.set(sha(2 * n), insert);
     bodies.set(sha(2 * n + 1), preview);
     return { id: uuid(n), name, width, height, createdAt: '2026-10-09T00:00:00.000Z', processingIntent: 'artwork', source: null,
-      renditions: [{ sha256: sha(2 * n), mime: 'image/png', bytes: insert.byteLength, width, height },
-        { sha256: sha(2 * n + 1), mime: 'image/png', bytes: preview.byteLength, width: 64, height: previewHeight }] };
+      renditions: [...(config.inspection ? [] : [{ sha256: sha(2 * n), mime: 'image/png', bytes: insert.byteLength, width, height }]),
+        { sha256: sha(2 * n + 1), mime: 'image/png', bytes: preview.byteLength, width: previewWidth, height: previewHeight }] };
   };
   // Seven placements on three screens, or a generated list when config.placements asks for more. With config.declared,
   // the first declares two states, both appearances, and an A/B arm, so the footer shows the cell strip.
@@ -402,7 +403,7 @@ function installFakes(config) {
         reply({ type: 'send-choice-saved', requestId: message.requestId }); reply(selection()); break;
       case 'preview-selection': {
         const selected = (config.selection.sendNodes ?? [{ node: config.selection.node }]).find(item => item.node?.id === message.nodeId)?.node;
-        const scale = selected ? Math.min(1, 256 / Math.max(selected.width, selected.height)) : 0;
+        const scale = selected ? Math.min(1, (message.large ? 1024 : 256) / Math.max(selected.width, selected.height)) : 0;
         reply({ ...message, type: 'selection-preview', bytes: selected ? previewPng(Math.max(1, Math.round(selected.width * scale)), Math.max(1, Math.round(selected.height * scale)), 4) : null });
         break;
       }
@@ -1398,9 +1399,12 @@ test('controls inside a callout stand apart from it, and hover shows in Figma’
     });
   })`;
   async function hover(page, selector) {
-    await page.evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'nearest' })`);
+    await page.frames();
+    await page.evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'center' })`);
+    await page.frames();
     const box = await page.evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+    await page.waitFor(`document.querySelector(${JSON.stringify(selector)}).matches(':hover')`);
     await page.frames();
   }
   const style = (selector, property) => `getComputedStyle(document.querySelector(${JSON.stringify(selector)})).${property}`;
@@ -3338,6 +3342,7 @@ for (const theme of ['light', 'dark']) {
       assert.deepEqual(await page.evaluate(`Array.from(__harness.exported.values()).map(message => message.selectionIds)`), [['40:1', '40:2'], ['40:1', '40:2']]);
       assert.deepEqual(await page.evaluate('__harness.selectedNodes'), [], 'exporting the batch leaves the canvas selection alone');
       assert.match(await page.evaluate(textOf('result')), /2 of 2 layers sent to draft/);
+      assert.deepEqual(await page.evaluate(`JSON.parse(decodeURIComponent(document.querySelector('#result a').hash.slice(8)))`), [{ key: 'home.banner' }, { key: 'home.tile' }]);
       assert.equal(await page.evaluate(inViewport('send')), true);
       if (shots) await page.screenshot(join(shots, `send-multiple-sent-${theme}-320.png`));
     } finally { await page.close(); }
@@ -3501,11 +3506,11 @@ for (const theme of ['light', 'dark']) test(`artwork filter counts, keyboard cho
     assert.equal(await page.evaluate(`${rows}`), 1);
     await page.click('#insert-search'); await page.type('onboarding'); await page.frames();
     assert.equal(await page.evaluate(textOf('art-with')), 'With art 2');
-    assert.equal(await page.evaluate(textOf('insert-clear')), 'Clear filters');
+    assert.match(await page.evaluate(textOf('insert-clear')), /^(Clear search|Show all artwork) — \d+ match(?:es)?$/);
     assert.equal(await page.evaluate(inViewport('insert-clear')), true);
     await page.click('#insert-clear'); await page.frames();
-    assert.equal(await page.evaluate(`${rows}`), 7);
-    assert.equal(await page.evaluate(`document.getElementById('art-all').getAttribute('aria-checked')`), 'true');
+    assert.equal(await page.evaluate(`${rows}`), 1);
+    assert.equal(await page.evaluate(`document.getElementById('art-empty').getAttribute('aria-checked')`), 'true');
     assert.equal(await page.evaluate(inViewport('browse-summary')), true);
     assert.ok(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`));
     assert.equal(await page.evaluate(`document.scrollingElement.scrollHeight <= innerHeight`), true);
@@ -3650,4 +3655,70 @@ for (const theme of ['light', 'dark']) test(`decision support compares both imag
       if (shots) await page.screenshot(join(shots, `decision-comparison-${theme}-${width}.png`));
     } finally { await page.close(); }
   }
+});
+
+
+for (const theme of ['light', 'dark']) test(`artwork inspection preserves fit, focus and destination (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const selection = linkedSelection({ id: '93:1', name: 'Detailed banner artwork', type: 'FRAME', width: 390, height: 160 });
+    const page = await openUi({ selection, inspection: true, preferences: { tab: 'send' } }, { width, height: 480, theme });
+    try {
+      await page.waitFor(`document.getElementById('send-layer-thumb').src.startsWith('data:image/png')`);
+      const destination = await page.evaluate(valueOf('placement'));
+      await page.click('#send-preview-enlarge');
+      await page.waitFor(`!document.getElementById('artwork-inspector').hidden && document.getElementById('inspect-layer-image').naturalWidth === 390`);
+      assert.equal(await page.evaluate(`document.getElementById('app').inert`), true);
+      assert.equal(await page.focused(), 'inspect-layer');
+      const layerBox = await page.evaluate(`(() => { const r = document.getElementById('inspect-layer-image').getBoundingClientRect(); return [r.width, r.height]; })()`);
+      await page.press('ArrowRight');
+      await page.waitFor(`document.getElementById('inspect-draft-image').naturalWidth === 390`);
+      const draftBox = await page.evaluate(`(() => { const r = document.getElementById('inspect-draft-image').getBoundingClientRect(); return [r.width, r.height]; })()`);
+      assert.deepEqual(layerBox, draftBox);
+      assert.ok(layerBox[0] >= width - 40 && layerBox[1] > 104);
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
+      await page.press('Tab'); assert.equal(await page.focused(), 'inspect-refresh');
+      await page.press('Tab'); assert.equal(await page.focused(), 'inspect-close');
+      await page.press('Tab'); assert.equal(await page.focused(), 'inspect-layer');
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `artwork-inspection-${theme}-${width}.png`)); }
+      await page.press('Escape'); await page.frames();
+      assert.equal(await page.focused(), 'send-preview-enlarge');
+      assert.equal(await page.evaluate(valueOf('placement')), destination);
+      assert.equal(await page.evaluate(`document.getElementById('app').inert`), false);
+      await page.click('#send-preview-enlarge');
+      await page.evaluate(`__harness.select(${JSON.stringify({ ...DEFAULTS.selection, node: null, sendNodes: [], reason: 'Select a layer.' })})`);
+      await page.waitFor(`document.getElementById('artwork-inspector').hidden && !document.getElementById('app').inert`);
+      assert.equal(await page.evaluate(shown('send-preview-enlarge')), false);
+      await page.click('#tab-insert');
+      assert.equal(await page.evaluate(shown('panel-insert')), true);
+      assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
+    } finally { await page.close(); }
+  }
+});
+
+test('browse detours restore independent searches, artwork selections and scrolling', async () => {
+  const page = await openUi({}, { width: 420, height: 480 });
+  try {
+    await page.waitFor(`${rows} === 7`);
+    await page.click('#insert-search'); await page.type('home'); await page.frames();
+    await page.click('#insert-list [data-key="home.banner"]');
+    await page.evaluate(`document.getElementById('list-region').scrollTop = 120`);
+    const placementScroll = await page.evaluate(`document.getElementById('list-region').scrollTop`);
+    await page.click('#browse-images'); await page.waitFor(`${tiles} === 24`);
+    assert.equal(await page.evaluate(valueOf('insert-search')), '');
+    await page.click('#image-grid [role=option]');
+    const image = await page.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`);
+    await page.evaluate(`document.getElementById('list-region').scrollTop = 260`);
+    await page.click('#browse-file'); await page.frames();
+    await page.click('#insert-search'); await page.type('layer');
+    await page.click('#browse-placements'); await page.frames();
+    assert.equal(await page.evaluate(valueOf('insert-search')), 'home');
+    assert.equal(await page.evaluate(`document.querySelector('#insert-list [aria-selected=true]').getAttribute('data-key')`), 'home.banner');
+    assert.equal(await page.evaluate(`document.getElementById('list-region').scrollTop`), placementScroll);
+    await page.click('#browse-images'); await page.frames();
+    assert.equal(await page.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`), image);
+    assert.equal(await page.evaluate(`document.getElementById('list-region').scrollTop`), 260);
+    await page.click('#browse-file'); await page.frames();
+    assert.equal(await page.evaluate(valueOf('insert-search')), 'layer');
+    assert.equal(await page.evaluate(`__harness.received.includes('insert')`), false);
+  } finally { await page.close(); }
 });

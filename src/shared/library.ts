@@ -229,11 +229,11 @@ export function classifyInsertTarget(nodes: InsertCandidate[]): CanvasTarget {
     ...(one ? { name: named(one) } : {}), ...skips, containerWidth: Math.max(...layers.map(node => node.width)), containerHeight: Math.max(...layers.map(node => node.height)) };
 }
 
-/** The smallest WebP by area, else the smallest PNG, within the preview byte cap. */
-export function thumbnailRendition(asset: Pick<LibraryAsset, 'renditions'>): RenditionInfo | null {
-  for (const mime of ['image/webp', 'image/png']) {
-    const candidates = asset.renditions.filter(item => item.mime === mime && item.bytes <= MAX_PREVIEW_BYTES);
-    if (candidates.length) return candidates.reduce((a, b) => b.width * b.height < a.width * a.height ? b : a);
+/** Inline: smallest WebP, else PNG. Inspection: largest supported image within 2048 px and 1 MiB. */
+export function thumbnailRendition(asset: Pick<LibraryAsset, 'renditions'>, large = false): RenditionInfo | null {
+  for (const mime of large ? [null] : ['image/webp', 'image/png']) {
+    const candidates = asset.renditions.filter(item => (mime ? item.mime === mime : ['image/webp', 'image/png'].includes(item.mime)) && item.bytes <= (large ? 1048576 : MAX_PREVIEW_BYTES) && (!large || Math.max(item.width, item.height) <= 2048));
+    if (candidates.length) return candidates.reduce((a, b) => (b.width * b.height < a.width * a.height) !== large ? b : a);
   }
   return null;
 }

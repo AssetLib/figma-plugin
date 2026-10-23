@@ -13,6 +13,7 @@ type ThumbnailJob = { assetId: string; rendition: RenditionInfo };
 const THUMBNAIL_RETRY_DELAYS: readonly number[] = [1000, 4000];
 // sha256 → data: URL for this connection generation, at most 200 (oldest dropped first).
 const thumbnails = new Map<string, string>();
+let thumbnailChars = 0;
 const thumbnailWaiting = new Map<string, Set<HTMLImageElement>>();
 const thumbnailJobs = new WeakMap<Element, ThumbnailJob>();
 // Images the observer reports within the margin; without an observer every waiting image counts as visible.
@@ -34,7 +35,7 @@ const thumbnailObservers = new Map<Element, IntersectionObserver>();
 function mediaType(value: string): string { return value.split(';')[0]!.trim().toLowerCase(); }
 
 export function resetThumbnails(): void {
-  thumbnails.clear(); thumbnailWaiting.clear(); thumbnailVisible.clear(); thumbnailActive.clear(); thumbnailRetrying.clear();
+  thumbnails.clear(); thumbnailChars = 0; thumbnailWaiting.clear(); thumbnailVisible.clear(); thumbnailActive.clear(); thumbnailRetrying.clear();
   thumbnailRetries.clear(); thumbnailFailed.clear(); thumbnailQueue = []; listImages.clear();
   thumbnailsPaused = false; thumbnailEpoch += 1; state.previewNote = '';
   for (const observer of thumbnailObservers.values()) observer.disconnect();
@@ -57,8 +58,8 @@ function pruneThumbnails(): void {
   thumbnailQueue = thumbnailQueue.filter(job => thumbnailWanted(job.rendition.sha256));
 }
 /** Shows an asset's preview in `img`. A list image (`observed`) loads once it nears the list's view; any other at once. */
-export function showThumbnail(img: HTMLImageElement, asset: LibraryAsset | null, observed: boolean | HTMLElement = false): void {
-  const rendition = asset ? thumbnailRendition(asset) : null;
+export function showThumbnail(img: HTMLImageElement, asset: LibraryAsset | null, observed: boolean | HTMLElement = false, large = false): void {
+  const rendition = asset ? thumbnailRendition(asset, large) : null;
   const previous = img.getAttribute('data-sha');
   if (previous && previous !== rendition?.sha256) { stopWaiting(img); pruneThumbnails(); }
   // data-sha="" marks an image with no preview at all; it, like a failed preview, stays a plain placeholder.
@@ -166,9 +167,11 @@ async function loadThumbnail(job: ThumbnailJob, epoch: number): Promise<'done' |
   if (attention === state.attentionCount) markConnected();
   const url = `data:${mime};base64,${encodeBase64(result.bytes)}`;
   // An evicted preview is fetched again if a row shows it later.
-  const oldest = thumbnails.size >= 200 ? thumbnails.keys().next().value : undefined;
-  if (oldest !== undefined) thumbnails.delete(oldest);
-  thumbnails.set(sha256, url);
+  while (thumbnails.size && (thumbnails.size >= 200 || thumbnailChars + url.length > 8 * 1024 * 1024)) {
+    const oldest = thumbnails.keys().next().value!;
+    thumbnailChars -= thumbnails.get(oldest)!.length; thumbnails.delete(oldest);
+  }
+  thumbnails.set(sha256, url); thumbnailChars += url.length;
   thumbnailRetries.delete(sha256);
   for (const img of thumbnailWaiting.get(sha256) ?? []) if (img.getAttribute('data-sha') === sha256) img.src = url;
   thumbnailWaiting.delete(sha256);

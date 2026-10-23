@@ -82,6 +82,10 @@ let images: { items: LibraryAsset[]; nextCursor: string | null; q: string } | nu
 type Choice = { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string } | { kind: 'file'; nodeId: string };
 let selected: Choice | null = null;
 let artFilter: ArtFilter = 'all';
+const browseContext = new Map<Preferences['browse'], { query: string; selected: Choice | null; active: string | null; scroll: number }>();
+let restoreScroll: number | null = null;
+let clearArtFilter = false;
+let recoveryLabel = 'Clear search';
 let pendingInsert: { id: number; generation: number; kind: 'insert' | 'update' } | null = null;
 let pendingReveal: { key: string; cell: CellCoordinate; environment: EnvironmentName } | null = null;
 // Insert downloads by version (sha256), as PNG bytes: null when a connection change abandoned it. `status` is the Insert
@@ -604,7 +608,7 @@ function renderEmpty(current: ListState | null): void {
   title.textContent = empty?.title ?? '';
   element('insert-empty-text').textContent = empty?.text ?? '';
   element('insert-clear').hidden = empty?.action !== 'clear';
-  element('insert-clear').textContent = artFilter !== 'all' && state.prefs.browse === 'placements' ? 'Clear filters' : 'Clear search';
+  element('insert-clear').textContent = recoveryLabel;
   for (const id of ['insert-retry', 'insert-token', 'insert-go-send']) element(id).className = syncBar() === null ? 'primary' : 'secondary';
   element('insert-retry').hidden = empty?.action !== 'retry';
   // With the settings open, the token field is on screen already. A browser connection is made again, never with a token.
@@ -635,6 +639,7 @@ export function renderList(): void {
   const lower = query.toLowerCase();
   let empty: ListState | null = null;
   let summary = '';
+  clearArtFilter = false; recoveryLabel = 'Clear search';
   const filters = element('art-filters');
   filters.hidden = true;
   const listChildren: HTMLElement[] = [];
@@ -665,7 +670,13 @@ export function renderList(): void {
       rovingStops(artFilterButtons);
       const matches = searched.filter(item => artFilter === 'all' || withArt(item) === (artFilter === 'with'));
       summary = `${matches.length} of ${current.placements.length} placements · ${environmentLabel(shownEnvironment())}`;
-      if (!matches.length) empty = { text: artFilter === 'all' ? `No placements match “${query}”.` : 'No placements match these filters.', action: 'clear' };
+      if (!matches.length) {
+        const withoutSearch = current.placements.filter(item => artFilter === 'all' || withArt(item) === (artFilter === 'with')).length;
+        clearArtFilter = artFilter !== 'all' && searched.length > 0 && (!query || !withoutSearch || searched.length <= withoutSearch);
+        const count = clearArtFilter ? searched.length : withoutSearch;
+        recoveryLabel = `${clearArtFilter ? 'Show all artwork' : 'Clear search'}${count ? ` — ${count} ${count === 1 ? 'match' : 'matches'}` : ''}`;
+        empty = { text: artFilter === 'all' ? `No placements match “${query}”.` : 'No placements match these filters.', action: 'clear' };
+      }
       const screens = distinct(matches.map(item => item.screen));
       screens.forEach((screen, index) => {
         // Each screen is a group of options named by its header, which stays in view while its rows scroll.
@@ -709,11 +720,13 @@ export function renderList(): void {
     if (shows && rows.size) { box.setAttribute('role', 'listbox'); box.setAttribute('aria-label', label); }
     else { box.removeAttribute('role'); box.removeAttribute('aria-label'); }
   }
+  if (selected?.kind === 'file' && state.fileLinks && !state.fileLinks.entries.some(item => item.nodeId === (selected as { nodeId: string }).nodeId)) selected = null;
   updateSelected();
   listState = empty;
   renderEmpty(listState);
   renderIntro();
   element('images-more').hidden = browse !== 'images' || !images?.nextCursor;
+  if (restoreScroll !== null && !state.ops.loadingList) { element('list-region').scrollTop = restoreScroll; restoreScroll = null; }
 }
 
 function renderIntro(): void {
@@ -1036,7 +1049,7 @@ async function loadImages(reset: boolean): Promise<void> {
   const cursor = reset ? undefined : previous?.nextCursor ?? undefined;
   if (!reset && !cursor) return;
   const ticket = startList('images', q);
-  if (reset) { images = null; if (selected?.kind === 'image') selected = null; }
+  if (reset) { images = null; if (selected?.kind === 'image' && previous?.q !== q) selected = null; }
   scheduleRender(true);
   let failure: ReadFailure | null = null;
   try {
@@ -1051,6 +1064,7 @@ async function loadImages(reset: boolean): Promise<void> {
     const page = parseAssetPage(result.payload);
     const added = previous && !reset ? page.assets.filter(asset => !previous.items.some(item => item.id === asset.id)) : page.assets;
     images = { items: previous && !reset ? [...previous.items, ...added] : added, nextCursor: page.nextCursor, q };
+    if (selected?.kind === 'image' && !images.items.some(item => item.id === (selected as { assetId: string }).assetId)) selected = null;
     markConnected();
     // On the last page Load more hides; focus moves to the first new image rather than the page.
     if (!reset && added[0]) preferFocus(added[0].id);
@@ -1319,7 +1333,7 @@ export function failInsert(requestId: number, message: string): boolean {
 export function resetInsert(): void {
   resetFile();
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
-  artFilter = 'all';
+  artFilter = 'all'; browseContext.clear(); searchInput.value = ''; restoreScroll = 0;
   artworkFrom = null; quietFrom = null; seenLinks.clear(); checkedLinks.clear();
   quietTicket += 1; quietLoading = false; artworkRefreshPending = false; artworkFinishedAt = null; artworkListStale = false; pendingReveal = null;
   state.ops.loadingList = null; loadingQuery = ''; listError = null; listDeferred = false; listTicket += 1;
@@ -1335,9 +1349,20 @@ export function resetInsert(): void {
 function setBrowse(next: Preferences['browse']): void {
   if (state.prefs.browse === next) return;
   if (next !== 'placements') pendingReveal = null;
+  browseContext.set(state.prefs.browse, { query: searchInput.value, selected, active: activeKey, scroll: element('list-region').scrollTop });
+  const context = browseContext.get(next);
   state.prefs.browse = next;
-  selected = null;
-  activeKey = null;
+  searchInput.value = context?.query ?? '';
+  selected = context?.selected ?? null;
+  activeKey = context?.active ?? null;
+  restoreScroll = context?.scroll ?? 0;
+  if (selected?.kind === 'placement' && artwork) {
+    const placement = selectedPlacement();
+    if (!placement) selected = null;
+    else if (!findCell(placement, selected.cell)) selected = { ...selected, cell: firstCell(placement) };
+  }
+  if (selected?.kind === 'image' && images && !selectedImage()) selected = null;
+  if (searchTimer !== null) { window.clearTimeout(searchTimer); searchTimer = null; }
   if (!actionsBlocked()) setStatus('');
   savePreferences();
   scheduleRender(true);
@@ -1527,7 +1552,7 @@ export function initInsert(goToSend: () => void): void {
     if (searchTimer !== null) window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(searchImages, 300);
   });
-  element('insert-clear').addEventListener('click', () => { artFilter = 'all'; clearSearch(); });
+  element('insert-clear').addEventListener('click', () => { if (clearArtFilter) { artFilter = 'all'; scheduleRender(true); } else clearSearch(); searchInput.focus(); });
   searchClear.addEventListener('click', () => { clearSearch(); searchInput.focus(); });
   element('insert-refresh').addEventListener('click', refreshList);
   element('insert-retry').addEventListener('click', refreshList);

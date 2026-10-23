@@ -16,10 +16,12 @@ const dev = watching || args.has('--dev');
 // Raised on October 21, 2026 for selected-layer sends, conditional review, bounded inventory reports, and counted artwork filters.
 // Raised on October 23, 2026 for visual Send destinations and previews with an independent scroll root.
 // Raised on October 23, 2026 for local artwork comparison, counted destination filters, and batch issue navigation.
-const MAX_UI_BYTES = 224_000;
+// Raised on October 23, 2026 for retained browsing, exact Draft review links, bounded artwork inspection, and focused recovery.
+const MAX_UI_BYTES = 230_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 // Raised on October 21, 2026 for bounded multi-selection, per-layer choices, and export guards.
-const MAX_MAIN_BYTES = 54_000;
+// Raised on October 23, 2026 for validated Draft review links and bounded on-demand inspection previews.
+const MAX_MAIN_BYTES = 55_000;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const templateUrl = new URL('../src/ui.html', import.meta.url);
 const marker = '<!-- ASSETLIB_SCRIPT -->';

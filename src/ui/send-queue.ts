@@ -1,5 +1,5 @@
 // The reviewed selection is sent sequentially. Each row keeps its own receipt; uncertain writes are never retried.
-import { aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, consoleLink, findCell, mapHttpError,
+import { aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, consoleLink, consoleReviewLink, findCell, mapHttpError,
   mapNetworkError, mapTimeoutError, parseArtwork, parseDraftResponse, parsePngDimensions, sameCoordinate,
   validateBinding, MAX_EXPORT_EDGE, EXPORT_FAILED, DRAFT_MAY_HAVE_ARRIVED, TOKEN_NO_LONGER_ACCEPTED, reconnectText, refusalCode, tokenRefused, validUuid } from '../shared/index.js';
 import type { CellBinding, Connection, DraftResult, Placement } from '../shared/index.js';
@@ -11,7 +11,7 @@ import { actionsBlocked, hasCurrentSelection, nextRequestId, state } from './sta
 
 type Status = 'ready' | 'sending' | 'sent' | 'failed' | 'unknown' | 'partial' | 'conflict';
 export type SendRow = SendNode & { target: CellBinding | null; included: boolean; status: Status; detail: string;
-  expected?: string | null; review?: string | null; reviewing?: boolean; assetId?: string; saving?: number; saveError?: string };
+  receipt?: CellBinding; expected?: string | null; review?: string | null; reviewing?: boolean; assetId?: string; saving?: number; saveError?: string };
 type Run = { rows: SendRow[]; connection: Connection; generation: number; fileKey: string; selectionIds: string[]; stopped: boolean; index: number };
 type Operation = { id: number; run: Run; row: SendRow; placement: Placement; bind: CellBinding; uploaded: boolean; result?: DraftResult };
 let rows: SendRow[] = [];
@@ -276,7 +276,7 @@ function finishRun(): void {
   const result = element('result'); const summary = document.createElement('p'); summary.textContent = `${message} Publish from the console when ready.`;
   const details = document.createElement('ul');
   for (const row of completed.rows) { const item = document.createElement('li'); item.textContent = `${row.node.name} → ${destination(row)}: ${row.detail || row.status}`; details.append(item); }
-  const link = document.createElement('a'); link.className = 'text-action'; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.href = consoleLink(completed.connection, 'releases'); link.textContent = 'Review drafts in console';
+  const link = document.createElement('a'); link.className = 'text-action'; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.href = consoleReviewLink(completed.connection, completed.rows.flatMap(row => row.status === 'sent' && row.receipt ? [{ key: row.receipt.slotKey, ...(row.receipt.state ? { state: row.receipt.state } : {}), ...(row.receipt.appearance ? { appearance: row.receipt.appearance } : {}), ...(row.receipt.arm ? { arm: row.receipt.arm } : {}) }] : [])); link.textContent = sent ? 'Review these drafts' : 'Open releases in console';
   result.replaceChildren(summary, details, link); result.hidden = false;
   if (sent) { artworkChanged(); toast(message, { text: 'Review', url: link.href }); }
   if (latest && keyOf(latest) !== selectionKey) queueSelection(latest);
@@ -411,6 +411,7 @@ export async function queueExport(message: Extract<MainMessage, { type: 'exporte
     if (!draft.bound || draft.bindError) {
       complete(operation, 'partial', `Uploaded but not assigned. ${draft.bindError ?? 'Check the image in the console before sending again.'}`); return;
     }
+    row.receipt = { ...draft.bound };
     row.expected = draft.asset.id;
     post({ type: 'remember', requestId: operation.id, assetId: draft.asset.id });
   } catch (error) {

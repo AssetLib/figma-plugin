@@ -10,7 +10,7 @@ import {
   parsePreferences, parseStoredLink, placementMarker, pngSize, renditionUrl, sanitizeName, thumbnailRendition, tokenPrefix,
   utf8Length, validArm, validateBinding, validateConnection, validateInsertLink,
   appUrl, assetsPath, renditionPath, mapTimeoutError, parseRetryAfter, requestTimeoutMs, retryDelayMs,
-  OLDER_CONSOLE, TOKEN_REFUSED, TOKEN_SCOPE, appearanceLabel, checkTokenFormat, connectionLabel, consoleLink, consolePageOrigin, isConsoleLink, parseTokenIdentity,
+  OLDER_CONSOLE, TOKEN_REFUSED, TOKEN_SCOPE, appearanceLabel, checkTokenFormat, connectionLabel, consoleLink, consoleReviewLink, reviewTargets, consolePageOrigin, isConsoleLink, parseTokenIdentity,
   placementMeta, serverError, tokenUrl, classifyInsertTarget, fillRendition, insideInstance, isPlacementMarker,
   linkInApp, linkNamesFile, parseFileIdentity, parseFileLink, slugify, syncDescription, WINDOW_LIMITS, clampWindow, defaultWindowSize,
   connectPageUrl, formatUserCode, isConnectPageUrl, isReconnectText, pairingUrl, parseClaim, parsePairingStart, reconnectText, refusalCode,
@@ -1103,4 +1103,32 @@ test('phase 1 local inventory messages require request ids and select-node requi
   assert.equal(parseUiMessage({ type: 'scan-file', requestId: 1, allPages: true }).allPages, true);
   assert.equal(parseUiMessage({ type: 'select-node', requestId: 2, nodeId: '12:34' }).nodeId, '12:34');
   for (const value of [{ type: 'scan-file', allPages: true }, { type: 'scan-file', requestId: 1, allPages: 'true' }, { type: 'select-node', requestId: 1, nodeId: '../invalid' }]) assert.throws(() => parseUiMessage(value));
+});
+
+
+test('Draft review navigation validates, deduplicates and preserves exact cells on the connected console', () => {
+  const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org-one', appId: 'app-a' };
+  const target = { key: 'Home.hero-art', state: 'ready-now', appearance: 'dark', arm: 'trial-b' };
+  const url = consoleReviewLink(connection, [target, target]);
+  assert.deepEqual(JSON.parse(decodeURIComponent(url.split('#review=')[1])), [target]);
+  assert.equal(isConsoleLink(url, connection), true);
+  assert.equal(isConsoleLink(url, { ...connection, appId: 'app-b' }), false);
+  for (const value of [[], Array(51).fill(target), [{ ...target, token: 'secret' }], [{ key: '../images' }], [{ key: 'home\n' }], [{ key: 'home', state: 'ready\n' }], [{ key: 'home', arm: 'trial\n' }], [{ key: 'home', state: null }], [{ key: 'home', appearance: 'highContrast' }], [{ key: 'home', arm: 'control' }], [{ key: 'home', state: 'constructor' }]]) {
+    assert.equal(reviewTargets(value), null);
+    assert.equal(consoleReviewLink(connection, value), consoleLink(connection, 'releases'));
+    assert.equal(isConsoleLink(`${consoleLink(connection, 'releases')}#review=${encodeURIComponent(JSON.stringify(value))}`, connection), false);
+  }
+  for (const suffix of ['#review=%ZZ', '#review=' + 'a'.repeat(32769), '?review=anything', '#other=1']) assert.equal(isConsoleLink(consoleLink(connection, 'releases') + suffix, connection), false);
+  assert.equal(isConsoleLink(url.replace('/releases#', '/images#'), connection), false);
+});
+
+
+test('inspection chooses the largest bounded rendition across formats without changing inline previews', () => {
+  const small = { mime: 'image/webp', width: 256, height: 256, bytes: 5000 };
+  const large = { mime: 'image/png', width: 1024, height: 1024, bytes: 800000 };
+  const oversized = { ...large, width: 2049, height: 1024 };
+  const heavy = { ...large, width: 2048, height: 2048, bytes: 1048577 };
+  assert.equal(thumbnailRendition({ renditions: [small, large, oversized, heavy] }), small);
+  assert.equal(thumbnailRendition({ renditions: [small, large, oversized, heavy] }, true), large);
+  assert.equal(thumbnailRendition({ renditions: [oversized, heavy] }, true), null);
 });

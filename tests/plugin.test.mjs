@@ -243,8 +243,8 @@ test('a connection saved on the legacy host loads on the current host with the s
   assert.equal(app.drafts()[0].body.rebind, false);
   assert.deepEqual(app.drafts()[0].body.bind, { slotKey: placement.key, state: 'old', appearance: 'light', arm: 'b' });
   assert.deepEqual(app.storage.get(storageKey(connection)), rememberedA, 'the sync target is now saved under the current host');
-  const link = app.element('result').children.find(child => child.textContent === 'Review drafts in console');
-  assert.equal(link.href, `${connection.origin}/w/org-one/app-a/releases`, 'people are sent to the current console host');
+  const link = app.element('result').children.find(child => child.textContent === 'Review these drafts');
+  assert.ok(link.href.startsWith(`${connection.origin}/w/org-one/app-a/releases#review=`), 'people are sent to the current console host');
   assert.deepEqual(app.notifications.map(item => [item.message, item.options?.button?.text]), [['1 of 1 layer sent to draft.', 'Review']]);
 
   app.saveConnection({ ...connection, token: '' });
@@ -411,7 +411,7 @@ test('Sync from an inserted frame binds exactly its cell without changing the dr
   assert.equal(app.element('status').textContent, '1 of 1 layer sent to draft.');
   assert.deepEqual([app.notifications.at(-1).message, app.notifications.at(-1).options.button.text], ['1 of 1 layer sent to draft.', 'Review'], 'a toast with Review');
   app.notifications.at(-1).options.button.action();
-  assert.deepEqual(app.externalUrls, [`${connection.origin}/w/org-one/app-a/releases`], 'Review opens the console’s releases');
+  assert.deepEqual(JSON.parse(decodeURIComponent(app.externalUrls[0].split('#review=')[1])), [{ key: placement.key, state: 'old', appearance: 'light', arm: 'b' }], 'Review opens the exact saved Draft cell');
 });
 
 test('Insert at @3x makes a third-size frame, and the viewport moves only when the frame is outside its bounds', async () => {
@@ -8112,12 +8112,12 @@ test('placement artwork filters count matching placements across cells and envir
   app.element('env-staging').click();
   assert.deepEqual(counts(), ['All 2', 'With art 0', 'No art 2']);
   assert.deepEqual(keys(), []);
-  assert.equal(app.element('insert-clear').textContent, 'Clear filters');
+  assert.equal(app.element('insert-clear').textContent, 'Clear search — 1 match');
   assert.equal(app.element('browse-summary').textContent, '0 of 3 placements · Staging');
   app.element('insert-clear').click();
   assert.equal(app.element('insert-search').value, '');
-  assert.equal(app.element('art-all').getAttribute('aria-checked'), 'true');
-  assert.equal(keys().length, 3);
+  assert.equal(app.element('art-with').getAttribute('aria-checked'), 'true');
+  assert.deepEqual(keys(), ['travel.hero']);
   app.element('art-with').focus();
   app.keydown({ key: 'ArrowRight' }, app.element('art-filters'));
   assert.equal(app.element('art-empty').getAttribute('aria-checked'), 'true');
@@ -8276,5 +8276,178 @@ test('decision support empty counts wait for artwork and follow search without c
   assert.equal(app.element('placement-empty').hidden, false);
   assert.match(textOf(app.element('placement-options')), /current choice/);
   app.element('placement-clear').click(); await settle();
-  assert.equal(app.element('placement-filter-all').textContent, 'All (2)');
+  assert.equal(app.element('placement-filter-all').textContent, 'All (1)');
+  assert.equal(app.element('placement-search').value, 'home.empty');
+  assert.equal(app.element('placement-filter-all').getAttribute('aria-checked'), 'true');
+});
+
+
+test('browse detours retain each query, cell, image, focus stop and scroll within a connection', async () => {
+  const app = harness({ console: { library: Object.values(assets) } }); await openInsert(app);
+  app.element('insert-search').value = 'hero'; app.element('insert-search').dispatch('input');
+  rowFor(app, placement.key).click(); await pick(app, 'insert-appearance', 'dark');
+  app.element('list-region').scrollTop = 177;
+  app.element('browse-images').click(); await settle();
+  assert.equal(app.element('insert-search').value, '');
+  tilesOf(app)[0].click(); app.element('list-region').scrollTop = 93;
+  app.element('browse-file').click(); await settle();
+  app.element('insert-search').value = 'linked'; app.element('insert-search').dispatch('input');
+  app.element('browse-placements').click(); await settle();
+  assert.equal(app.element('insert-search').value, 'hero');
+  assert.equal(chosenCell(app).appearance, 'dark');
+  assert.equal(rowFor(app, placement.key).getAttribute('aria-selected'), 'true');
+  assert.equal(app.element('list-region').scrollTop, 177);
+  app.element('tab-send').click(); app.element('tab-insert').click(); await settle();
+  assert.equal(chosenCell(app).appearance, 'dark');
+  app.element('browse-images').click(); await settle();
+  assert.equal(tilesOf(app)[0].getAttribute('aria-selected'), 'true');
+  assert.equal(app.element('list-region').scrollTop, 93);
+  app.element('browse-file').click(); await settle();
+  assert.equal(app.element('insert-search').value, 'linked');
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('context_b') }); await settle();
+  app.element('browse-placements').click(); await settle();
+  assert.equal(app.element('insert-search').value, '');
+  assert.equal(app.element('insert-bar').hidden, true);
+});
+
+test('browsing never restores a placement removed while visiting Images', async () => {
+  const app = harness({ console: { library: Object.values(assets) } }); await openInsert(app);
+  rowFor(app, placement.key).click(); app.element('browse-images').click(); await settle();
+  app.console.artwork.placements = [];
+  app.element('tab-send').click(); app.element('tab-insert').click();
+  app.focusWindow(); await settle();
+  app.element('browse-placements').click(); app.element('insert-refresh').click(); await settle();
+  assert.equal(app.element('insert-bar').hidden, true);
+  assert.equal(off(app, 'insert'), true);
+});
+
+test('inspection is bounded, keyboard controlled and returns to the same reviewed destination', async () => {
+  const app = harness(); await settle();
+  const target = app.element('placement').value;
+  app.element('send-preview-enlarge').click(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, false);
+  assert.equal(app.element('app').inert, true);
+  assert.ok(app.previewExports.at(-1).constraint.value > .256);
+  assert.equal(app.document.activeElement, app.element('inspect-layer'));
+  app.keydown({ key: 'ArrowRight' }, app.element('artwork-inspector'));
+  assert.equal(app.element('inspect-draft-panel').hidden, false);
+  app.keydown({ key: 'Escape' }, app.element('artwork-inspector')); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true);
+  assert.equal(app.element('app').inert, false);
+  assert.equal(app.document.activeElement, app.element('send-preview-enlarge'));
+  assert.equal(app.element('placement').value, target);
+  assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0);
+  assert.equal(app.undoCommits.length, 0);
+});
+
+test('inspection drops stale replies after a page change and refuses oversized large exports', async () => {
+  for (const mode of ['page', 'bytes', 'edge']) {
+    const gate = deferred();
+    const app = harness({ previewBytes: async (item, settings) => {
+      if (settings.constraint.value > .256) {
+        await gate.promise;
+        return mode === 'bytes' ? new Uint8Array(1048577) : mode === 'edge' ? pngHeader(1025, 256) : pngHeader(1000, 1000);
+      }
+      return pngHeader(256, 256);
+    }, pages: [{ id: '0:2', children: [] }] }); await settle();
+    app.element('send-preview-enlarge').click(); await settle();
+    if (mode === 'page') await app.figma.setCurrentPageAsync(app.figma.root.children[1]);
+    gate.resolve(); await settle();
+    const reply = app.mainMessages.findLast(message => message.type === 'selection-preview' && message.large);
+    assert.equal(reply.bytes, null);
+    if (mode === 'page') assert.equal(app.element('artwork-inspector').hidden, true);
+    else assert.equal(app.element('send-layer-status').textContent, 'Preview unavailable');
+    assert.equal(app.drafts().length, 0);
+  }
+});
+
+test('unassigned uploads keep the generic release fallback without claiming a Draft cell', async () => {
+  const app = harness({ console: { draft: body => ({ ...boundDraft(body), bound: null, bindError: 'This placement changed.' }) } });
+  await settle(); startSend(app); await settle();
+  const link = app.element('result').children.find(item => item.tagName === 'A');
+  assert.equal(link.href, `${connection.origin}/w/org-one/app-a/releases`);
+  assert.equal(link.textContent, 'Open releases in console');
+  assert.equal(app.notices.length, 0);
+});
+
+
+test('closing inspection prevents its delayed large preview from replacing the current small preview', async () => {
+  const gate = deferred();
+  const app = harness({ previewBytes: async (item, settings) => {
+    if (settings.constraint.value > .256) { await gate.promise; return pngHeader(1000, 1000); }
+    return pngHeader(256, 256);
+  } }); await settle();
+  app.element('send-preview-enlarge').click(); await settle();
+  app.element('inspect-close').click(); gate.resolve(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true);
+  assert.equal(app.element('inspect-layer-image').getAttribute('src'), null);
+  assert.equal(app.element('send-layer-thumb').src, `data:image/png;base64,${Buffer.from(pngHeader(256, 256)).toString('base64')}`);
+  assert.equal(app.drafts().length, 0);
+});
+
+
+test('connection replacement closes inspection and releases the application', async () => {
+  const app = harness(); await settle();
+  app.element('send-preview-enlarge').click(); await settle();
+  app.saveConnection({ ...connection, token: tok('inspection_new') }); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true);
+  assert.equal(app.element('app').inert, false);
+  assert.equal(app.element('inspect-layer-image').getAttribute('src'), null);
+  assert.equal(app.drafts().length, 0);
+});
+
+test('inspection labels a Draft preview without an eligible rendition', async () => {
+  const data = artwork();
+  data.assets[armArt].renditions = [{ ...armItems[0].meta, bytes: 1200000, width: 3000, height: 3000 }];
+  const app = harness({ console: { artwork: data } }); await settle();
+  app.element('send-preview-enlarge').click(); await settle(); app.element('inspect-draft').click();
+  assert.match(app.element('inspect-caption').textContent, /Preview unavailable/);
+  assert.equal(app.element('inspect-draft-image').getAttribute('src'), null);
+});
+
+
+test('destination recovery retains the search, keeps fits first and blocks incompatible choices', async () => {
+  const wide = { ...placement, key: 'home.wide', width: 2000 };
+  const app = harness({ console: { placements: [wide, placement] } }); await settle();
+  app.element('placement-toggle').click(); await settle();
+  let options = descendants(app.element('placement-options')).filter(item => item.getAttribute?.('role') === 'option');
+  assert.equal(options[0].getAttribute('data-key'), placement.key);
+  app.element('placement-search').value = 'home.wide'; app.element('placement-search').dispatch('input');
+  app.element('placement-filter-fit').click(); await settle();
+  assert.equal(app.element('placement-clear').textContent, 'Show all placements — 1 match');
+  app.element('placement-clear').click(); await settle();
+  assert.equal(app.element('placement-search').value, 'home.wide');
+  options = descendants(app.element('placement-options')).filter(item => item.getAttribute?.('role') === 'option');
+  const option = options.find(item => item.getAttribute('data-key') === wide.key);
+  assert.match(textOf(option), /Different ratio/); option.click(); await settle();
+  assert.equal(off(app, 'send'), true);
+  app.element('send').click(); await settle(); assert.equal(app.drafts().length, 0);
+});
+
+
+test('mixed Send receipts link only cells whose assignment succeeded', async () => {
+  let calls = 0;
+  const second = { ...node, id: '12:35', name: 'Second artwork' };
+  const app = harness({ selection: [node, second], storage: [[storageKey(connection, second.id), { ...rememberedB, nodeId: second.id }]],
+    console: { draft: body => ++calls === 1 ? boundDraft(body) : { ...boundDraft(body), bound: null, bindError: 'This placement changed.' } } });
+  await settle(); startSend(app); await settle();
+  assert.equal(calls, 2);
+  const link = app.element('result').children.find(item => item.tagName === 'A');
+  assert.deepEqual(JSON.parse(decodeURIComponent(link.href.split('#review=')[1])), [{ key: placement.key, state: 'old', appearance: 'light', arm: 'b' }]);
+});
+
+
+test('review handoff pins an implicit default to the state that was actually sent', async () => {
+  const app = harness({ remembered: { ...rememberedA, state: null }, console: { draft: body => ({ ...boundDraft(body), bound: { ...body.bind, state: 'old' } }) } });
+  await settle(); startSend(app); await settle();
+  const link = app.element('result').children.find(item => item.tagName === 'A');
+  assert.deepEqual(JSON.parse(decodeURIComponent(link.href.split('#review=')[1])), [{ key: placement.key, state: 'old', appearance: 'light', arm: 'b' }]);
+});
+
+
+test('review handoff uses the server resolved binding when the default changes during Send', async () => {
+  const app = harness({ remembered: { ...rememberedA, state: null }, console: { draft: body => ({ ...boundDraft(body), bound: { ...body.bind, state: 'new' } }) } });
+  await settle(); startSend(app); await settle();
+  const link = app.element('result').children.find(item => item.tagName === 'A');
+  assert.deepEqual(JSON.parse(decodeURIComponent(link.href.split('#review=')[1])), [{ key: placement.key, state: 'new', appearance: 'light', arm: 'b' }]);
 });

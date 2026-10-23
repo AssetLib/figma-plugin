@@ -289,6 +289,12 @@
     .send-comparison .thumb { width: 100%; height: 104px; }
     .send-comparison p { overflow-wrap: anywhere; }
     .send-comparison .text-action { justify-self: start; }
+    .artwork-inspector { position: fixed; inset: 0; z-index: 10; padding: 16px; background: var(--bg); display: grid; grid-template-rows: auto auto minmax(0, 1fr) 3em 2.5em; gap: 12px; }
+    .inspector-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .inspector-actions [aria-pressed="true"] { color: var(--text); border-color: var(--text); }
+    .inspect-panel { grid-row: 3; min-height: 0; display: flex; }
+    #inspect-caption { overflow: auto; }
+    .inspect-panel .thumb { width: 100%; height: 100%; }
     #export-note:empty { display: none; }
     .inline-form { display: flex; align-items: end; gap: 8px; margin-top: 8px; }
     .inline-form .field { flex: 1; }
@@ -580,6 +586,7 @@
           <div id="send-current" hidden><p class="title">Current Draft</p><span id="send-current-preview" class="thumb"><img id="send-current-thumb" alt=""></span><p id="send-current-text" class="meta"></p></div>
           <p id="send-comparison-empty" class="meta">Choose a destination to compare Draft artwork.</p>
         </section>
+        <button id="send-preview-enlarge" class="text-action" type="button">Inspect artwork</button>
         <div id="send-review" class="send-review" hidden></div>
         <button id="send-plain" class="text-action" type="button" hidden>Send as a new image instead</button>
         <p id="export-note" class="meta"></p>
@@ -635,6 +642,13 @@
     <p id="status" class="visually-hidden" role="status" aria-live="polite"></p>
     <p id="alert" class="visually-hidden" role="alert"></p>
   </div>
+  <section id="artwork-inspector" class="artwork-inspector" role="dialog" aria-modal="true" aria-labelledby="inspect-title" hidden>
+    <p id="inspect-title" class="title">Compare artwork</p>
+    <div class="inspector-actions"><button id="inspect-layer" class="secondary" type="button" aria-pressed="true">Figma layer</button><button id="inspect-draft" class="secondary" type="button" aria-pressed="false">Current Draft</button><button id="inspect-refresh" class="secondary" type="button">Refresh preview</button><button id="inspect-close" class="secondary" type="button">Close</button></div>
+    <div id="inspect-layer-panel" class="inspect-panel"><span class="thumb"><img id="inspect-layer-image" alt=""></span></div>
+    <div id="inspect-draft-panel" class="inspect-panel" hidden><span class="thumb"><img id="inspect-draft-image" alt=""></span></div>
+    <p id="inspect-caption" class="meta"></p><p class="meta">Use ← → to compare at the same fit. Esc returns to Send.</p>
+  </section>
   <!-- ASSETLIB_SCRIPT -->
 </body>
 </html>

@@ -17,6 +17,7 @@ let owner = '';
 let query = '';
 let signature = '';
 let options: HTMLElement[] = [];
+let clearFilter = false;
 let filter: 'all' | 'fit' | 'empty' = 'all';
 const filters = ['all', 'fit', 'empty'] as const;
 const filterButtons = filters.map(name => element<HTMLButtonElement>(`placement-filter-${name}`));
@@ -47,15 +48,14 @@ export function renderPlacementPicker(): void {
   if (!open) {
     releaseListImages(list); list.replaceChildren(); options = []; signature = ''; return;
   }
-  const candidateKeys = Array.from(picker.options).map(option => option.value).filter(Boolean);
-  const candidates = candidateKeys.flatMap(key => {
-    const placement = state.placements.find(item => item.key === key);
-    if (!placement) return [];
+  const candidates = state.placements.map(placement => {
+    const key = placement.key;
     const preview = sendPlacementPreview(key, choice?.placementKey === key ? choice.cell : baseCoordinate(placement));
     const matches = !query.trim() || `${key} ${placement.screen}`.toLowerCase().includes(query.trim().toLowerCase());
     const fit = row && !row.reason ? aspectMismatch(row.node, placement) ? 'Different ratio' : 'Fits this layer' : '';
-    return [{ placement, preview, matches, fit }];
+    return { placement, preview, matches, fit };
   });
+  candidates.sort((a, b) => Number(b.fit === 'Fits this layer') - Number(a.fit === 'Fits this layer'));
   const searched = candidates.filter(item => item.matches);
   const unknown = searched.some(item => item.preview.caption === 'Draft artwork not loaded');
   if (unknown && filter === 'empty') filter = 'all';
@@ -67,11 +67,15 @@ export function renderPlacementPicker(): void {
     button.setAttribute('aria-checked', String(filter === filters[index]));
   });
   rovingStops(filterButtons);
-  for (const item of candidates) item.matches = item.matches && (filter === 'all' || (filter === 'fit' ? item.fit === 'Fits this layer' : item.preview.empty));
+  const fitsFilter = (item: typeof candidates[number]) => filter === 'all' || (filter === 'fit' ? item.fit === 'Fits this layer' : item.preview.empty);
+  const withoutSearch = candidates.filter(fitsFilter).length;
+  for (const item of candidates) item.matches = item.matches && fitsFilter(item);
   const visible = candidates.filter(item => item.matches || item.placement.key === choice?.placementKey);
   element('placement-empty').hidden = candidates.some(item => item.matches);
   element('placement-clear').hidden = !query && filter === 'all';
-  element('placement-clear').textContent = filter === 'all' ? 'Clear search' : 'Clear filters';
+  clearFilter = filter !== 'all' && searched.length > 0 && (!query || !withoutSearch || searched.length <= withoutSearch);
+  const count = clearFilter ? searched.length : withoutSearch;
+  element('placement-clear').textContent = `${clearFilter ? 'Show all placements' : 'Clear search'}${count ? ` — ${count} ${count === 1 ? 'match' : 'matches'}` : ''}`;
   const nextSignature = JSON.stringify([owner, query, filter, choice, visible.map(({ placement: p, preview, fit }) => [p.key, p.screen, p.width, p.height, preview.caption, preview.asset?.id, preview.asset?.renditions.map(item => item.sha256), fit])]);
   if (signature === nextSignature) return;
   signature = nextSignature;
@@ -127,5 +131,5 @@ export function initPlacementPicker(): void {
     button.addEventListener('click', () => { if (button.disabled) return; filter = filters[index]!; scheduleRender(); });
   });
   arrowKeys(element('placement-filters'), filterButtons, 'radios');
-  element('placement-clear').addEventListener('click', () => { filter = 'all'; clearPlacementSearch(); search.focus(); });
+  element('placement-clear').addEventListener('click', () => { if (clearFilter) { filter = 'all'; scheduleRender(); } else clearPlacementSearch(); search.focus(); });
 }

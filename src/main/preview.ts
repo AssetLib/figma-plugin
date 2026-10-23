@@ -24,11 +24,11 @@ export async function previewSelection(request: Request): Promise<void> {
           && currentSelectionRevision() === next.revision && figma.currentPage === page && !node?.removed
           && page.selection.length <= MAX_SEND_NODES && page.selection.some(item => item === node));
         if (node && current() && !sendReason(node) && !main.exporting && !main.importing) {
-          const before = sendSnapshot(node);
+          const before = sendSnapshot(node), edge = next.large ? 1024 : 256, cap = next.large ? 1048576 : 262144;
           const result = await node.exportAsync({ format: 'PNG', useAbsoluteBounds: true,
-            constraint: { type: 'SCALE', value: Math.min(1, 256 / Math.max(node.width, node.height)) } });
-          const size = result.byteLength <= 262144 ? parsePngDimensions(result) : null;
-          if (size && Math.max(size.width, size.height) <= 256 && current() && before === sendSnapshot(node)) bytes = result;
+            constraint: { type: 'SCALE', value: Math.min(1, edge / Math.max(node.width, node.height)) } });
+          const size = result.byteLength <= cap ? parsePngDimensions(result) : null;
+          if (size && Math.max(size.width, size.height) <= edge && current() && before === sendSnapshot(node)) bytes = result;
         }
       } catch { /* A preview failure is local to the comparison and never prevents an explicit Send. */ }
       post({ ...next, type: 'selection-preview', bytes });
