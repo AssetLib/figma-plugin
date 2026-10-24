@@ -9,6 +9,7 @@ import type { Connection, InsertLink, Preferences } from './shared/index.js';
 import { DISCONNECTED, DISCONNECTED_REFUSED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, MAX_SEND_NODES, messageRequestId, parseUiMessage, toastText } from './shared/protocol.js';
 import type { UiMessage } from './shared/protocol.js';
 import { rasterDensity } from './main/export.js';
+import { browseMessage } from './main/browse.js';
 import { previewSelection } from './main/preview.js';
 import { scanLinks, scheduleScan, selectNode } from './main/inventory.js';
 import { currentFileKey, linkFile } from './main/identity.js';
@@ -126,6 +127,10 @@ async function handleMessage(message: UiMessage): Promise<void> {
     case 'scan-file':
       if (message.allPages) main.scanAllPages = true;
       await scanLinks(message.requestId);
+      break;
+    case 'load-browse':
+    case 'save-browse':
+      await browseMessage(message);
       break;
     case 'preview-selection':
       await previewSelection(message);

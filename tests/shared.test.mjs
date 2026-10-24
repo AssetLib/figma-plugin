@@ -1,3 +1,4 @@
+import { parseBrowseResume } from '../.test-build/shared/browse.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -1199,4 +1200,17 @@ test('Draft impact warns when the first Control Any assignment leaves a base fam
   const impact = draftImpact(impactMatrix({}), { state: 'idle', arm: null, appearance: null });
   assert.deepEqual(impact.missingStates, ['busy']);
   assert.equal(impact.cells.filter(change => change.after?.assetId === null).length, 6);
+});
+
+
+test('browse resume keeps bounded navigation only and excludes file selections and payload fields', () => {
+  const parsed = parseBrowseResume({ browse: 'images', filter: 'with', contexts: { images: { query: 'a'.repeat(500), scroll: Infinity, pages: 999, active: 'invalid', selected: { kind: 'image', assetId: '00000000-0000-4000-8000-000000000001', bytes: 'private' }, token: 'private' }, file: { query: 'private node', selected: { kind: 'file', nodeId: '1:1' } } }, imageBytes: 'private' });
+  assert.equal(parsed.contexts.images.query.length, 120);
+  assert.equal(parsed.contexts.images.pages, 5);
+  assert.equal(parsed.contexts.images.scroll, 0);
+  assert.equal(parsed.contexts.images.active, null);
+  assert.equal(parsed.contexts.file, undefined);
+  assert.equal(JSON.stringify(parsed).includes('private'), false);
+  assert.equal(parseBrowseResume({ browse: 'file', contexts: {} }), null);
+  assert.equal(parseBrowseResume({ browse: 'placements', contexts: { placements: { selected: { kind: 'placement', key: 'valid.key', cell: { state: null, appearance: 'invalid', arm: null } } } } }).contexts.placements.selected, null);
 });

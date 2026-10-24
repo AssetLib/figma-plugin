@@ -436,6 +436,8 @@ function installFakes(config) {
       case 'notify': notices.push(message.text); break;
       case 'resize': resizes.push({ width: message.width, height: message.height }); break;
       case 'reset-size': resizes.push('reset'); break;
+      case 'load-browse': reply({ ...message, type: 'browse-loaded', value: config.resume ?? null }); break;
+      case 'save-browse': config.savedBrowse = message.value; break;
       case 'save-preferences': saved.push(message.preferences); break;
       case 'clear-connection':
         generation += 1;
@@ -4021,14 +4023,16 @@ for (const theme of ['light', 'dark']) test(`decision guidance resolves duplicat
 for (const theme of ['light', 'dark']) test(`decision guidance previews actual layer bounds and explains unsupported paint (${theme})`, async () => {
   for (const width of [320, 420]) {
     const target={ mode:'fill',label:'Fill image',count:1,nodeIds:['96:1'],name:'Portrait card',containerWidth:300,containerHeight:500 };
-    const selection={ ...DEFAULTS.selection,insertTarget:target,fillPreview:{width:300,height:500,mode:'FILL'} };
+    const selection={ ...DEFAULTS.selection,node:{id:'96:1',name:'Portrait card',type:'FRAME',width:300,height:500},reason:null,insertTarget:target,fillPreview:{width:300,height:500,mode:'FILL'} };
     const page=await openUi({inspection:true,images:2,selection,preferences:{browse:'images'}},{width,height:480,theme});
     try {
       await page.waitFor(`${tiles} === 2`); await page.click('#image-grid [role=option]'); await page.click('#insert-inspect');
       await page.waitFor(`document.getElementById('inspect-layer-image').naturalWidth > 0`);
       await page.click('#inspect-target'); await page.click('#inspect-dark');
       const box=await page.evaluate(`(()=>{const frame=document.getElementById('inspect-layer-frame').getBoundingClientRect(),panel=document.getElementById('inspect-layer-panel').getBoundingClientRect();return {w:frame.width,h:frame.height,inside:frame.left>=panel.left && frame.right<=panel.right+1 && frame.top>=panel.top && frame.bottom<=panel.bottom+1,fit:getComputedStyle(document.getElementById('inspect-layer-image')).objectFit};})()`);
-      assert.ok(box.w>40 && box.h>60 && Math.abs(box.w/box.h-.6)<.01 && box.inside); assert.equal(box.fit,'cover');
+      assert.ok(box.w>40 && box.h>60 && Math.abs(box.w/box.h-.6)<.01 && box.inside); assert.equal(box.fit,'contain', 'current canvas export is already rendered');
+      assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('inspect-draft-image')).objectFit`),'cover');
+      assert.equal(await page.evaluate(`!document.getElementById('inspect-layer-pane').hidden && !document.getElementById('inspect-draft-pane').hidden`), true);
       assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('inspect-layer-frame')).borderRadius`),'0px');
       assert.equal(await page.evaluate(`document.getElementById('inspect-pixels').getAttribute('aria-disabled')`),'true');
       await page.evaluate(`document.getElementById('inspect-target').focus()`); await page.press('ArrowLeft');
@@ -4069,4 +4073,41 @@ for (const theme of ['light', 'dark']) test(`decision guidance names new catalog
       assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.received.includes('insert') || __harness.log.some(item=>item.route==='drafts')`),false);
     } finally {await page.close();}
   }
+});
+
+for (const theme of ['light', 'dark']) test(`resume decisions restores reviewed library context after fresh pages (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const resume = { browse: 'images', filter: 'with', contexts: { images: { query: 'Image', selected: { kind: 'image', assetId: '00000000-0000-4000-8000-000000000030' }, active: '00000000-0000-4000-8000-000000000030', scroll: 900, pages: 2 } } };
+    const page = await openUi({ images: 60, resume, selection: { ...DEFAULTS.selection, fileKey: null } }, { width, height: 480, theme });
+    try {
+      await page.waitFor(shown('browse-resume'));
+      assert.match(await page.evaluate(textOf('browse-resume-continue')), /Continue browsing Sample app/);
+      assert.equal(await page.evaluate(valueOf('insert-search')), '');
+      await page.click('#browse-resume-continue');
+      await page.waitFor(`${tiles} === 48 && !document.getElementById('insert-bar').hidden`);
+      assert.equal(await page.evaluate(valueOf('insert-search')), 'Image');
+      assert.equal(await page.evaluate(textOf('insert-title')), 'Image 30');
+      assert.equal(await page.evaluate(`document.getElementById('list-region').scrollTop`), 900);
+      assert.match(await page.evaluate(textOf('browse-resume-note')), /Artwork was checked again/);
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
+      assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.received.includes('select-node') || __harness.log.some(item=>item.route==='drafts')`), false);
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `resume-library-${theme}-${width}.png`)); }
+    } finally { await page.close(); }
+  }
+});
+
+test('resume decisions fresh navigation wins over a delayed restore in the browser', async () => {
+  const resume = { browse: 'images', filter: 'all', contexts: { images: { query: '', selected: { kind: 'image', assetId: '00000000-0000-4000-8000-000000000001' }, active: null, scroll: 900, pages: 2 } } };
+  const page = await openUi({ resume, images: 60 }, { width: 320, height: 480 });
+  try {
+    await page.waitFor(shown('browse-resume')); await page.evaluate(`__harness.hold('assets')`);
+    await page.click('#browse-resume-continue'); await page.waitFor(`document.getElementById('image-grid').getAttribute('aria-busy')==='true'`);
+    await page.click('#browse-placements'); await page.waitFor(`document.querySelector('#insert-list [role=option]')`);
+    await page.click('#insert-list [role=option]');
+    const chosen = await page.evaluate(textOf('insert-title'));
+    await page.evaluate(`__harness.release('assets')`); await page.frames();
+    assert.equal(await page.evaluate(textOf('insert-title')), chosen);
+    assert.equal(await page.evaluate(`document.getElementById('browse-placements').getAttribute('aria-checked')`), 'true');
+    assert.equal(await page.evaluate(`__harness.received.includes('insert')`), false);
+  } finally { await page.close(); }
 });

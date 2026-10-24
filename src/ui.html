@@ -308,7 +308,11 @@
     .shortlist-names button { max-width: 140px; }
     .inspector-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .inspector-actions [aria-pressed="true"] { color: var(--text); border-color: var(--text); }
-    .inspect-panel { grid-row: 4; min-height: 0; overflow: auto; display: flex; }
+    .inspect-panels { grid-row: 4; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .inspect-panels[data-compare="true"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .inspect-pane { min-height: 0; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 6px; }
+    .inspect-pane-label { min-height: 32px; overflow-wrap: anywhere; }
+    .inspect-panel { grid-row: 2; min-height: 0; overflow: auto; display: flex; }
     #inspect-caption { overflow: auto; }
     .inspect-panel[data-layer="true"] { align-items: center; justify-content: center; }
     .inspect-panel[data-layer="true"] .thumb { overflow: hidden; border-radius: 0; }
@@ -557,6 +561,7 @@
       </div>
       <div id="list-region" class="list-region">
         <div id="insert-catalog-tools" hidden><button id="insert-catalog-check" class="text-action" type="button">Check for placements</button></div><p id="insert-catalog-result" class="note" hidden></p><details id="insert-catalog-arrivals" class="catalog-arrivals" hidden><summary id="insert-catalog-summary"></summary><div id="insert-catalog-added"></div><button id="insert-catalog-more" class="text-action" type="button" hidden>Show more</button></details>
+        <div id="browse-resume" class="info" hidden><p>Your previous app-library browsing is available. Canvas selections are not restored.</p><div class="inspector-actions"><button id="browse-resume-continue" class="secondary small" type="button">Continue browsing this app</button><button id="browse-resume-dismiss" class="secondary small" type="button">Start fresh</button></div></div><p id="browse-resume-note" class="meta" hidden></p>
         <div id="browse-results" class="browse-results" hidden>
           <div id="art-filters" class="segmented" role="radiogroup" aria-label="Placement artwork" hidden>
             <button id="art-all" type="button" role="radio" aria-checked="true">All</button>
@@ -695,9 +700,11 @@
       <div id="inspect-views" class="segmented" role="radiogroup" aria-label="Preview context" hidden><button id="inspect-original" type="button" role="radio" aria-checked="true">Original</button><button id="inspect-target" type="button" role="radio" aria-checked="false">In selected layer</button></div><p id="inspect-target-note" class="meta" hidden></p>
       <div id="inspect-scales" class="segmented" role="radiogroup" aria-label="Preview scale"><button id="inspect-fit" type="button" role="radio" aria-checked="true">Fit</button><button id="inspect-pixels" type="button" role="radio" aria-checked="false">100%</button></div>
     </div>
-    <div id="inspect-layer-panel" class="inspect-panel" role="region" aria-label="Figma preview, scroll at 100%" tabindex="-1"><span id="inspect-layer-frame" class="thumb"><img id="inspect-layer-image" alt=""></span></div>
-    <div id="inspect-draft-panel" class="inspect-panel" role="region" aria-label="Draft preview, scroll at 100%" tabindex="-1" hidden><span id="inspect-draft-frame" class="thumb"><img id="inspect-draft-image" alt=""></span></div>
-    <div id="inspect-third-panel" class="inspect-panel" role="region" tabindex="-1" hidden><span id="inspect-third-frame" class="thumb"><img id="inspect-third-image" alt=""></span></div>
+    <div id="inspect-panels" class="inspect-panels">
+      <div id="inspect-layer-pane" class="inspect-pane"><p id="inspect-layer-label" class="title inspect-pane-label" hidden></p><div id="inspect-layer-panel" class="inspect-panel" role="region" aria-label="Figma preview, scroll at 100%" tabindex="-1"><span id="inspect-layer-frame" class="thumb"><img id="inspect-layer-image" alt=""></span></div></div>
+      <div id="inspect-draft-pane" class="inspect-pane"><p id="inspect-draft-label" class="title inspect-pane-label" hidden></p><div id="inspect-draft-panel" class="inspect-panel" role="region" aria-label="Draft preview, scroll at 100%" tabindex="-1" hidden><span id="inspect-draft-frame" class="thumb"><img id="inspect-draft-image" alt=""></span></div></div>
+      <div id="inspect-third-pane" class="inspect-pane"><p id="inspect-third-label" class="title inspect-pane-label" hidden></p><div id="inspect-third-panel" class="inspect-panel" role="region" tabindex="-1" hidden><span id="inspect-third-frame" class="thumb"><img id="inspect-third-image" alt=""></span></div></div>
+    </div>
     <div><p id="inspect-caption" class="meta"></p><p id="inspect-size" class="meta"></p></div><p id="inspect-help" class="meta">100% shows preview pixels, not app size. ← → compares artwork. Esc returns to Send.</p>
   </section>
   <!-- ASSETLIB_SCRIPT -->

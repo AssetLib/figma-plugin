@@ -8,13 +8,14 @@ import { COMMAND, arrowKeys, element, failConsolePage, inField, post, reloaded, 
 import { acceptFileLinks, failFileScan, focusFile } from './infile.js';
 import { abortAll } from './http.js';
 import {
-  applyPreferences, beginArtworkRead, connectionKept, draftArtState, draftSnapshot, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar, restoreBrowseScroll,
+  acceptBrowseResume, loadBrowseResume, applyPreferences, beginArtworkRead, connectionKept, draftArtState, draftSnapshot, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar, restoreBrowseScroll,
   noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, reviewSendArtwork, resetInsert, rowFor, savePreferences, sendImpact,
 } from './insert.js';
 import { applyFileUrl, applySelection, choiceSaved, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { initPlacementPicker, placementSearchChanged, renderPlacementPicker } from './send-picker.js';
 import { acceptSelectionPreview, initSendPreview, renderSendPreview } from './send-preview.js';
 import { actionsBlocked, state } from './state.js';
+import { acceptFillPreview } from './fill-inspection.js';
 import { initInspector, renderInspection } from './inspector.js';
 import { initIntake, renderIntake } from './intake.js';
 import { renderSendConflicts } from './send-conflicts.js';
@@ -74,6 +75,7 @@ function onConnection(message: Extract<MainMessage, { type: 'connection' }>): vo
   applyFileUrl(message.savedFileUrl);
   applyPreferences(message.preferences);
   resetInsert();
+  void loadBrowseResume();
   // A Connect request's connection arrived, or main holds a request to resume.
   applyPairing(message);
   if (!state.connection) {
@@ -137,8 +139,9 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
       applySelection(message);
       if (message.connectionGeneration === state.connectionGeneration) noteLinkSeen();
       break;
+    case 'browse-loaded': acceptBrowseResume(message); break;
     case 'file-links': acceptFileLinks(message); break;
-    case 'selection-preview': acceptSelectionPreview(message); break;
+    case 'selection-preview': acceptSelectionPreview(message); acceptFillPreview(message); break;
     case 'file-saved': fileSaved(message); break;
     case 'send-choice-saved': choiceSaved(message); break;
     case 'file-mismatch': fileMismatch(message); break;

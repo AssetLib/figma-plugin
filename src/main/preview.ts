@@ -3,6 +3,7 @@ import { parsePngDimensions } from '../shared/index.js';
 import { MAX_SEND_NODES } from '../shared/protocol.js';
 import type { UiMessage } from '../shared/protocol.js';
 import { currentSelectionRevision, sendReason, sendSnapshot } from './selection.js';
+import { fillFingerprint, fillPreview } from './fill-preview.js';
 import { main, post } from './state.js';
 
 type Request = Extract<UiMessage, { type: 'preview-selection' }>;
@@ -23,12 +24,13 @@ export async function previewSelection(request: Request): Promise<void> {
         const current = () => Boolean(main.connection && main.connectionGeneration === next.connectionGeneration
           && currentSelectionRevision() === next.revision && figma.currentPage === page && !node?.removed
           && page.selection.length <= MAX_SEND_NODES && page.selection.some(item => item === node));
-        if (node && current() && !sendReason(node) && !main.exporting && !main.importing) {
-          const before = sendSnapshot(node), edge = next.large ? 1024 : 256, cap = next.large ? 1048576 : 262144;
+        if (node && current() && (!next.fill || page.selection.length === 1 && !('reason' in fillPreview(node))) && !sendReason(node) && !main.exporting && !main.importing) {
+          const snapshot = () => JSON.stringify([sendSnapshot(node), fillFingerprint(node)]);
+          const before = snapshot(), edge = next.large ? 1024 : 256, cap = next.large ? 1048576 : 262144;
           const result = await node.exportAsync({ format: 'PNG', useAbsoluteBounds: true,
             constraint: { type: 'SCALE', value: Math.min(1, edge / Math.max(node.width, node.height)) } });
           const size = result.byteLength <= cap ? parsePngDimensions(result) : null;
-          if (size && Math.max(size.width, size.height) <= edge && current() && before === sendSnapshot(node)) bytes = result;
+          if (size && Math.max(size.width, size.height) <= edge && current() && before === snapshot()) bytes = result;
         }
       } catch { /* A preview failure is local to the comparison and never prevents an explicit Send. */ }
       post({ ...next, type: 'selection-preview', bytes });

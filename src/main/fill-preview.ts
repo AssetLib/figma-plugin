@@ -35,7 +35,7 @@ export function fillPreview(node: SceneNode | null): FillPreview {
   if (paint && (paint.rotation || paint.opacity !== undefined && paint.opacity !== 1 || paint.blendMode && paint.blendMode !== 'NORMAL'
     || paint.imageTransform && !identity(paint.imageTransform) || paint.filters && Object.values(paint.filters).some(value => value !== 0)))
     return no('Paint rotation, transforms, filters, or compositing cannot be previewed here.');
-  return { width: node.width, height: node.height, mode: paint?.scaleMode as 'FILL' | 'FIT' ?? 'FILL' };
+  return { width: node.width, height: node.height, mode: paint?.scaleMode as 'FILL' | 'FIT' ?? 'FILL', ...(!paint ? { empty: true } : {}) };
 }
 
 /** Same-hash paint and shape edits must invalidate an open preview, not only image replacements. */

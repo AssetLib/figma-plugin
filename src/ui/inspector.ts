@@ -6,12 +6,12 @@ import { actionsBlocked } from './state.js';
 import { showThumbnail } from './thumbnails.js';
 
 export type InspectionItem = {
-  label: string; caption: string; sourceLabel: string; source?: { width: number; height: number };
+  rendered?: boolean; status?: string; label: string; caption: string; sourceLabel: string; source?: { width: number; height: number };
   reference?: { width: number; height: number }; asset?: LibraryAsset | null; src?: string; limit?: number;
 };
 type Inspection = {
   items: () => InspectionItem[]; current: () => boolean; returnTo: HTMLElement;
-  target?: FillPreview;
+  target?: FillPreview; compare?: boolean;
   closed?: () => void; refresh?: () => void; use?: (index: number) => void; usable?: (index: number) => boolean;
 };
 const dialog = element('artwork-inspector');
@@ -38,7 +38,7 @@ export function closeInspection(): void {
 export function openInspection(next: Inspection): void {
   if (actionsBlocked() || !next.current()) return;
   if (session) closeInspection();
-  session = next; side = 0; pixels = false; inLayer = false; unavailable.clear();
+  session = next; side = 0; pixels = false; inLayer = Boolean(next.compare && next.target && !('reason' in next.target)); unavailable.clear();
   renderInspection(); sides[0]!.focus();
 }
 export function renderInspection(): void {
@@ -46,6 +46,7 @@ export function renderInspection(): void {
   dialog.hidden = !session; element('app').inert = Boolean(session);
   if (!session) return;
   const items = session.items().slice(0, 3);
+  element('inspect-panels').setAttribute('data-compare', String(Boolean(session.compare)));
   if (!items.length) { closeInspection(); return; }
   side = Math.min(side, items.length - 1);
   const target = session.target && !('reason' in session.target) ? session.target : null;
@@ -68,17 +69,20 @@ export function renderInspection(): void {
     const item = items[index];
     button.hidden = !item; button.textContent = item?.label ?? ''; button.title = item?.label ?? '';
     button.setAttribute('aria-pressed', String(side === index));
-    panels[index]!.hidden = side !== index;
+    panels[index]!.hidden = !item || !session!.compare && side !== index;
+    element(`inspect-${names[index]}-pane`).hidden = panels[index]!.hidden;
+    const label = element(`inspect-${names[index]}-label`); label.hidden = !session!.compare; label.textContent = item?.label ?? '';
+    label.title = item?.status ?? item?.caption ?? '';
     panels[index]!.setAttribute('aria-label', `${item?.label ?? ''} preview, scroll at 100%`);
     panels[index]!.setAttribute('data-background', ['transparent', 'light', 'dark'][background]!);
-    panels[index]!.setAttribute('data-pixels', String(pixels)); panels[index]!.tabIndex = pixels && side === index ? 0 : -1;
+    panels[index]!.setAttribute('data-pixels', String(pixels)); panels[index]!.tabIndex = pixels && !panels[index]!.hidden ? 0 : -1;
     panels[index]!.setAttribute('data-layer', String(inLayer));
     const frame = element(`inspect-${names[index]}-frame`);
     const box = panels[index]!.getBoundingClientRect();
     const scale = target ? Math.min(box.width / target.width, box.height / target.height, 1) : 1;
     frame.style.width = inLayer && target ? `${target.width * scale}px` : '';
     frame.style.height = inLayer && target ? `${target.height * scale}px` : '';
-    images[index]!.style.objectFit = inLayer && target?.mode === 'FILL' ? 'cover' : 'contain';
+    images[index]!.style.objectFit = inLayer && !item?.rendered && target?.mode === 'FILL' ? 'cover' : 'contain';
     if (!item) showThumbnail(images[index]!, null);
   });
   const item = items[side]!, shown = images[side]!;
@@ -133,7 +137,7 @@ export function initInspector(): void {
       event.preventDefault(); const count = session.items().length;
       side = (side + (event.key === 'ArrowLeft' ? count - 1 : 1)) % count; renderInspection(); sides[side]!.focus();
     } else if (event.key === 'Tab') {
-      const controls = [...sides, element('inspect-refresh'), element('inspect-use'), element('inspect-close'), ...backgrounds, ...scales, ...(session.target ? views : []), panels[side]!].filter(control => !control.hidden && !(control as HTMLButtonElement).disabled && control.tabIndex !== -1);
+      const controls = [...sides, element('inspect-refresh'), element('inspect-use'), element('inspect-close'), ...backgrounds, ...scales, ...(session.target ? views : []), ...(session.compare ? panels : [panels[side]!])].filter(control => !control.hidden && !(control as HTMLButtonElement).disabled && control.tabIndex !== -1);
       event.preventDefault(); controls[(controls.indexOf(document.activeElement as HTMLElement) + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]!.focus();
     } else if (event.metaKey || event.ctrlKey || event.key === '/') event.preventDefault();
   });

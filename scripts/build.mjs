@@ -21,12 +21,13 @@ const dev = watching || args.has('--dev');
 // Raised on October 23, 2026 for exact Draft impact review and a bounded image shortlist sharing the inspector.
 // 2026-10-24: explicit console return checks reuse library reads; main and minification stay unchanged.
 // 2026-10-24: grouped Send conflicts, faithful selected-layer inspection, and named catalog arrivals.
-const MAX_UI_BYTES = 260_000;
+// 2026-10-24: bounded app-library resume and current-canvas comparison reuse the existing inspector.
+const MAX_UI_BYTES = 267_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 // Raised on October 21, 2026 for bounded multi-selection, per-layer choices, and export guards.
 // Raised on October 23, 2026 for validated Draft review links and bounded on-demand inspection previews.
 // 2026-10-24: read-only paint eligibility and same-hash property invalidation.
-const MAX_MAIN_BYTES = 58_000;
+const MAX_MAIN_BYTES = 60_000;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const templateUrl = new URL('../src/ui.html', import.meta.url);
 const marker = '<!-- ASSETLIB_SCRIPT -->';

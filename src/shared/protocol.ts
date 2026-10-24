@@ -1,8 +1,9 @@
+import type { BrowseResume } from './browse.js';
 import type {
   CanvasTarget, CellBinding, Connection, EnvironmentName, ExportSettings, InsertLink, InsertMode, NodeSelection, PairingHint, PairingRecord, Placement,
   Preferences,
 } from './index.js';
-import { isRecord, validArm, validFileKey, validNodeId, validPlacementKey, validState, validUuid } from './validation.js';
+import { isRecord, validArm, validFileKey, validNodeId, validPlacementKey, validState, validUuid, validSha256 } from './validation.js';
 
 /**
  * Where an insert goes: a new frame (centered in the view, or right of the selection), a child of the container
@@ -47,7 +48,7 @@ export type FileLinks = { type: 'file-links'; connectionGeneration: number; scop
  */
 export type FileState = { source: 'figma' | 'document' | 'session' | null; name: string };
 
-export type FillPreview = { width: number; height: number; mode: 'FILL' | 'FIT' } | { reason: string };
+export type FillPreview = { width: number; height: number; mode: 'FILL' | 'FIT'; empty?: boolean } | { reason: string };
 export type SelectionState = {
   revision?: number;
   fillPreview?: FillPreview;
@@ -74,7 +75,9 @@ export const MAX_SEND_NODES = 50;
 // Every message that main can refuse carries a requestId, and main's error names it, so an error ends only that operation.
 export type UiMessage =
   | { type: 'init' }
-  | { type: 'preview-selection'; requestId: number; connectionGeneration: number; revision: number; nodeId: string; large?: boolean }
+  | { type: 'load-browse'; requestId: number; connectionGeneration: number; scope: string }
+  | { type: 'save-browse'; connectionGeneration: number; scope: string; value: BrowseResume }
+  | { type: 'preview-selection'; requestId: number; connectionGeneration: number; revision: number; nodeId: string; large?: boolean; fill?: boolean }
   | { type: 'scan-file'; requestId: number; allPages: boolean }
   | { type: 'select-node'; requestId: number; nodeId: string }
   | { type: 'save-connection'; requestId: number; connection: Connection }
@@ -129,6 +132,7 @@ export type NotifyButton = { text: string; url: string };
 
 export type MainMessage =
   | FileLinks
+  | { type: 'browse-loaded'; requestId: number; connectionGeneration: number; scope: string; value: BrowseResume | null }
   // `pairing`: a Connect request waiting for approval (resumed by the UI); `hints`: workspaces linked on this page, while
   // there is no connection. `replaced`: after this window's save, the browser connection the device held before it,
   // which another window may have saved, so the UI ends its token too.
@@ -141,7 +145,7 @@ export type MainMessage =
   // all (`adopted`: another window saved the request's connection, which is this window's now).
   | { type: 'turn'; requestId: number; turn: 'poll' | 'wait' | 'adopted'; after: number }
   | { type: 'selection'; connectionGeneration: number; selection: SelectionState }
-  | { type: 'selection-preview'; requestId: number; connectionGeneration: number; revision: number; nodeId: string; large?: boolean; bytes: Uint8Array | null }
+  | { type: 'selection-preview'; requestId: number; connectionGeneration: number; revision: number; nodeId: string; large?: boolean; fill?: boolean; bytes: Uint8Array | null }
   // `session`: the document couldn't keep the key (a view-only file), so it lasts until the plugin closes.
   | { type: 'file-saved'; requestId: number; fileKey: string; session: boolean }
   // The pasted link's file name (`slug`) isn't this file's (`name`); nothing was saved.
@@ -218,7 +222,9 @@ export function parseUiMessage(value: unknown): UiMessage {
   const ok = (() => {
     switch (m.type) {
       case 'init': return true;
-      case 'preview-selection': return requestId(m.requestId) && generation(m.connectionGeneration) && generation(m.revision) && validNodeId(m.nodeId) && (m.large === undefined || typeof m.large === 'boolean');
+      case 'load-browse': return requestId(m.requestId) && generation(m.connectionGeneration) && validSha256(m.scope);
+      case 'save-browse': return generation(m.connectionGeneration) && validSha256(m.scope) && isRecord(m.value);
+      case 'preview-selection': return requestId(m.requestId) && generation(m.connectionGeneration) && generation(m.revision) && validNodeId(m.nodeId) && (m.large === undefined || typeof m.large === 'boolean') && (m.fill === undefined || typeof m.fill === 'boolean');
       case 'save-connection': return requestId(m.requestId) && isRecord(m.connection)
         && text(m.connection.origin) && text(m.connection.orgId) && text(m.connection.appId) && text(m.connection.token);
       case 'scan-file': return requestId(m.requestId) && typeof m.allPages === 'boolean';

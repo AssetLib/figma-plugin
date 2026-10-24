@@ -8948,7 +8948,8 @@ test('decision guidance applies actual FILL or FIT bounds only in selected-layer
     assert.equal(app.element('inspect-layer-panel').getAttribute('data-pixels'), 'false');
     assert.equal(app.element('inspect-layer-frame').style.width, '240px');
     assert.equal(app.element('inspect-layer-frame').style.height, '400px');
-    assert.equal(app.element('inspect-layer-image').style.objectFit, scaleMode === 'FILL' ? 'cover' : 'contain');
+    assert.equal(app.element('inspect-layer-image').style.objectFit, 'contain', 'already rendered canvas pixels are never cropped again');
+    assert.equal(app.element('inspect-draft-image').style.objectFit, scaleMode === 'FILL' ? 'cover' : 'contain');
     assert.equal(off(app, 'inspect-pixels'), true); app.element('inspect-pixels').click();
     assert.equal(app.element('inspect-layer-panel').getAttribute('data-pixels'), 'false');
     app.element('inspect-original').click(); assert.equal(off(app, 'inspect-pixels'), false);
@@ -9068,4 +9069,139 @@ test('decision guidance never redirects a double-click to a different row after 
   assert.equal(app.insertMessages().length, 1, 'rebuilt rows cannot reuse the prior click sequence');
   fresh.dispatch('click', { detail: 0 }); fresh.dispatch('dblclick', { detail: 2 }); await settle();
   assert.equal(app.insertMessages().length, 2, 'a fresh keyboard or normal click can establish intent');
+});
+
+test('resume decisions restores app-library search choice and scroll without file identity or canvas writes', async () => {
+  const entry = libraryAsset(510, 'Resume Coast', 800, 400);
+  const first = harness({ fileKeyUnavailable: true, prefs: { tab: 'insert', browse: 'images' }, console: library([entry]) });
+  await settle();
+  first.element('insert-search').value = 'Coast'; first.element('insert-search').dispatch('input'); first.fireTimers(300); await settle();
+  tilesOf(first)[0].click(); await settle();
+  first.element('list-region').scrollTop = 141; first.element('list-region').dispatch('scroll'); await settle();
+  const record = first.storage.get('assetlib.browse.v1');
+  assert.equal(record.value.contexts.images.query, 'Coast');
+  assert.equal(record.value.contexts.images.selected.assetId, entry.asset.id);
+  assert.equal(record.value.contexts.images.scroll, 141);
+  assert.equal(JSON.stringify(record).includes(connection.token), false);
+  assert.equal(JSON.stringify(record).includes('data:image'), false);
+  const second = harness({ fileKeyUnavailable: true, store: first.storage, console: library([entry]) }); await settle();
+  assert.equal(second.element('browse-resume').hidden, false);
+  assert.equal(second.element('insert-search').value, '', 'restore waits for an explicit choice');
+  second.element('browse-resume-continue').click(); await settle();
+  assert.equal(second.element('insert-search').value, 'Coast');
+  assert.equal(second.element('list-region').scrollTop, 141);
+  assert.equal(second.element('insert-bar').hidden, false);
+  assert.equal(second.insertMessages().length, 0); assert.equal(second.drafts().length, 0); assert.equal(second.undoCommits.length, 0);
+  assert.equal(second.mainMessages.findLast(message => message.type === 'selection').selection.fileKey, null);
+  assert.match(second.element('browse-resume-note').textContent, /checked again/);
+});
+
+test('resume decisions omits file nodes and isolates apps tokens and console origins', async () => {
+  const first = harness({ prefs: { tab: 'insert' } }); await settle();
+  rowFor(first, placement.key).click(); await settle();
+  const initial = clone(first.storage.get('assetlib.browse.v1'));
+  assert.ok(initial);
+  first.element('browse-file').click(); await settle();
+  first.element('insert-search').value = 'private canvas name'; first.element('insert-search').dispatch('input'); await settle();
+  assert.deepEqual(first.storage.get('assetlib.browse.v1'), initial, 'file context is never persisted');
+  for (const next of [{ ...connection, appId: 'app-b' }, { ...connection, token: tok('another_owner') }, { ...connection, origin: 'https://assetlib-billing-staging.vercel.app' }]) {
+    const store = new Map([['assetlib.connection.v1', next], ['assetlib.browse.v1', clone(initial)]]);
+    const app = harness({ store }); await settle();
+    assert.equal(app.element('browse-resume').hidden, true);
+    assert.equal(app.element('insert-search').value, '');
+  }
+});
+
+test('resume decisions revalidates removed images and exact cells without choosing a fallback', async () => {
+  const entry = libraryAsset(511, 'Removed Coast', 800, 400);
+  const first = harness({ prefs: { tab: 'insert', browse: 'images' }, console: library([entry]) }); await settle();
+  tilesOf(first)[0].click(); await settle();
+  const missing = harness({ store: first.storage, console: library([]) }); await settle(); missing.element('browse-resume-continue').click(); await settle();
+  assert.equal(missing.element('insert-bar').hidden, true); assert.match(missing.element('browse-resume-note').textContent, /not in these loaded results/);
+  const app = harness({ prefs: { tab: 'insert' } }); await settle(); rowFor(app, placement.key).click(); await settle();
+  const record = app.storage.get('assetlib.browse.v1'); record.value.contexts.placements.selected.cell = { state: 'removed', appearance: null, arm: null };
+  record.value.filter = 'with';
+  const reopened = harness({ store: app.storage }); await settle(); reopened.element('browse-resume-continue').click(); await settle();
+  assert.equal(reopened.element('insert-bar').hidden, true); assert.match(reopened.element('browse-resume-note').textContent, /previous placement or cell is no longer available/);
+  assert.equal(reopened.element('art-with').getAttribute('aria-checked'), 'true');
+  assert.equal(reopened.insertMessages().length, 0);
+});
+
+test('resume decisions ignores delayed storage and hashing after connection changes and tolerates unavailable crypto', async () => {
+  const offlineCrypto = harness({ crypto: null }); await settle();
+  assert.equal(offlineCrypto.element('browse-resume').hidden, true);
+  const gate = deferred();
+  const app = harness({ crypto: { subtle: { digest: () => gate.promise } } }); await settle();
+  app.saveConnection({ ...connection, token: tok('rotated') }); await settle();
+  gate.resolve(new Uint8Array(32).buffer); await settle();
+  assert.equal(app.uiMessages.filter(m => m.type === 'load-browse').length, 1, 'the old digest never requests storage');
+  const load = app.uiMessages.find(m => m.type === 'load-browse');
+  assert.equal(load.connectionGeneration, app.mainMessages.findLast(m => m.type === 'connection').connectionGeneration);
+  const storageGate = deferred();
+  app.figma.clientStorage.getAsync = async key => key === 'assetlib.browse.v1' ? storageGate.promise : app.storage.get(key);
+  app.postToMain({ type: 'load-browse', requestId: 9001, connectionGeneration: load.connectionGeneration, scope: load.scope }); await settle();
+  app.saveConnection({ ...connection, appId: 'another_app' }); await settle();
+  storageGate.resolve({ owner: load.scope, value: { browse: 'images', filter: 'all', contexts: { images: { query: 'secret old search', selected: null, active: null, scroll: 0 } } } }); await settle();
+  assert.equal(app.mainMessages.find(m => m.type === 'browse-loaded' && m.requestId === 9001).value, null);
+  assert.equal(app.element('insert-search').value, '');
+});
+
+test('resume decisions compares captured current pixels with proposed art and rejects same-paint edits during export', async () => {
+  const entry = libraryAsset(512, 'Replacement', 800, 400);
+  const gate = deferred();
+  const app = harness({ prefs: { tab: 'insert' }, selection: [{ ...node, width: 300, height: 500, fills: [{ type: 'IMAGE', imageHash: 'same', scaleMode: 'FILL' }] }], console: library([entry]), previewBytes: () => gate.promise });
+  await openFillInspection(app);
+  assert.equal(app.element('inspect-layer').textContent, 'On canvas now');
+  assert.equal(app.element('inspect-draft').textContent, 'Proposed replacement');
+  assert.equal(app.element('inspect-layer-panel').hidden, false); assert.equal(app.element('inspect-draft-panel').hidden, false);
+  assert.equal(app.element('inspect-layer-image').style.objectFit, 'contain');
+  assert.equal(app.element('inspect-draft-image').style.objectFit, 'cover');
+  app.figma.currentPage.selection[0].fills[0].scaleMode = 'FIT';
+  gate.resolve(pngHeader(300, 500)); await settle();
+  assert.equal(app.mainMessages.findLast(m => m.type === 'selection-preview' && m.fill).bytes, null, 'paint fingerprint checked after export even before the 250ms tick');
+  assert.match(app.element('inspect-caption').textContent, /unavailable/);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0); assert.equal(app.undoCommits.length, 0);
+});
+
+test('resume decisions labels empty and unsupported canvas honestly without exporting it', async () => {
+  const entry = libraryAsset(513, 'Replacement', 800, 400);
+  for (const fills of [[], [{ type: 'IMAGE', imageHash: 'same', scaleMode: 'CROP' }]]) {
+    const app = harness({ prefs: { tab: 'insert' }, selection: [{ ...node, fills }], console: library([entry]) }); await openFillInspection(app);
+    assert.match(app.element('inspect-caption').textContent, fills.length ? /unavailable/ : /No visible artwork/);
+    assert.equal(app.previewExports.length, 0); assert.equal(app.insertMessages().length, 0);
+  }
+});
+
+test('resume decisions navigation and fresh choices cancel an in-flight restore', async () => {
+  const entry = libraryAsset(514, 'Old saved choice', 800, 400);
+  const first = harness({ prefs: { tab: 'insert', browse: 'images' }, console: library([entry]) }); await settle(); tilesOf(first)[0].click(); await settle();
+  for (const action of ['browse', 'search', 'filter']) {
+    const store = new Map(first.storage); store.set('assetlib.preferences.v1', { tab: 'insert', browse: 'placements' });
+    const app = harness({ store, console: library([entry]) }); await settle();
+    const gate = deferred(); app.console.gates.assets = gate;
+    app.element('browse-resume-continue').click(); await settle();
+    if (action === 'browse') { app.element('browse-placements').click(); rowFor(app, placement.key).click(); }
+    else if (action === 'search') { app.element('insert-search').value = 'Fresh search'; app.element('insert-search').dispatch('input'); app.fireTimers(300); }
+    else { app.element('browse-placements').click(); app.element('art-empty').click(); }
+    gate.resolve(); delete app.console.gates.assets; await settle();
+    if (action === 'browse') assert.equal(app.element('insert-title').textContent, placement.key);
+    else assert.equal(app.element('insert-bar').hidden, true);
+    assert.equal(app.uiMessages.some(message => message.type === 'insert'), false);
+  }
+});
+
+test('resume decisions reloads fresh bounded pages before restoring an off-first-page choice and scroll', async () => {
+  const entries = Array.from({ length: 50 }, (_, i) => libraryAsset(520 + i, `Candidate ${i}`, 800, 400));
+  const first = harness({ prefs: { tab: 'insert', browse: 'images' }, console: library(entries) }); await settle();
+  first.element('images-more').click(); await settle(); tilesOf(first)[30].click(); await settle();
+  first.element('list-region').scrollTop = 1300; first.element('list-region').dispatch('scroll'); await settle();
+  assert.equal(first.storage.get('assetlib.browse.v1').value.contexts.images.pages, 2);
+  const second = harness({ store: first.storage, console: library(entries) }); await settle();
+  const before = second.requests.filter(r => r.route === 'assets').length;
+  second.element('browse-resume-continue').click(); await settle();
+  assert.equal(second.requests.filter(r => r.route === 'assets').length - before, 2);
+  assert.equal(tilesOf(second).length, 48);
+  assert.equal(second.element('insert-title').textContent, 'Candidate 30');
+  assert.equal(second.element('list-region').scrollTop, 1300);
+  assert.equal(second.insertMessages().length, 0);
 });

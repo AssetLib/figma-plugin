@@ -1,3 +1,5 @@
+import { parseBrowseResume } from '../shared/browse.js';
+import type { BrowseChoice, BrowseContext, BrowseResume } from '../shared/browse.js';
 // The Insert tab: placements by screen and the image library, the cell strip and file inventory, Insert, and dragging rows and tiles onto the canvas.
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, changedArt, consoleLink,
@@ -10,7 +12,7 @@ import type {
 import type { InsertDestination, MainMessage, SelectedLink, UiMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
 import { createCellRenderer, renderCells } from './cells.js';
-import { openInspection } from './inspector.js';
+import { inspectFill } from './fill-inspection.js';
 import { initShortlist, renderShortlist, resetShortlist, shortlistAsset, updateShortlist } from './shortlist.js';
 import { cellAxes, fileRows, fileTag, renderFileScope, requestFileScan, resetFile, selectFileNode } from './infile.js';
 import { hintOfCurrent, startConnect } from './connect.js';
@@ -79,12 +81,15 @@ let quietFrom: number | null = null;
 let artworkRefreshPending = false;
 // A focus or visibility refresh waits a minute after the last artwork request finished, even when it failed.
 let artworkFinishedAt: number | null = null;
-let images: { items: LibraryAsset[]; nextCursor: string | null; q: string; retained?: LibraryAsset | null } | null = null;
+let images: { items: LibraryAsset[]; nextCursor: string | null; q: string; pages: number; retained?: LibraryAsset | null } | null = null;
 // A row's placement and the cell its strip shows, or a tile's image.
-type Choice = { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string } | { kind: 'file'; nodeId: string };
+type Choice = BrowseChoice;
 let selected: Choice | null = null;
 let artFilter: ArtFilter = 'all';
-const browseContext = new Map<Preferences['browse'], { query: string; selected: Choice | null; active: string | null; scroll: number }>();
+const browseContext = new Map<Preferences['browse'], BrowseContext>();
+let resumeScope = '', resumeRequest: number | null = null, resumeReady = false, resumeSaved = '';
+let resumeOffer: BrowseResume | null = null, resumeChoice: Choice | null = null;
+let resumeNote = '', resumeLoading = false, resumeIntent = 0;
 let restoreScroll: number | null = null;
 let clearArtFilter = false;
 let recoveryLabel = 'Clear search';
@@ -130,6 +135,77 @@ export function applyPreferences(preferences: Preferences): void {
   if (state.preferencesLoaded) return;
   state.preferencesLoaded = true;
   state.prefs = parsePreferences(preferences);
+}
+/** App-library navigation only. File rows and canvas selection never leave this session. */
+function browseSnapshot(): BrowseResume | null {
+  const contexts = Object.fromEntries(browseContext);
+  if (state.prefs.browse !== 'file') contexts[state.prefs.browse] = { query: currentQuery(), selected, active: activeKey,
+    scroll: restoreScroll ?? element('list-region').scrollTop, ...(state.prefs.browse === 'images' ? { pages: images?.pages ?? 1 } : {}) };
+  return parseBrowseResume({ browse: state.prefs.browse, filter: artFilter, contexts });
+}
+export async function loadBrowseResume(): Promise<void> {
+  const connection = state.connection, generation = state.connectionGeneration;
+  if (!connection || generation === null) return;
+  try {
+    const input = new TextEncoder().encode(JSON.stringify([connection.origin, connection.orgId, connection.appId, connection.token]));
+    const digest = await crypto.subtle.digest('SHA-256', input);
+    if (connection !== state.connection || generation !== state.connectionGeneration) return;
+    resumeScope = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    resumeRequest = nextRequestId();
+    post({ type: 'load-browse', requestId: resumeRequest, connectionGeneration: generation, scope: resumeScope });
+  } catch { /* Secure hashing unavailable: keep browsing in this session only. */ }
+}
+export function acceptBrowseResume(message: Extract<MainMessage, { type: 'browse-loaded' }>): void {
+  if (message.requestId !== resumeRequest || message.connectionGeneration !== state.connectionGeneration || message.scope !== resumeScope) return;
+  resumeRequest = null; resumeReady = true; resumeOffer = parseBrowseResume(message.value);
+  scheduleRender();
+}
+function rememberBrowse(): void {
+  if (!resumeReady || resumeOffer || !resumeScope || state.connectionGeneration === null || state.connectionChanging || state.ops.loadingList || state.ops.connecting || resumeChoice || resumeLoading) return;
+  const value = browseSnapshot(), signature = JSON.stringify(value);
+  if (!value || signature === resumeSaved) return;
+  resumeSaved = signature;
+  post({ type: 'save-browse', connectionGeneration: state.connectionGeneration, scope: resumeScope, value });
+}
+function cancelResume(): void { if (resumeLoading || resumeChoice) restoreScroll = null; resumeIntent++; resumeLoading = false; resumeChoice = null; }
+function continueBrowse(): void {
+  if (!resumeOffer || actionsBlocked()) return;
+  cancelResume();
+  const intent = resumeIntent, saved = resumeOffer; resumeOffer = null; resumeNote = ''; resumeLoading = true;
+  for (const kind of ['placements', 'images'] as const) { const context = saved.contexts[kind]; if (context) browseContext.set(kind, context); }
+  state.prefs.browse = saved.browse; artFilter = saved.filter;
+  const context = saved.contexts[saved.browse];
+  searchInput.value = context?.query ?? ''; selected = null; resumeChoice = context?.selected ?? null;
+  activeKey = context?.active ?? null; restoreScroll = context?.scroll ?? 0;
+  savePreferences();
+  if (saved.browse === 'images') images = null; else artwork = null;
+  void (async () => {
+    try {
+      if (saved.browse === 'images') {
+        await loadImages(true, false, true);
+        while (intent === resumeIntent && images?.nextCursor && images.pages < (context?.pages ?? 1)) {
+          const count = images.pages; await loadImages(false, false, true);
+          if (images?.pages === count) break;
+        }
+      } else await loadArtwork();
+    } finally { if (intent === resumeIntent) { resumeLoading = false; scheduleRender(true); } }
+  })();
+  scheduleRender(true);
+}
+function revalidateResume(): void {
+  if (!resumeChoice || resumeLoading || state.ops.loadingList || state.ops.connecting) return;
+  const choice = resumeChoice;
+  if (choice.kind === 'placement') {
+    if (!artwork) return;
+    const placement = artwork.placements.find(item => item.key === choice.key);
+    selected = placement && findCell(placement, choice.cell) ? choice : null;
+    resumeNote = selected ? 'Browsing resumed. Artwork was checked again; Insert remains a separate action.' : 'The previous placement or cell is no longer available. Choose another destination.';
+  } else if (choice.kind === 'image') {
+    if (!images || images.q !== currentQuery()) return;
+    selected = images.items.some(item => item.id === choice.assetId) ? choice : null;
+    resumeNote = selected ? 'Browsing resumed. Artwork was checked again; Insert remains a separate action.' : 'The previous image is not in these loaded results. Search or Load more to find it.';
+  }
+  resumeChoice = null;
 }
 function published(name: EnvironmentName): boolean { return name === 'draft' || Boolean(artwork?.environments[name]); }
 // A remembered environment with nothing published shows draft, without forgetting the choice.
@@ -295,6 +371,7 @@ function firstCell(placement: PlacementArtwork): CellCoordinate {
   return cell ? { state: cell.state, appearance: cell.appearance, arm: cell.arm } : base;
 }
 function selectPlacement(key: string): void {
+  cancelResume();
   const placement = artwork?.placements.find(item => item.key === key);
   if (!placement) return;
   activeKey = key;
@@ -305,6 +382,7 @@ function selectPlacement(key: string): void {
   selectionChanged(key);
 }
 function selectImage(assetId: string): void {
+  cancelResume();
   if (!images?.items.some(item => item.id === assetId) && !shortlistAsset(assetId)) return;
   activeKey = assetId;
   selected = { kind: 'image', assetId };
@@ -313,7 +391,7 @@ function selectImage(assetId: string): void {
 function choose(key: string): void {
   if (state.prefs.browse === 'placements') selectPlacement(key);
   else if (state.prefs.browse === 'images') selectImage(key);
-  else { selected = { kind: 'file', nodeId: key }; activeKey = key; selectionChanged(key); }
+  else { cancelResume(); selected = { kind: 'file', nodeId: key }; activeKey = key; selectionChanged(key); }
 }
 function selectionChanged(id: string): void {
   updateSelected();
@@ -687,6 +765,7 @@ export function renderList(): void {
   rows = new Map();
   rowNames = new Map();
   releaseListImages();
+  revalidateResume();
   const { browse } = state.prefs;
   const list = element('insert-list');
   const grid = element('image-grid');
@@ -787,7 +866,8 @@ export function renderList(): void {
 
 /** Restore only after controls and footer have established the final scroll bounds. */
 export function restoreBrowseScroll(): void {
-  if (restoreScroll !== null && !state.ops.loadingList) { element('list-region').scrollTop = restoreScroll; restoreScroll = null; }
+  if (restoreScroll !== null && !state.ops.loadingList && !state.ops.connecting && !resumeChoice && !resumeLoading) { element('list-region').scrollTop = restoreScroll; restoreScroll = null; }
+  rememberBrowse();
 }
 
 function renderIntro(): void {
@@ -804,6 +884,11 @@ export function renderInsertControls(): void {
   element('browse-images').setAttribute('aria-checked', String(browse === 'images'));
   element('browse-file').setAttribute('aria-checked', String(browse === 'file'));
   renderFileScope();
+  element('browse-resume').hidden = !resumeOffer || !state.connection || state.ops.connecting;
+  element('browse-resume-continue').textContent = `Continue browsing ${state.connection?.appName || 'this app'}`;
+  setUnavailable(element('browse-resume-continue'), actionsBlocked());
+  element('browse-resume-note').hidden = !resumeNote;
+  element('browse-resume-note').textContent = resumeNote;
   rovingStops(browseButtons);
   // Typing stays possible while a list loads; a new search replaces the load.
   searchInput.disabled = !state.connection;
@@ -935,10 +1020,8 @@ function acceptArtwork(payload: unknown, generation: number, from: number, atten
   const placement = selectedPlacement();
   if (selected?.kind === 'placement') {
     if (!placement) selected = null;
-    else {
-      const cell = findCell(placement, selected.cell) ? { ...selected.cell, state: selected.cell.state ?? placement.defaultState } : firstCell(placement);
-      selected = { ...selected, cell };
-    }
+    else if (!findCell(placement, selected.cell)) { selected = null; resumeNote = 'The previous cell is no longer available. Choose another destination.'; }
+    else selected = { ...selected, cell: { ...selected.cell, state: selected.cell.state ?? placement.defaultState } };
   }
   if (attention === state.attentionCount) markConnected();
 }
@@ -1105,7 +1188,7 @@ async function loadArtwork(): Promise<void> {
 }
 /** Same bounded library read as Refresh, but keeps the current context and never retries in the background. */
 export function checkImages(): Promise<string | undefined> { return loadImages(true, true); }
-async function loadImages(reset: boolean, checking = false): Promise<string | undefined> {
+async function loadImages(reset: boolean, checking = false, resuming = false): Promise<string | undefined> {
   const config = state.connection;
   const generation = state.connectionGeneration;
   if (!config) return;
@@ -1135,11 +1218,11 @@ async function loadImages(reset: boolean, checking = false): Promise<string | un
     if (checking) restoreScroll = element('list-region').scrollTop;
     updateShortlist(page.assets);
     const added = previous && !reset ? page.assets.filter(asset => !previous.items.some(item => item.id === asset.id)) : page.assets;
-    images = { items: previous && !reset ? [...previous.items, ...added] : added, nextCursor: page.nextCursor, q, retained };
+    images = { items: previous && !reset ? [...previous.items, ...added] : added, nextCursor: page.nextCursor, q, retained, pages: reset ? 1 : (previous?.pages ?? 0) + 1 };
     if (selected?.kind === 'image' && !selectedImage()) selected = null;
     if (attention === state.attentionCount) markConnected();
     // On the last page Load more hides; focus moves to the first new image rather than the page.
-    if (!reset && added[0]) preferFocus(added[0].id);
+    if (!reset && !resuming && added[0]) preferFocus(added[0].id);
     if (checking) return `Library checked. ${page.assets.length} image${page.assets.length === 1 ? '' : 's'}${q ? ' matching your search' : ''}${page.nextCursor ? ' loaded; more available' : ' available'}.${retained && !page.assets.some(item => item.id === retained.id) ? ' Your selected image is kept outside these results.' : ''}`;
   } catch (error) {
     if (generation !== state.connectionGeneration || ticket !== listTicket) return;
@@ -1409,7 +1492,8 @@ export function failInsert(requestId: number, message: string): boolean {
 }
 
 export function resetInsert(): void {
-  clickedItem = null;
+  clickedItem = null; cancelResume();
+  resumeScope = ''; resumeRequest = null; resumeReady = false; resumeSaved = ''; resumeOffer = null; resumeChoice = null; resumeNote = '';
   resetShortlist();
   resetFile();
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
@@ -1428,8 +1512,9 @@ export function resetInsert(): void {
 
 function setBrowse(next: Preferences['browse']): void {
   if (state.prefs.browse === next) return;
+  cancelResume();
   if (next !== 'placements') pendingReveal = null;
-  browseContext.set(state.prefs.browse, { query: searchInput.value, selected, active: activeKey, scroll: element('list-region').scrollTop });
+  browseContext.set(state.prefs.browse, { query: searchInput.value, selected, active: activeKey, scroll: element('list-region').scrollTop, ...(state.prefs.browse === 'images' ? { pages: images?.pages ?? 1 } : {}) });
   const context = browseContext.get(next);
   state.prefs.browse = next;
   searchInput.value = context?.query ?? '';
@@ -1439,7 +1524,7 @@ function setBrowse(next: Preferences['browse']): void {
   if (selected?.kind === 'placement' && artwork) {
     const placement = selectedPlacement();
     if (!placement) selected = null;
-    else if (!findCell(placement, selected.cell)) selected = { ...selected, cell: firstCell(placement) };
+    else if (!findCell(placement, selected.cell)) { selected = null; resumeNote = 'The previous cell is no longer available. Choose another destination.'; }
   }
   if (selected?.kind === 'image' && images && !selectedImage()) selected = null;
   if (searchTimer !== null) { window.clearTimeout(searchTimer); searchTimer = null; }
@@ -1449,6 +1534,7 @@ function setBrowse(next: Preferences['browse']): void {
   enterInsert();
 }
 function setEnvironment(next: EnvironmentName, reveal = false): void {
+  cancelResume();
   if (!reveal && artwork && !published(next)) return;
   state.prefs.environment = next;
   state.prefs.environmentChosen = true;
@@ -1470,6 +1556,7 @@ function refreshList(): void {
     else if (state.prefs.browse === 'placements') void loadArtwork(); else void loadImages(true);
 }
 function clearSearch(): void {
+  cancelResume();
   searchInput.value = '';
   if (state.prefs.browse !== 'images') scheduleRender(true); else searchImages();
   scheduleRender();
@@ -1485,6 +1572,7 @@ function insertFrom(key: string): void {
 }
 /** Nothing chosen: the footer goes, and focus stays where it is. Not while an insert runs, whose footer says so. */
 function clearSelection(): void {
+  cancelResume();
   selected = null;
   updateSelected();
   if (!actionsBlocked()) setStatus('');
@@ -1574,16 +1662,19 @@ function listKeydown(event: KeyboardEvent): void {
 
 export function initInsert(goToSend: () => void): void {
   initShortlist(selectedImage, selectImage);
+  element('browse-resume-continue').addEventListener('click', continueBrowse);
+  element('browse-resume-dismiss').addEventListener('click', () => { resumeOffer = null; rememberBrowse(); scheduleRender(); });
+  element('list-region').addEventListener('scroll', rememberBrowse);
   element('insert-inspect').addEventListener('click', () => {
     const target = insertTarget(), generation = state.connectionGeneration, revision = state.selection.revision;
     if (actionsBlocked() || !target?.asset || !filling(canvasTarget(target))) return;
     const asset = target.asset;
-    openInspection({ returnTo: element('insert-inspect'), target: state.selection.fillPreview ?? { reason: 'Select the layer again to check its paint settings.' },
-      current: () => state.prefs.tab === 'insert' && generation === state.connectionGeneration && revision === state.selection.revision && insertTarget()?.asset?.id === asset.id,
-      items: () => [{ label: asset.name || 'Image', caption: target.title, source: asset, sourceLabel: 'Source', asset }],
-    });
+    const choice = JSON.stringify(selected);
+    inspectFill(asset, target.title, element('insert-inspect'), () => state.prefs.tab === 'insert' && generation === state.connectionGeneration
+      && revision === state.selection.revision && JSON.stringify(selected) === choice && insertTarget()?.asset?.id === asset.id);
   });
   artFilterButtons.forEach((button, index) => button.addEventListener('click', () => {
+    cancelResume();
     artFilter = artFilters[index]!;
     if (!actionsBlocked()) selected = null;
     activeKey = null;
@@ -1638,12 +1729,13 @@ export function initInsert(goToSend: () => void): void {
   }
   searchInput.addEventListener('keydown', escape);
   searchInput.addEventListener('input', () => {
+    cancelResume();
     scheduleRender();
     if (state.prefs.browse !== 'images') { scheduleRender(true); return; }
     if (searchTimer !== null) window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(searchImages, 300);
   });
-  element('insert-clear').addEventListener('click', () => { if (clearArtFilter) { artFilter = 'all'; scheduleRender(true); } else clearSearch(); searchInput.focus(); });
+  element('insert-clear').addEventListener('click', () => { cancelResume(); if (clearArtFilter) { artFilter = 'all'; scheduleRender(true); } else clearSearch(); searchInput.focus(); });
   searchClear.addEventListener('click', () => { clearSearch(); searchInput.focus(); });
   element('insert-refresh').addEventListener('click', refreshList);
   element('insert-retry').addEventListener('click', refreshList);
