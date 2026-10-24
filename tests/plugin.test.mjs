@@ -8942,7 +8942,7 @@ test('decision guidance applies actual FILL or FIT bounds only in selected-layer
   for (const scaleMode of ['FILL', 'FIT']) {
     const app = harness({ selection: [{ ...node, width: 300, height: 500, fills: [{ type: 'IMAGE', imageHash: 'old', scaleMode }] }], console: library([entry]) });
     await openFillInspection(app); decodeInspection(app);
-    app.element('inspect-layer-panel').getBoundingClientRect = () => ({ width: 400, height: 400 });
+    for (const name of ['layer', 'draft']) app.element(`inspect-${name}-panel`).getBoundingClientRect = () => ({ width: 400, height: 400 });
     app.element('inspect-pixels').click(); app.element('inspect-target').click();
     assert.equal(app.element('inspect-layer-panel').getAttribute('data-layer'), 'true');
     assert.equal(app.element('inspect-layer-panel').getAttribute('data-pixels'), 'false');
@@ -9198,4 +9198,57 @@ test('resume decisions reloads fresh bounded pages before restoring an off-first
   assert.equal(second.element('insert-title').textContent, 'Candidate 30');
   assert.equal(second.element('list-region').scrollTop, 1300);
   assert.equal(second.insertMessages().length, 0);
+});
+
+test('artwork decisions filters loaded Images by current layer shape, recomputes on resize and restores All for unsupported selections', async () => {
+  const entries = [libraryAsset(410, 'Wide', 400, 200), libraryAsset(411, 'Square', 200, 200), libraryAsset(412, 'Small wide', 100, 50)];
+  const layer = { ...node, width: 400, height: 200, fills: [{ type: 'IMAGE', imageHash: 'old', scaleMode: 'FILL' }] };
+  const app = harness({ selection: [layer], console: library(entries) });
+  await openInsert(app, { keep: true }); app.element('browse-images').click(); await settle();
+  assert.match(app.element('images-matching').textContent, /shape 2$/);
+  assert.match(app.element('images-shape-note').textContent, /loaded search results.*does not measure resolution/);
+  assert.match(textOf(tilesOf(app)[1]), /May crop/); assert.match(textOf(tilesOf(app)[2]), /May need enlargement/);
+  app.element('images-matching').click(); await settle(); assert.equal(tilesOf(app).length, 2);
+  const resized = app.figma.currentPage.selection[0]; resized.resize(200, 200); app.tick(); await settle();
+  assert.match(app.element('images-matching').textContent, /shape 1$/); assert.equal(tilesOf(app).length, 1);
+  assert.match(textOf(tilesOf(app)[0]), /Square/);
+  resized.fills = [{ type: 'IMAGE', imageHash: 'old', scaleMode: 'CROP' }]; app.tick(); await settle();
+  assert.equal(off(app, 'images-matching'), true); assert.equal(app.element('images-all').getAttribute('aria-checked'), 'true'); assert.equal(tilesOf(app).length, 3);
+  assert.match(app.element('images-shape-note').textContent, /Crop and Tile.*unavailable/);
+  app.select([]); await settle(); assert.equal(off(app, 'images-matching'), true);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+test('artwork decisions shows shortlist thumbnails and simultaneous 2 and 3 candidate panels without writes', async () => {
+  const entries = ['Coast', 'Garden', 'Mountain'].map((name, i) => libraryAsset(420 + i, name, 400, 200));
+  const app = harness({ console: library(entries) }); await compareLibrary(app, entries.slice(0, 2));
+  assert.equal(app.element('inspect-panels').getAttribute('data-compare'), 'true');
+  for (const name of ['layer', 'draft']) assert.equal(app.element(`inspect-${name}-panel`).hidden, false);
+  assert.equal(app.element('inspect-third-panel').hidden, true);
+  assert.equal(app.element('shortlist-names').children[0].children[0].children[0].tagName, 'IMG');
+  app.element('inspect-close').click(); await settle(); tilesOf(app)[2].click(); app.element('shortlist-add').click(); app.element('shortlist-compare').click(); await settle();
+  for (const name of ['layer', 'draft', 'third']) assert.equal(app.element(`inspect-${name}-panel`).hidden, false);
+  app.element('inspect-third').click(); decodeInspection(app, 'third');
+  assert.equal(app.element('inspect-third-panel').getAttribute('data-selected'), 'true');
+  app.element('inspect-use').click(); await settle(); assert.match(app.element('insert-title').textContent, /Mountain/);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.exports.length, 0);
+});
+
+
+test('artwork decisions withholds stale query counts and filter activation during deferred or failed searches', async () => {
+  const entries = [libraryAsset(430, 'Wide', 400, 200), libraryAsset(431, 'Square', 200, 200)];
+  const app = harness({ selection: [{ ...node, width: 400, height: 200, fills: [] }], console: library(entries) });
+  await openInsert(app, { keep: true }); app.element('browse-images').click(); await settle();
+  const gate = deferred(); app.console.gates.assets = gate;
+  app.element('insert-search').value = 'Square'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+  assert.equal(app.element('images-all').textContent, 'All —'); assert.match(app.element('images-matching').textContent, /shape —$/);
+  assert.equal(off(app, 'images-matching'), true); app.element('images-matching').click(); await settle();
+  assert.equal(app.element('images-all').getAttribute('aria-checked'), 'true');
+  delete app.console.gates.assets; gate.resolve(); await settle();
+  assert.equal(app.element('images-all').textContent, 'All 1'); assert.match(app.element('images-matching').textContent, /shape 0$/);
+  app.console.statuses.assets = 400;
+  app.element('insert-search').value = 'Wide'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+  assert.equal(app.element('image-grid').getAttribute('aria-busy'), null);
+  assert.equal(app.element('images-all').textContent, 'All —'); assert.doesNotMatch(app.element('images-shape-note').textContent, /Loading/);
+  app.element('images-matching').click(); assert.equal(app.element('images-all').getAttribute('aria-checked'), 'true');
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
 });

@@ -137,7 +137,7 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainMessage }>) => {
     case 'connection': onConnection(message); break;
     case 'selection':
       applySelection(message);
-      if (message.connectionGeneration === state.connectionGeneration) noteLinkSeen();
+      if (message.connectionGeneration === state.connectionGeneration) { noteLinkSeen(); if (state.prefs.browse === 'images') scheduleRender(true); }
       break;
     case 'browse-loaded': acceptBrowseResume(message); break;
     case 'file-links': acceptFileLinks(message); break;

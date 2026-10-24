@@ -302,16 +302,24 @@
     .send-comparison p { overflow-wrap: anywhere; }
     .send-comparison .text-action { justify-self: start; }
     .artwork-inspector { position: fixed; inset: 0; z-index: 10; padding: 16px; background: var(--bg); display: grid; grid-template-rows: auto auto auto minmax(96px, 1fr) auto auto; gap: 8px; overflow: auto; }
+    #inspect-title { min-height: 16px; }
     .image-shortlist { padding: 4px 12px; }
     .shortlist-names { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
     .shortlist-names button, .inspector-actions > button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .shortlist-names button { max-width: 140px; }
+    .shortlist-names button { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; padding: 4px; height: 40px; }
+    .shortlist-names button > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .shortlist-names .thumb { width: 32px; height: 28px; flex: none; }
+    #image-shape-options { flex-wrap: wrap; }
+    #image-shape-options button { text-align: left; white-space: normal; height: auto; min-height: 24px; }
+    .tile .image-guidance { white-space: normal; }
+    .image-guidance:empty { display: none; }
     .inspector-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .inspector-actions [aria-pressed="true"] { color: var(--text); border-color: var(--text); }
     .inspect-panels { grid-row: 4; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
     .inspect-panels[data-compare="true"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .inspect-panels[data-compare="true"] .inspect-panel[data-selected="true"] { outline: 1px solid var(--text); outline-offset: -1px; }
     .inspect-pane { min-height: 0; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 6px; }
-    .inspect-pane-label { min-height: 32px; overflow-wrap: anywhere; }
+    .inspect-pane-label { min-height: 32px; overflow-wrap: anywhere; white-space: normal; font-size: 11px; line-height: 1.3; }
     .inspect-panel { grid-row: 2; min-height: 0; overflow: auto; display: flex; }
     #inspect-caption { overflow: auto; }
     .inspect-panel[data-layer="true"] { align-items: center; justify-content: center; }
@@ -568,6 +576,7 @@
             <button id="art-with" type="button" role="radio" aria-checked="false">With art</button>
             <button id="art-empty" type="button" role="radio" aria-checked="false">No art</button>
           </div>
+          <div id="image-filters" hidden><div id="image-shape-options" class="segmented" role="radiogroup" aria-label="Image shape"><button id="images-all" type="button" role="radio" aria-checked="true">All</button><button id="images-matching" type="button" role="radio" aria-checked="false">Matches this layer’s shape</button></div><p id="images-shape-note" class="meta"></p></div>
           <p id="browse-summary" class="meta"></p>
         </div>
         <div id="intro" class="info intro" hidden><p>Placements come from app code. Send updates Draft. Choose an environment to view published art.</p><a class="text-action" href="https://www.assetlib.dev/guide#figma" target="_blank" rel="noopener noreferrer">Figma guide</a><button id="intro-close" class="secondary small" type="button">Got it</button></div>

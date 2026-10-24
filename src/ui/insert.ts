@@ -1,3 +1,4 @@
+import { imageGuidance } from '../shared/image-guidance.js';
 import { browseScope } from '../shared/browse-scope.js';
 import { parseBrowseResume } from '../shared/browse.js';
 import type { BrowseChoice, BrowseContext, BrowseResume } from '../shared/browse.js';
@@ -87,6 +88,7 @@ let images: { items: LibraryAsset[]; nextCursor: string | null; q: string; pages
 type Choice = BrowseChoice;
 let selected: Choice | null = null;
 let artFilter: ArtFilter = 'all';
+let imageShape = false;
 const browseContext = new Map<Preferences['browse'], BrowseContext>();
 let resumeScope = '', resumeRequest: number | null = null, resumeReady = false, resumeSaved = '';
 let resumeOffer: BrowseResume | null = null, resumeChoice: Choice | null = null;
@@ -584,6 +586,7 @@ function imageTile(asset: LibraryAsset): HTMLElement {
   const tile = makeNode('div', 'tile');
   tile.setAttribute('data-asset-id', asset.id);
   const kind = asset.processingIntent === 'photo' ? 'Photo' : 'Artwork';
+  const guidance = imageGuidance(asset, shapeTarget());
   tile.title = `${asset.name || 'Untitled image'} · ${asset.width} × ${asset.height} · ${kind}`;
   const name = makeNode('span', 'name');
   // A name breaks after its separators (travel.coast.|background, hero_dark_|final) before anywhere else.
@@ -593,6 +596,10 @@ function imageTile(asset: LibraryAsset): HTMLElement {
   }
   const size = makeNode('span', 'size', `${asset.width} × ${asset.height}`);
   tile.append(thumbnailFrame(asset), name, size);
+  if (guidance) {
+    const note = makeNode('span', 'size image-guidance', guidance.labels.join(' · '));
+    note.title = guidance.detail; tile.append(note); tile.title += ` · ${guidance.detail}`;
+  }
   return wireItem(tile, asset.id, asset.name || 'Untitled image', selectImage);
 }
 /** Grey blocks where rows or tiles will be, while the list loads (no shimmer), and the words a screen reader finds there. */
@@ -759,6 +766,10 @@ function renderEmpty(current: ListState | null): void {
  * Rebuilds the list or grid, a listbox with one tab stop while it has rows or tiles (placements in a group per screen);
  * selection changes only update aria-selected, so focus stays on the row.
  */
+function shapeTarget() {
+  const target = reportedTarget();
+  return hasCurrentSelection() && (target.mode === 'fill' || target.mode === 'replace') && target.count === 1 ? state.selection.fillPreview ?? null : null;
+}
 export function renderList(): void {
   rows = new Map();
   rowNames = new Map();
@@ -776,6 +787,18 @@ export function renderList(): void {
   clearArtFilter = false; recoveryLabel = 'Clear search';
   const filters = element('art-filters');
   filters.hidden = true;
+  element('image-filters').hidden = browse !== 'images' || !state.connection || !images || (!images.items.length && !images.q);
+  const target = shapeTarget(), shapeAvailable = target && !('reason' in target);
+  const resultsCurrent = images?.q === query && state.ops.loadingList !== 'images';
+  if (!shapeAvailable) imageShape = false;
+  const allImages = element<HTMLButtonElement>('images-all'), matchingImages = element<HTMLButtonElement>('images-matching');
+  allImages.textContent = `All ${resultsCurrent ? images?.items.length ?? 0 : '—'}`;
+  matchingImages.textContent = `Matches this layer’s shape ${shapeAvailable && resultsCurrent ? images?.items.filter(asset => imageGuidance(asset, target)?.matches).length ?? 0 : '—'}`;
+  allImages.setAttribute('aria-checked', String(!imageShape)); matchingImages.setAttribute('aria-checked', String(imageShape));
+  setUnavailable(matchingImages, !shapeAvailable || !resultsCurrent || actionsBlocked());
+  rovingStops([allImages, matchingImages]);
+  element('images-shape-note').textContent = !resultsCurrent ? 'Shape counts appear when this search loads.' : shapeAvailable ? 'Within 2% of the layer’s aspect ratio. Counts cover loaded search results; shape does not measure resolution.'
+    : target && 'reason' in target ? target.reason + ' Shape filtering is unavailable; all images are shown.' : 'Select one supported image layer to compare its shape. All images are shown.';
   const listChildren: HTMLElement[] = [];
   const gridChildren: HTMLElement[] = [];
   // The connection test runs before any list loads, so it counts as loading too.
@@ -843,10 +866,14 @@ export function renderList(): void {
   else if (!images.items.length) {
     empty = { title: 'No images yet', text: 'Upload image files to the library in the console. To send Figma layers to Draft placements, sync the app catalog before sending.', action: 'link',
       link: { text: 'Upload images…', section: 'images' } };
-  } else gridChildren.push(...images.items.map(imageTile));
+  } else {
+    const matches = images.items.filter(asset => !imageShape || imageGuidance(asset, target)?.matches);
+    gridChildren.push(...matches.map(imageTile));
+    if (!matches.length) empty = { text: 'No loaded images match this layer’s shape. Show All or load more images.', action: null };
+  }
   if (browse === 'images' && images && (images.items.length || images.q) && !loading('images') && images.q === query) summary = `${images.items.length} image${images.items.length === 1 ? '' : 's'}${images.nextCursor ? ' loaded · more available' : images.q ? ' matching your search' : ''}`;
   element('browse-summary').textContent = summary;
-  element('browse-results').hidden = !summary && filters.hidden;
+  element('browse-results').hidden = !summary && filters.hidden && element('image-filters').hidden;
   list.replaceChildren(...listChildren);
   grid.replaceChildren(...gridChildren);
   // A listbox only while it holds options; loading, it holds skeletons and the words a screen reader finds there.
@@ -1495,7 +1522,7 @@ export function resetInsert(): void {
   resetShortlist();
   resetFile();
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
-  artFilter = 'all'; browseContext.clear(); searchInput.value = ''; restoreScroll = 0;
+  artFilter = 'all'; imageShape = false; browseContext.clear(); searchInput.value = ''; restoreScroll = 0;
   artworkFrom = null; quietFrom = null; seenLinks.clear(); checkedLinks.clear();
   quietTicket += 1; quietLoading = false; artworkRefreshPending = false; artworkFinishedAt = null; artworkListStale = false; pendingReveal = null;
   state.ops.loadingList = null; loadingQuery = ''; listError = null; listDeferred = false; listTicket += 1;
@@ -1660,6 +1687,13 @@ function listKeydown(event: KeyboardEvent): void {
 
 export function initInsert(goToSend: () => void): void {
   initShortlist(selectedImage, selectImage);
+  const shapeButtons = ['images-all', 'images-matching'].map(id => element<HTMLButtonElement>(id));
+  shapeButtons.forEach((button, index) => button.addEventListener('click', () => {
+    const target = shapeTarget();
+    if (actionsBlocked() || index && (!target || 'reason' in target || images?.q !== currentQuery() || state.ops.loadingList === 'images')) return;
+    cancelResume(); imageShape = Boolean(index); selected = null; activeKey = null; scheduleRender(true);
+  }));
+  arrowKeys(element('image-shape-options'), shapeButtons, 'radios');
   element('browse-resume-continue').addEventListener('click', continueBrowse);
   element('browse-resume-dismiss').addEventListener('click', () => { resumeOffer = null; rememberBrowse(); scheduleRender(); });
   element('list-region').addEventListener('scroll', rememberBrowse);

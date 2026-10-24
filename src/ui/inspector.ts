@@ -39,7 +39,7 @@ export function openInspection(next: Inspection): void {
   if (actionsBlocked() || !next.current()) return;
   if (session) closeInspection();
   session = next; side = 0; pixels = false; inLayer = Boolean(next.compare && next.target && !('reason' in next.target)); unavailable.clear();
-  renderInspection(); sides[0]!.focus();
+  renderInspection(); sides[0]!.focus({ preventScroll: true }); dialog.scrollTop = 0;
 }
 export function renderInspection(): void {
   if (session && !session.current()) closeInspection();
@@ -47,6 +47,7 @@ export function renderInspection(): void {
   if (!session) return;
   const items = session.items().slice(0, 3);
   element('inspect-panels').setAttribute('data-compare', String(Boolean(session.compare)));
+  element('inspect-panels').style.gridTemplateColumns = session.compare ? `repeat(${items.length}, minmax(0, 1fr))` : '';
   if (!items.length) { closeInspection(); return; }
   side = Math.min(side, items.length - 1);
   const target = session.target && !('reason' in session.target) ? session.target : null;
@@ -65,23 +66,20 @@ export function renderInspection(): void {
     } else showThumbnail(image, blocked ? null : item.asset ?? null, false, true);
     image.alt = item.label;
   });
+  panels.forEach((panel, index) => { panel.hidden = !items[index] || !session!.compare && side !== index; element(`inspect-${names[index]}-pane`).hidden = panel.hidden; });
   sides.forEach((button, index) => {
     const item = items[index];
     button.hidden = !item; button.textContent = item?.label ?? ''; button.title = item?.label ?? '';
     button.setAttribute('aria-pressed', String(side === index));
     panels[index]!.hidden = !item || !session!.compare && side !== index;
     element(`inspect-${names[index]}-pane`).hidden = panels[index]!.hidden;
-    const label = element(`inspect-${names[index]}-label`); label.hidden = !session!.compare; label.textContent = item?.label ?? '';
+    const label = element(`inspect-${names[index]}-label`); label.hidden = !session!.compare; label.textContent = [item?.label, item?.status].filter(Boolean).join(' · ');
+    panels[index]!.setAttribute('data-selected', String(side === index));
     label.title = item?.status ?? item?.caption ?? '';
     panels[index]!.setAttribute('aria-label', `${item?.label ?? ''} preview, scroll at 100%`);
     panels[index]!.setAttribute('data-background', ['transparent', 'light', 'dark'][background]!);
     panels[index]!.setAttribute('data-pixels', String(pixels)); panels[index]!.tabIndex = pixels && !panels[index]!.hidden ? 0 : -1;
     panels[index]!.setAttribute('data-layer', String(inLayer));
-    const frame = element(`inspect-${names[index]}-frame`);
-    const box = panels[index]!.getBoundingClientRect();
-    const scale = target ? Math.min(box.width / target.width, box.height / target.height, 1) : 1;
-    frame.style.width = inLayer && target ? `${target.width * scale}px` : '';
-    frame.style.height = inLayer && target ? `${target.height * scale}px` : '';
     images[index]!.style.objectFit = inLayer && !item?.rendered && target?.mode === 'FILL' ? 'cover' : 'contain';
     if (!item) showThumbnail(images[index]!, null);
   });
@@ -97,6 +95,13 @@ export function renderInspection(): void {
   element('inspect-use').hidden = !session.use;
   setUnavailable(element('inspect-use'), actionsBlocked() || !loaded || session.usable?.(side) === false);
   element('inspect-help').textContent = `${inLayer ? 'Original offers 100% preview pixels.' : '100% shows preview pixels, not app size.'} ← → compares artwork. Esc returns.`;
+  const bounds = panels.filter(panel => !panel.hidden).map(panel => panel.getBoundingClientRect());
+  const scale = target ? Math.min(...bounds.flatMap(box => [box.width / target.width, box.height / target.height]), 1) : 1;
+  names.forEach(name => {
+    const frame = element(`inspect-${name}-frame`);
+    frame.style.width = inLayer && target ? `${target.width * scale}px` : '';
+    frame.style.height = inLayer && target ? `${target.height * scale}px` : '';
+  });
 }
 export function initInspector(): void {
   element('inspect-close').addEventListener('click', closeInspection);

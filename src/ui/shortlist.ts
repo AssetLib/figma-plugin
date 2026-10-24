@@ -1,7 +1,8 @@
+import { imageGuidance } from '../shared/image-guidance.js';
 import { aspectMismatch, insertRendition, sizeLabel } from '../shared/index.js';
 import type { LibraryAsset } from '../shared/index.js';
 import { element, scheduleRender, setStatus, setUnavailable } from './dom.js';
-import { retryFailedThumbnails } from './thumbnails.js';
+import { releaseListImages, retryFailedThumbnails, thumbnailFrame } from './thumbnails.js';
 import { openInspection } from './inspector.js';
 import { actionsBlocked, NEW_FRAME, state } from './state.js';
 
@@ -32,10 +33,13 @@ export function renderShortlist(selected: LibraryAsset | null): void {
   const key = JSON.stringify(items);
   if (key !== rendered) {
     rendered = key;
+    releaseListImages(element('shortlist-names'));
     const epoch = revision;
     element('shortlist-names').replaceChildren(...items.map(asset => {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary small';
-      button.textContent = `${asset.name || 'Untitled image'} ×`; button.title = `Remove ${asset.name || 'Untitled image'} from compare`;
+      const name = document.createElement('span'); name.textContent = asset.name || 'Untitled image';
+      const cross = document.createElement('span'); cross.textContent = '×'; cross.setAttribute('aria-hidden', 'true');
+      button.append(thumbnailFrame(asset, false, undefined, element('shortlist-names')), name, cross); button.title = `Remove ${asset.name || 'Untitled image'} from compare`;
       button.setAttribute('aria-label', button.title); button.addEventListener('click', () => { if (epoch === revision) remove(asset); }); return button;
     }));
   }
@@ -56,7 +60,7 @@ export function initShortlist(selected: () => LibraryAsset | null, choose: (id: 
     const candidates = [...items], epoch = revision, generation = state.connectionGeneration, selection = state.selection.revision;
     const target = state.selection.insertTarget ?? NEW_FRAME;
     const current = () => available() && revision === epoch && state.connectionGeneration === generation && state.selection.revision === selection;
-    openInspection({ current, returnTo: element('shortlist-compare'), target: target.mode === 'fill' || target.mode === 'replace' ? state.selection.fillPreview ?? { reason: 'Select the layer again to check its paint settings.' } : undefined,
+    openInspection({ current, compare: true, returnTo: element('shortlist-compare'), target: target.mode === 'fill' || target.mode === 'replace' ? state.selection.fillPreview ?? { reason: 'Select the layer again to check its paint settings.' } : undefined,
       refresh: () => { retryFailedThumbnails(); scheduleRender(); },
       usable: index => Boolean(insertRendition(candidates[index]!)),
       use: index => { if (current()) { choose(candidates[index]!.id); setStatus('Image selected. Choose Insert or Fill when ready.'); } },
@@ -65,10 +69,11 @@ export function initShortlist(selected: () => LibraryAsset | null, choose: (id: 
         if (target.mode === 'into') compatibility = `Figma container: ${target.name ?? 'selection'} · image fits inside`;
         else if (target.mode !== 'new') {
           compatibility = target.count > 1 ? `Fill ${target.count} Figma layers · each keeps its size; cropping may differ`
-            : `Figma target: ${target.name ?? 'selection'}${target.containerWidth && target.containerHeight ? ` · ${sizeLabel({ width: target.containerWidth, height: target.containerHeight })} · ${aspectMismatch(asset, { width: target.containerWidth, height: target.containerHeight }) ? 'different aspect ratio; fill may crop' : 'matching aspect ratio'}` : ''}`;
+            : `Figma target: ${target.name ?? 'selection'}${target.containerWidth && target.containerHeight ? ` · ${sizeLabel({ width: target.containerWidth, height: target.containerHeight })} · ${aspectMismatch(asset, { width: target.containerWidth, height: target.containerHeight }) ? 'different aspect ratio' : 'matching aspect ratio'}` : ''}`;
         }
         if (!insertRendition(asset)) compatibility = 'No image version Figma can insert. Choose another image.';
-        return { label: asset.name || 'Untitled image', caption: compatibility, asset, source: asset, sourceLabel: 'Source' };
+        const guidance = imageGuidance(asset, state.selection.fillPreview ?? null);
+        return { status: guidance?.labels.join(' · ') || '', label: asset.name || 'Untitled image', caption: [compatibility, guidance?.labels.join(' · '), guidance?.detail].filter(Boolean).join(' · '), asset, source: asset, sourceLabel: 'Source' };
       }),
     });
   });
