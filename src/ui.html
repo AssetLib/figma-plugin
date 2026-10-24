@@ -245,6 +245,9 @@
     .empty { display: grid; justify-items: start; gap: 8px; padding: 24px 12px; }
     /* A list state or Send's reason takes focus on its own when a read fails; like the list, it shows no ring for it. */
     .empty:focus, #send-problem:focus { outline: none; }
+    .images-intake { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px 8px; }
+    .images-intake p { flex: 1; min-width: 0; }
+    .images-intake a { flex: none; }
     .empty-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .empty-actions > * { height: 24px; padding: 0 8px; }
 
@@ -535,6 +538,7 @@
       <div id="file-scope" class="meta" hidden>This page only. <button id="file-all" class="text-action" type="button">Include all pages</button></div>
       <button id="file-link-prompt" class="text-action" type="button" hidden>Link this file to show it in the console</button>
       <p id="file-limit" class="meta" hidden>Showing the first 2,000 linked layers.</p>
+      <div id="images-intake" class="images-intake" hidden><p class="meta">Image files go in Images. App catalogs define placements.</p><a id="images-upload" class="button" target="_blank" rel="noopener noreferrer" title="Upload images in the Assetlib console" hidden>Upload images…</a></div>
       <div id="image-shortlist" class="image-shortlist" hidden>
         <div class="inspector-actions"><button id="shortlist-add" class="secondary small" type="button">Add to compare</button><button id="shortlist-compare" class="secondary small" type="button" aria-disabled="true">Compare (0/3)</button><button id="shortlist-clear" class="text-action" type="button" hidden>Clear</button></div>
         <div id="shortlist-names" class="shortlist-names"></div>
@@ -560,7 +564,7 @@
             <button id="insert-retry" class="secondary" type="button" hidden>Try again</button>
             <button id="insert-token" class="secondary" type="button" hidden>Update token</button>
             <button id="insert-go-send" class="secondary" type="button" hidden>Go to Send</button>
-            <a id="insert-empty-link" class="button" target="_blank" rel="noopener noreferrer" hidden></a>
+            <a id="insert-empty-link" class="button" target="_blank" rel="noopener noreferrer" title="Open in the Assetlib console" hidden></a>
           </div>
         </div>
       </div>
@@ -585,6 +589,7 @@
         <div id="file-line" class="file-line" hidden><p class="meta"><span id="file-name"></span> · <button id="file-change" class="text-action" type="button">Change</button></p><p id="file-session" class="meta" hidden></p></div>
         <!-- Why Send has no placements: the connection test failed. Shown here only while the connection settings are closed. -->
         <div id="send-problem" class="error" tabindex="-1" hidden><p id="send-problem-text"></p><button id="send-retry" class="secondary small" type="button" hidden>Try again</button><button id="send-token" class="secondary small" type="button" hidden>Update token</button></div>
+        <div id="send-catalog" class="info" hidden><p><strong>No placements yet.</strong> Sync the app catalog to define placements before sending selected layers to Draft. Image files go in Images.</p><a id="send-catalog-link" class="button secondary small" target="_blank" rel="noopener noreferrer" title="Set up this app’s catalog in the Assetlib console" hidden>Set up app catalog</a></div>
         <label id="placement-search-field" class="field">Find placement<input id="placement-search" type="search" placeholder="Search by key or screen" autocomplete="off" spellcheck="false"></label>
         <div class="field"><label id="placement-label" for="placement-toggle">Placement</label><button id="placement-toggle" class="secondary placement-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="placement-options">Choose placement…</button><select id="placement" hidden disabled aria-label="Placement"><option value="">Choose placement…</option></select></div>
         <div id="placement-panel" class="placement-panel" hidden>

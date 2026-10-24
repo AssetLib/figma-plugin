@@ -1,10 +1,23 @@
 import type { DropMetadata, MainMessage, UiMessage } from '../shared/protocol.js';
+import { consoleLink, type ConsoleSection } from '../shared/links.js';
 import { nextRequestId, state } from './state.js';
 
 export function element<T extends HTMLElement = HTMLElement>(id: string): T {
   const found = document.getElementById(id);
   if (!found) throw new Error(`Missing UI element: ${id}`);
   return found as T;
+}
+
+/** Navigation follows the current app and disappears while a replacement connection is being saved. */
+export function renderConsoleLink(id: string, section: ConsoleSection | null): void {
+  const link = element<HTMLAnchorElement>(id);
+  const current = () => state.connection && state.connectionGeneration !== null && !state.connectionChanging;
+  link.hidden = !section || !current();
+  if (!link.hidden) link.setAttribute('href', consoleLink(state.connection!, section!));
+  else link.removeAttribute('href');
+  link.onclick = event => {
+    if (!section || !current() || link.getAttribute('href') !== consoleLink(state.connection!, section)) event.preventDefault();
+  };
 }
 
 export function post(message: UiMessage): void { parent.postMessage({ pluginMessage: message }, '*'); }

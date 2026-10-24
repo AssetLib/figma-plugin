@@ -5,8 +5,8 @@ import { DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN, STAGING_ORIGIN, normalizeConsole
 import type { Connection } from './types.js';
 import { isRecord, validArm, validPlacementKey, validState, validUuid } from './validation.js';
 
-export type ConsoleSection = 'overview' | 'placements' | 'images' | 'releases';
-const SECTIONS: readonly ConsoleSection[] = ['overview', 'placements', 'images', 'releases'];
+export type ConsoleSection = 'overview' | 'placements' | 'images' | 'releases' | 'settings/connect';
+const SECTIONS: readonly ConsoleSection[] = ['overview', 'placements', 'images', 'releases', 'settings/connect'];
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 // Each console's pages, by its origin. The development console signs people in on 127.0.0.1 only (its session routes
@@ -64,6 +64,9 @@ export function isConsoleLink(url: unknown, connection: Pick<Connection, 'origin
   if (typeof url !== 'string' || !connection) return false;
   let prefix: string; try { prefix = `${consolePageOrigin(connection.origin)}/w/${connection.orgId}/${connection.appId}/`; } catch { return false; }
   if (!url.startsWith(prefix)) return false;
+  if (url === `${prefix}settings/connect`) {
+    try { return consoleLink(connection, 'settings/connect') === url; } catch { return false; }
+  }
   const review = `${prefix}releases#review=`;
   if (url.startsWith(review)) {
     const encoded = url.slice(review.length);

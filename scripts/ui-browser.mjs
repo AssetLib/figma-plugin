@@ -3713,6 +3713,70 @@ for (const theme of ['light', 'dark']) test(`artwork inspection preserves fit, f
   }
 });
 
+for (const theme of ['light', 'dark']) test(`content intake links stay discoverable and scoped without changing artwork (${theme})`, async () => {
+  const shots = process.env.ASSETLIB_SCREENSHOTS;
+  if (shots) await mkdir(shots, { recursive: true });
+  const captureNavigation = `document.addEventListener('click', event => {
+    const link = event.target.closest('a'); if (!link) return;
+    window.__navigation = { href: link.getAttribute('href'), refused: event.defaultPrevented };
+    event.preventDefault();
+  })`;
+  const base = 'https://console.assetlib.dev/w/org-one/app-a/';
+  for (const width of [320, 420]) {
+    const images = await openUi({ preferences: { browse: 'images' } }, { width, height: 480, theme });
+    try {
+      await images.waitFor(`${tiles} === 24`);
+      await images.evaluate(captureNavigation);
+      assert.equal(await images.evaluate(inViewport('images-upload')), true, 'Upload is visible beside a populated library');
+      assert.equal(await images.evaluate(`document.getElementById('images-upload').getAttribute('href')`), `${base}images`);
+      await images.click('#insert-search'); await images.type('Image 2');
+      await images.waitFor(`${tiles} === 11`);
+      await images.click('#image-grid [role=option]');
+      const selected = await images.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`);
+      await images.click('#images-upload');
+      assert.deepEqual(await images.evaluate('__navigation'), { href: `${base}images`, refused: false });
+      assert.equal(await images.evaluate(valueOf('insert-search')), 'Image 2');
+      assert.equal(await images.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`), selected);
+      if (shots) await images.screenshot(join(shots, `intake-images-${theme}-${width}.png`));
+      // Even a link changed before the next render cannot navigate to an old or different app.
+      await images.evaluate(`document.getElementById('images-upload').setAttribute('href', '${base.replace('app-a', 'app-b')}images')`);
+      await images.click('#images-upload');
+      assert.equal(await images.evaluate('__navigation.refused'), true);
+      await images.click('#insert-search'); await images.type('zzzz');
+      await images.waitFor(shown('insert-empty'));
+      assert.equal(await images.evaluate(inViewport('images-upload')), true, 'Upload remains available with no matching images');
+      await images.click('#browse-placements'); await images.frames();
+      assert.equal(await images.evaluate(shown('images-upload')), false);
+      assert.equal(await images.evaluate(`document.getElementById('images-upload').getAttribute('href')`), null);
+      assert.equal(await images.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
+    } finally { await images.close(); }
+
+    const empty = await openUi({ placements: 0, images: 0 }, { width, height: 480, theme });
+    try {
+      await empty.waitFor(shown('insert-empty'));
+      await empty.evaluate(captureNavigation);
+      assert.equal(await empty.evaluate(textOf('insert-empty-link')), 'Set up app catalog');
+      assert.equal(await empty.evaluate(inViewport('insert-empty-link')), true);
+      await empty.click('#insert-empty-link');
+      assert.deepEqual(await empty.evaluate('__navigation'), { href: `${base}settings/connect`, refused: false });
+      if (shots) await empty.screenshot(join(shots, `intake-catalog-${theme}-${width}.png`));
+      await empty.click('#tab-send'); await empty.waitFor(shown('send-catalog'));
+      await empty.evaluate(`document.getElementById('send-catalog-link').scrollIntoView({ block: 'nearest' })`);
+      assert.equal(await empty.evaluate(inViewport('send-catalog-link')), true);
+      await empty.click('#send-catalog-link');
+      assert.deepEqual(await empty.evaluate('__navigation'), { href: `${base}settings/connect`, refused: false });
+      assert.equal(await empty.evaluate(`document.getElementById('send').getAttribute('aria-disabled')`), 'true');
+      if (shots) await empty.screenshot(join(shots, `intake-send-${theme}-${width}.png`));
+      await empty.click('#tab-insert'); await empty.click('#browse-images'); await empty.waitFor(shown('insert-empty'));
+      assert.equal(await empty.evaluate(textOf('insert-empty-link')), 'Upload images…');
+      assert.match(await empty.evaluate(textOf('insert-empty-text')), /sync the app catalog before sending/);
+      assert.equal(await empty.evaluate(inViewport('images-upload')), true);
+      assert.equal(await empty.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
+      assert.equal(await empty.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
+    } finally { await empty.close(); }
+  }
+});
+
 test('browse detours restore independent searches, artwork selections and scrolling', async () => {
   const page = await openUi({}, { width: 420, height: 480 });
   try {

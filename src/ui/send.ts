@@ -6,7 +6,7 @@ import {
 } from '../shared/index.js';
 import type { Appearance, CellBinding, CellCoordinate, EnvironmentName, InsertLink, PairingHint, Placement } from '../shared/index.js';
 import type { MainMessage, RememberedTarget } from '../shared/protocol.js';
-import { announceError, clearError, element, flushRender, inField, post, scheduleRender, setStatus, setUnavailable, showError } from './dom.js';
+import { announceError, clearError, element, flushRender, inField, post, renderConsoleLink, scheduleRender, setStatus, setUnavailable, showError } from './dom.js';
 import { actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, state } from './state.js';
 import type { ReadProblem } from './state.js';
 import { activeSendRow, initQueue, queueChoice, queueError, queueExport, queueRemembered, queueSelection, renderQueue,
@@ -338,6 +338,9 @@ export function renderSend(inSettings: boolean): void {
   element('send-token').hidden = problem?.action !== 'token' && problem?.action !== 'reconnect';
   element('send-token').textContent = problem?.action === 'reconnect' ? 'Connect again' : 'Update token';
   setUnavailable(element('send-retry'), actionsBlocked());
+  const emptyCatalog = state.placementsLoaded && !state.placements.length && !state.testFailure && !state.tokenRefused;
+  renderConsoleLink('send-catalog-link', emptyCatalog ? 'settings/connect' : null);
+  element('send-catalog').hidden = element('send-catalog-link').hidden;
   const { selection } = state;
   const row = activeSendRow();
   const node = row?.node;

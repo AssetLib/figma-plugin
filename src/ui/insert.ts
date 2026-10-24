@@ -16,7 +16,7 @@ import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
 import {
   announceError, arrowKeys, clearError, element, errorText, flushRender, inField, keyOf, post, postDrop, preferFocus, reloadConnection, rovingStops,
-  scheduleRender, sentence, setBusy, setStatus, setUnavailable, showError,
+  renderConsoleLink, scheduleRender, sentence, setBusy, setStatus, setUnavailable, showError,
 } from './dom.js';
 import { readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
@@ -42,7 +42,6 @@ const artFilterButtons = artFilters.map(name => element<HTMLButtonElement>(`art-
 const environmentButtons = ENVIRONMENTS.map(name => element<HTMLButtonElement>(`env-${name}`));
 // Below 400 px wide (ui.html) the radios give way to this dropdown; both show the same choice.
 const environmentSelect = element<HTMLSelectElement>('env-select');
-const GUIDE_URL = 'https://www.assetlib.dev/guide';
 const NEEDS_UPLOAD = 'This image has no version Figma can use. Upload it again in the Assetlib console.';
 const TOO_LARGE = 'Too large for Figma. Every version is over 4 MiB.';
 const UNEXPECTED_IMAGE = 'The console sent an unexpected image. Refresh and try again.';
@@ -60,7 +59,7 @@ const DOWNLOAD_KEEP_MS = 60000;
  * token field, so the list steps aside while they are open.
  */
 type ListState = {
-  title?: string; text: string; action: 'clear' | 'retry' | 'token' | 'reconnect' | 'send' | 'link' | null; link?: { text: string; href: string }; connection?: boolean;
+  title?: string; text: string; action: 'clear' | 'retry' | 'token' | 'reconnect' | 'send' | 'link' | null; link?: { text: string; section: 'images' | 'settings/connect' }; connection?: boolean;
 };
 
 // Everything here resets on every connection message.
@@ -658,9 +657,8 @@ function renderEmpty(current: ListState | null): void {
   tokenAction.textContent = empty?.action === 'reconnect' ? 'Connect again' : 'Update token';
   element('insert-go-send').hidden = empty?.action !== 'send';
   const link = element<HTMLAnchorElement>('insert-empty-link');
-  link.hidden = empty?.action !== 'link' || !empty.link;
   link.textContent = empty?.link?.text ?? '';
-  if (empty?.link) link.href = empty.link.href;
+  renderConsoleLink('insert-empty-link', empty?.action === 'link' ? empty.link?.section ?? null : null);
 }
 
 /**
@@ -694,8 +692,8 @@ export function renderList(): void {
     if (loading('placements')) listChildren.push(...skeletons('placements'));
     else if (!current) empty = listError;
     else if (!current.placements.length) {
-      empty = { title: 'No placements yet', text: 'An engineer adds placements in app code and runs assetlib sync. You can request one in the console.',
-        action: 'link', link: { text: 'Read the guide', href: GUIDE_URL } };
+      empty = { title: 'No placements yet', text: 'The app catalog defines placements. An engineer syncs it from the app repository with assetlib sync. Image files go in Images.',
+        action: 'link', link: { text: 'Set up app catalog', section: 'settings/connect' } };
     } else {
       const searched = current.placements.filter(item => !lower || item.key.toLowerCase().includes(lower) || item.screen.toLowerCase().includes(lower));
       const withArt = (item: PlacementArtwork) => item.cells.some(cell => cell[shownEnvironment()] !== null);
@@ -748,8 +746,8 @@ export function renderList(): void {
     else empty = listError;
   } else if (!images.items.length && images.q) empty = { text: `No images match “${images.q}”.`, action: 'clear' };
   else if (!images.items.length) {
-    empty = { title: 'No images yet', text: 'Upload images in the Assetlib console, or send a frame from Figma.', action: 'link',
-      link: { text: 'Open console', href: consoleLink(state.connection, 'images') } };
+    empty = { title: 'No images yet', text: 'Upload image files to the library in the console. To send Figma layers to Draft placements, sync the app catalog before sending.', action: 'link',
+      link: { text: 'Upload images…', section: 'images' } };
   } else gridChildren.push(...images.items.map(imageTile));
   if (browse === 'images' && images && (images.items.length || images.q) && !loading('images') && images.q === query) summary = `${images.items.length} image${images.items.length === 1 ? '' : 's'}${images.nextCursor ? ' loaded · more available' : images.q ? ' matching your search' : ''}`;
   element('browse-summary').textContent = summary;
@@ -777,6 +775,8 @@ function renderIntro(): void {
 
 export function renderInsertControls(): void {
   const { browse } = state.prefs;
+  renderConsoleLink('images-upload', browse === 'images' ? 'images' : null);
+  element('images-intake').hidden = element('images-upload').hidden;
   renderShortlist(selectedImage());
   element('browse-placements').setAttribute('aria-checked', String(browse === 'placements'));
   element('browse-images').setAttribute('aria-checked', String(browse === 'images'));

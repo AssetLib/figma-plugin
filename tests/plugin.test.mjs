@@ -85,6 +85,42 @@ function harness({ remembered = rememberedA, bytes = pngHeader(1000, 1000), save
   return { ...app, console: consoleState };
 }
 
+test('content intake keeps upload available and empty catalog setup scoped to the current connection', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' }, console: { placements: [] } });
+  await flush();
+  const base = 'https://console.assetlib.dev/w/org-one/app-a/';
+  assert.equal(app.element('images-upload').hidden, false);
+  assert.equal(app.element('images-upload').getAttribute('href'), `${base}images`);
+  assert.equal(app.element('insert-empty-link').textContent, 'Upload images…');
+  assert.match(app.element('insert-empty-text').textContent, /sync the app catalog before sending/);
+  app.element('browse-placements').dispatch('click'); await flush();
+  assert.equal(app.element('images-upload').hidden, true);
+  assert.equal(app.element('images-upload').getAttribute('href'), null);
+  assert.equal(app.element('insert-empty-link').textContent, 'Set up app catalog');
+  assert.equal(app.element('insert-empty-link').getAttribute('href'), `${base}settings/connect`);
+  app.element('tab-send').dispatch('click'); await flush();
+  assert.equal(app.element('send-catalog').hidden, false);
+  assert.equal(app.element('send-catalog-link').getAttribute('href'), `${base}settings/connect`);
+  assert.equal(off(app, 'send'), true);
+  assert.equal(app.drafts().length, 0);
+  const write = app.delayConnectionWrite();
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('draft_b') });
+  await flush(); await flush();
+  assert.equal(app.element('send-catalog-link').hidden, true, 'no stale setup link during a connection save');
+  assert.equal(app.element('send-catalog-link').getAttribute('href'), null);
+  write.resolve(); await flush(); await flush();
+  assert.equal(app.element('send-catalog-link').getAttribute('href'), 'https://console.assetlib.dev/w/org-one/app-b/settings/connect');
+});
+
+test('catalog setup waits for a successful empty placements read', async () => {
+  const app = harness({ console: { failures: ['placements'] } });
+  await flush();
+  assert.equal(app.element('send-catalog').hidden, true);
+  assert.equal(app.element('send-catalog-link').getAttribute('href'), null);
+  const populated = harness(); await flush();
+  assert.equal(populated.element('send-catalog').hidden, true);
+});
+
 for (const [description, next] of [
   ['switching apps', { ...connection, appId: 'app-b', token: tok('draft_b') }],
   ['rotating the token in the same app', { ...connection, token: tok('draft_rotated') }],

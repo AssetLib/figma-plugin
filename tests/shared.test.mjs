@@ -801,6 +801,22 @@ test('console links are built from validated ids on the connected origin, and ma
   assert.equal(isConsoleLink('https://console.assetlib.dev/w/org-1/app-1/releases', null), false, 'no connection, no link');
 });
 
+test('catalog setup links allow only the current app Settings Connect page', () => {
+  const connection = { origin: PRODUCTION_ORIGIN, orgId: 'org-one', appId: 'app-a' };
+  for (const origin of [PRODUCTION_ORIGIN, STAGING_ORIGIN, DEVELOPMENT_ORIGIN]) {
+    const current = { ...connection, origin };
+    const url = consoleLink(current, 'settings/connect');
+    assert.equal(url, `${consolePageOrigin(origin)}/w/org-one/app-a/settings/connect`);
+    assert.equal(isConsoleLink(url, current), true);
+    assert.equal(isConsoleLink(url, { ...current, appId: 'app-b' }), false);
+    for (const suffix of ['/', '/tokens', '?next=images', '#token', '\n']) assert.equal(isConsoleLink(url + suffix, current), false);
+    for (const path of ['settings', 'settings/tokens', 'settings/../connect', 'settings%2Fconnect']) {
+      assert.equal(isConsoleLink(url.replace('settings/connect', path), current), false);
+    }
+  }
+  assert.throws(() => consoleLink(connection, 'settings/connect', '00000000-0000-4000-8000-000000000001'), /not valid/);
+});
+
 test('toasts are at most 100 characters, and rows and pickers name only what a placement declares', () => {
   assert.equal(toastText('Synced  hero.artwork\nto draft'), 'Synced hero.artwork to draft');
   const long = toastText(`Inserted ${'x'.repeat(200)}`);
