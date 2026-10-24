@@ -8761,3 +8761,125 @@ test('closing the image shortlist inspector discards delayed large previews with
   assert.equal(app.element('artwork-inspector').hidden, true); assert.equal(app.element('app').inert, false); assert.equal(app.element('insert-title').textContent, selected);
   assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
 });
+
+test('return check reads uploaded images once and keeps query, selection and shortlist', async () => {
+  const entries = ['Coast', 'Coast dusk', 'Garden'].map((name, i) => libraryAsset(410 + i, name, 400, 200));
+  const app = harness({ console: library(entries), prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  assert.equal(app.element('images-return').hidden, true);
+  for (const tile of tilesOf(app).slice(0, 2)) { tile.click(); app.element('shortlist-add').click(); await settle(); }
+  app.element('insert-search').value = 'Coast'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+  tilesOf(app)[0].click(); await settle();
+  app.element('images-upload').click(); await settle();
+  assert.equal(app.element('images-return').hidden, false);
+  assert.match(app.element('images-check-note').textContent, /Search “Coast” stays applied and may hide/);
+  const gate = deferred(); app.console.gates.assets = gate;
+  const before = app.requests.filter(r => r.route === 'assets').length;
+  app.element('images-check').click(); app.element('images-check').click(); await settle();
+  assert.equal(app.requests.filter(r => r.route === 'assets').length, before + 1);
+  assert.equal(app.element('images-check').textContent, 'Checking…');
+  assert.equal(tilesOf(app).length, 2, 'old results stay visible while checking');
+  const added = libraryAsset(414, 'Coast sunset', 400, 200); app.console.library.unshift(added.asset);
+  delete app.console.gates.assets; gate.resolve(); await settle();
+  assert.equal(tilesOf(app).length, 3);
+  assert.equal(app.element('insert-search').value, 'Coast');
+  assert.equal(tilesOf(app).find(t => t.getAttribute('aria-selected') === 'true').getAttribute('data-asset-id'), entries[0].asset.id);
+  assert.equal(app.element('shortlist-names').children.length, 2);
+  assert.match(app.element('status').textContent, /Library checked. 3 images matching your search available/);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+
+test('return check preserves an off-page image selection and failed checks keep prior results', async () => {
+  const entry = libraryAsset(430, 'Original choice', 400, 200);
+  const app = harness({ console: library([entry]), prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  tilesOf(app)[0].click(); app.element('images-upload').click(); await settle();
+  app.console.library.unshift(...Array.from({ length: 25 }, (_, i) => libraryAsset(440 + i, `Recent ${i}`, 400, 200).asset));
+  app.element('images-check').click(); await settle();
+  assert.equal(tilesOf(app).length, 24);
+  assert.equal(app.element('insert-title').textContent, 'Original choice');
+  assert.equal(app.element('insert-bar').hidden, false);
+  assert.match(app.element('status').textContent, /more available.*selected image is kept outside/);
+  const before = app.requests.filter(r => r.route === 'assets').length;
+  app.console.statuses.assets = 503;
+  app.element('images-check').click(); await settle(); app.fireTimers(5000); await settle();
+  assert.equal(app.requests.filter(r => r.route === 'assets').length, before + 1, 'no background retry');
+  assert.equal(tilesOf(app).length, 24);
+  assert.equal(app.element('insert-title').textContent, 'Original choice');
+  assert.match(app.element('error').textContent, /try again/i);
+});
+
+test('return check drops upload results after a search or connection changes', async () => {
+  const entries = ['Coast', 'Garden'].map((name, i) => libraryAsset(480 + i, name, 400, 200));
+  const app = harness({ console: library(entries), prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  app.element('images-upload').click(); await settle();
+  let gate = deferred(); app.console.gates.assets = gate;
+  app.element('images-check').click(); await settle();
+  delete app.console.gates.assets;
+  app.element('insert-search').value = 'Garden'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+  gate.resolve(); await settle();
+  assert.equal(tilesOf(app).length, 1); assert.equal(app.element('insert-search').value, 'Garden');
+  assert.doesNotMatch(app.element('status').textContent, /Library checked/);
+  gate = deferred(); app.console.gates.assets = gate;
+  app.element('images-check').click(); await settle();
+  delete app.console.gates.assets;
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('draft_b') }); await settle();
+  gate.resolve(); await settle();
+  assert.equal(app.element('images-return').hidden, true);
+  assert.doesNotMatch(app.element('status').textContent, /Library checked/);
+});
+
+test('catalog return check replaces cached empty placements and restores compatible remembered destinations without sending', async () => {
+  const app = harness({ console: { placements: [] } }); await settle();
+  assert.equal(app.element('send-catalog').hidden, false);
+  app.element('send-catalog-check').click(); await settle();
+  assert.match(app.element('status').textContent, /No placements yet.*check again/);
+  const gate = deferred(); app.console.gates.placements = gate;
+  const before = app.requests.filter(r => r.route === 'placements').length;
+  app.element('send-catalog-check').click(); app.element('send-catalog-check').click(); await settle();
+  assert.equal(app.requests.filter(r => r.route === 'placements').length, before + 1);
+  app.console.placements = [clone(placement)]; app.console.artwork = artwork();
+  delete app.console.gates.placements; gate.resolve(); await settle();
+  assert.equal(app.element('send-catalog').hidden, true);
+  assert.match(app.element('status').textContent, /1 placement available/);
+  assert.equal(app.element('send-catalog-result').hidden, false);
+  assert.match(app.element('send-catalog-result').textContent, /1 placement available/);
+  assert.equal(app.element('placement').value, rememberedA.placementKey);
+  assert.equal(app.element('state').value, rememberedA.state);
+  assert.equal(app.element('appearance').value, rememberedA.appearance);
+  assert.equal(app.element('arm').value, rememberedA.arm);
+  assert.equal(app.exports.length, 0); assert.equal(app.drafts().length, 0);
+});
+
+test('catalog return check works from Insert and ignores late success after newer attention or replacement', async () => {
+  const app = harness({ console: { placements: [] }, prefs: { tab: 'insert', browse: 'placements' } }); await settle();
+  assert.equal(app.element('insert-catalog-check').hidden, false);
+  let gate = deferred(); app.console.gates.placements = gate;
+  app.element('insert-catalog-check').click(); await settle();
+  app.console.statuses.assets = 401;
+  app.element('browse-images').click(); await settle();
+  app.console.placements = [clone(placement)];
+  delete app.console.gates.placements; gate.resolve(); await settle();
+  assert.doesNotMatch(app.element('status').textContent, /1 placement available/);
+  assert.match(app.element('connection-label').textContent, /connect|attention/i);
+  const other = harness({ console: { placements: [] } }); await settle();
+  gate = deferred(); other.console.gates.placements = gate;
+  other.element('send-catalog-check').click(); await settle();
+  delete other.console.gates.placements;
+  other.saveConnection({ ...connection, appId: 'app-b', token: tok('draft_b') }); await settle();
+  const status = other.element('status').textContent;
+  other.console.placements = [clone(placement)]; gate.resolve(); await settle();
+  assert.equal(other.element('status').textContent, status);
+  assert.equal(other.element('send-catalog').hidden, false);
+});
+
+for (const kind of ['images', 'placements']) test(`return check offers visible recovery for its own browser refusal (${kind})`, async () => {
+  const saved = { ...connection, method: 'browser', pairing: 'BCDFGHJK', connectedAs: 'dana@example.com' };
+  const app = harness({ saved, console: { placements: [], ...library([libraryAsset(510, 'Coast', 400, 200)]) }, prefs: { tab: kind === 'images' ? 'insert' : 'send', browse: 'images' } }); await settle();
+  if (kind === 'images') { app.element('images-upload').click(); await settle(); }
+  app.console.statuses[kind === 'images' ? 'assets' : 'placements'] = 401;
+  app.element(kind === 'images' ? 'images-check' : 'send-catalog-check').click(); await settle();
+  assert.equal(app.element('error-box').hidden, false);
+  assert.match(app.element('error').textContent, /connection|connect/i);
+  assert.equal(app.element('error-action').textContent, 'Connect again');
+  assert.equal(app.element('error-action').hidden, false);
+  assert.equal(app.drafts().length, 0); assert.equal(app.exports.length, 0);
+});

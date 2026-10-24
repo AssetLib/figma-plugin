@@ -19,7 +19,8 @@ const dev = watching || args.has('--dev');
 // Raised on October 23, 2026 for retained browsing, exact Draft review links, bounded artwork inspection, and focused recovery.
 // Raised on October 23, 2026 for visual Send cells and independent inspection background/pixel-scale controls.
 // Raised on October 23, 2026 for exact Draft impact review and a bounded image shortlist sharing the inspector.
-const MAX_UI_BYTES = 247_000;
+// 2026-10-24: explicit console return checks reuse library reads; main and minification stay unchanged.
+const MAX_UI_BYTES = 250_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 // Raised on October 21, 2026 for bounded multi-selection, per-layer choices, and export guards.
 // Raised on October 23, 2026 for validated Draft review links and bounded on-demand inspection previews.

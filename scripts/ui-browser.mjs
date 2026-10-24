@@ -492,6 +492,7 @@ function installFakes(config) {
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   // Tests may change `delays` mid-test; each request reads its route's delay when it starts.
   window.__harness = { log, received, notices, uuid, delays, targets, inserts, drops, insertDrops, resizes, saved, opened, artwork, exported, inserted: () => frames,
+    addImage: (n, name) => { const item = asset(n, name, 400, 200); library.unshift(item); return item.id; },
     hold: route => { config.hold = [...new Set([...(config.hold ?? []), route])]; },
     release: route => { config.hold = config.hold?.filter(item => item !== route); const waiting = held.get(route); held.delete(route); for (const complete of waiting ?? []) complete(); },
     selectedNodes, fileEntries,
@@ -3929,4 +3930,59 @@ for (const theme of ['light', 'dark']) test(`Send impact shows exact inherited D
     if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `send-impact-${theme}-320.png`)); }
     assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
   } finally { await page.close(); }
+});
+
+for (const theme of ['light', 'dark']) test(`console return checks preserve context and verify completion explicitly (${theme})`, async () => {
+  const shots = process.env.ASSETLIB_SCREENSHOTS;
+  if (shots) await mkdir(shots, { recursive: true });
+  for (const width of [320, 420]) {
+    const page = await openUi({ preferences: { browse: 'images' } }, { width, height: 480, theme });
+    try {
+      await page.waitFor(`${tiles} === 24`);
+      await page.click('#insert-search'); await page.type('Image 2'); await page.waitFor(`${tiles} === 11`);
+      await page.click('#image-grid [role=option]'); await page.click('#shortlist-add');
+      const selected = await page.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`);
+      await page.click('#images-upload'); await page.waitFor(shown('images-return'));
+      assert.match(await page.evaluate(textOf('images-check-note')), /Search “Image 2” stays applied and may hide/);
+      assert.equal(await page.evaluate(inViewport('images-check')), true);
+      await page.evaluate(`__harness.addImage(9901, 'Image 2 uploaded'); __harness.hold('assets')`);
+      const before = await page.evaluate(`__harness.log.filter(item => item.route === 'assets').length`);
+      await page.click('#images-check'); await page.waitFor(`document.getElementById('images-check').getAttribute('aria-busy') === 'true'`);
+      assert.equal(await page.evaluate(tiles), 11);
+      await page.click('#images-check');
+      assert.equal(await page.evaluate(`__harness.log.filter(item => item.route === 'assets').length`), before + 1);
+      await page.evaluate(`__harness.release('assets')`); await page.waitFor(`${tiles} === 12`);
+      assert.equal(await page.evaluate(valueOf('insert-search')), 'Image 2');
+      assert.equal(await page.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`), selected);
+      assert.equal(await page.evaluate(`document.getElementById('shortlist-names').children.length`), 1);
+      assert.match(await page.evaluate(textOf('status')), /Library checked. 12 images/);
+      assert.equal(await page.focused(), 'images-check');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
+      const regions = await page.evaluate(`(() => { const b = id => { const r = document.getElementById(id).getBoundingClientRect(); return { top:r.top,bottom:r.bottom,height:r.height }; }; return { list:b('list-region'), footer:b('insert-bar'), check:b('images-check') }; })()`);
+      assert.ok(regions.list.height > 40 && regions.check.bottom <= regions.list.top && regions.list.bottom <= regions.footer.top + 1, 'return controls leave a usable list and do not overlap the footer');
+      if (shots) await page.screenshot(join(shots, `return-images-${theme}-${width}.png`));
+      await page.evaluate(`__harness.setStatus('assets', 503)`); await page.click('#images-check'); await page.waitFor(shown('error-box'));
+      assert.equal(await page.evaluate(tiles), 12); assert.equal(await page.evaluate(valueOf('insert-search')), 'Image 2');
+      assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.log.some(item => item.route === 'drafts')`), false);
+    } finally { await page.close(); }
+
+    const empty = await openUi({ placements: 0 }, { width, height: 480, theme });
+    try {
+      await empty.waitFor(shown('insert-catalog-check'));
+      await empty.click('#insert-catalog-check'); await empty.waitFor(`document.getElementById('status').textContent.includes('No placements yet.')`);
+      await empty.click('#tab-send'); await empty.waitFor(shown('send-catalog'));
+      await empty.evaluate(`document.getElementById('send-catalog-check').scrollIntoView({block:'nearest'})`);
+      assert.equal(await empty.evaluate(inViewport('send-catalog-check')), true);
+      if (shots) await empty.screenshot(join(shots, `return-catalog-${theme}-${width}.png`));
+      await empty.evaluate(`__harness.artwork.placements.push({key:'uploaded.hero',screen:'Home',width:600,height:400,states:null,defaultState:null,variants:null,origin:'declared',cells:[{state:null,arm:null,appearance:null,draft:null,staging:null,production:null}]})`);
+      await empty.click('#send-catalog-check'); await empty.waitFor(`document.getElementById('status').textContent.includes('1 placement available.')`);
+      assert.equal(await empty.evaluate(shown('send-catalog')), false);
+      assert.equal(await empty.evaluate(shown('send-catalog-result')), true);
+      assert.match(await empty.evaluate(textOf('send-catalog-result')), /1 placement available/);
+      if (shots) await empty.screenshot(join(shots, `return-catalog-complete-${theme}-${width}.png`));
+      assert.equal(await empty.evaluate(`Array.from(document.getElementById('placement').options).some(item => item.value === 'uploaded.hero')`), true);
+      assert.equal(await empty.evaluate(valueOf('placement')), '', 'nothing is chosen for the user');
+      assert.equal(await empty.evaluate(`__harness.received.includes('export') || __harness.log.some(item => item.route === 'drafts')`), false);
+    } finally { await empty.close(); }
+  }
 });

@@ -16,6 +16,7 @@ import { initPlacementPicker, placementSearchChanged, renderPlacementPicker } fr
 import { acceptSelectionPreview, initSendPreview, renderSendPreview } from './send-preview.js';
 import { actionsBlocked, state } from './state.js';
 import { initInspector, renderInspection } from './inspector.js';
+import { initIntake, renderIntake } from './intake.js';
 import { initSyncBar, launched, renderSyncBar, syncFromKeyboard } from './syncbar.js';
 import type { ReadFailure } from './state.js';
 
@@ -52,6 +53,7 @@ function render(): void {
   renderInsertBar();
   renderSyncBar();
   renderInspection();
+  renderIntake();
 }
 setRenderer({
   render, renderList, twin: rowFor,
@@ -251,6 +253,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // Figma's Copy link shortcut, as this platform spells it.
 element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
+initIntake();
 initConnect();
 const showSend = () => setTab('send');
 initPlacementPicker();

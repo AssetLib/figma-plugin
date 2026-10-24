@@ -26,6 +26,7 @@ export function bindConsoleLink(link: HTMLAnchorElement, url: string | null): vo
     if (generation === null || generation !== state.connectionGeneration || state.connectionChanging
       || link.getAttribute('href') !== url || !isConsoleLink(url, state.connection)) return;
     consolePage = { id: nextRequestId(), generation };
+    if (url === consoleLink(state.connection!, 'images')) { state.imagesOpened = generation; scheduleRender(); }
     post({ type: 'open-console-page', requestId: consolePage.id, connectionGeneration: generation, url });
   };
 }

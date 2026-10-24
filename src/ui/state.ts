@@ -44,6 +44,8 @@ export const state = {
   connectionGeneration: null as number | null,
   // Identifying or beginning to save a replacement connection, distinct from retesting the current one.
   connectionChanging: false,
+  // Only an Images navigation attempt, never proof that an upload finished.
+  imagesOpened: null as number | null,
   selectionGeneration: null as number | null,
   selection: { node: null, reason: 'Select a frame or layer to send.', fileKey: null, remembered: null, insertTarget: NEW_FRAME } as SelectionState,
   // The Send tab's placements, from the connection test.

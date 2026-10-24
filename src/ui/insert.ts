@@ -78,7 +78,7 @@ let quietFrom: number | null = null;
 let artworkRefreshPending = false;
 // A focus or visibility refresh waits a minute after the last artwork request finished, even when it failed.
 let artworkFinishedAt: number | null = null;
-let images: { items: LibraryAsset[]; nextCursor: string | null; q: string } | null = null;
+let images: { items: LibraryAsset[]; nextCursor: string | null; q: string; retained?: LibraryAsset | null } | null = null;
 // A row's placement and the cell its strip shows, or a tile's image.
 type Choice = { kind: 'placement'; key: string; cell: CellCoordinate } | { kind: 'image'; assetId: string } | { kind: 'file'; nodeId: string };
 let selected: Choice | null = null;
@@ -161,7 +161,8 @@ function selectedPlacement(current = selected): PlacementArtwork | null {
   return current?.kind === 'placement' ? artwork?.placements.find(item => item.key === current.key) ?? null : null;
 }
 function selectedImage(current = selected): LibraryAsset | null {
-  return current?.kind === 'image' ? images?.items.find(item => item.id === current.assetId) ?? shortlistAsset(current.assetId) : null;
+  return current?.kind === 'image' ? images?.items.find(item => item.id === current.assetId) ?? shortlistAsset(current.assetId)
+    ?? (images?.retained?.id === current.assetId ? images.retained : null) : null;
 }
 type InsertTarget = {
   title: string; meta: string; note: string; noteLink: string | null; name: string; asset: LibraryAsset | null; ready: boolean;
@@ -1079,7 +1080,9 @@ async function loadArtwork(): Promise<void> {
     if (generation === state.connectionGeneration && artworkTicket === quietTicket && artworkRefreshPending) ensureArtwork(true);
   }
 }
-async function loadImages(reset: boolean): Promise<void> {
+/** Same bounded library read as Refresh, but keeps the current context and never retries in the background. */
+export function checkImages(): Promise<string | undefined> { return loadImages(true, true); }
+async function loadImages(reset: boolean, checking = false): Promise<string | undefined> {
   const config = state.connection;
   const generation = state.connectionGeneration;
   if (!config) return;
@@ -1090,29 +1093,37 @@ async function loadImages(reset: boolean): Promise<void> {
   const q = reset ? currentQuery() : previous?.q ?? '';
   const cursor = reset ? undefined : previous?.nextCursor ?? undefined;
   if (!reset && !cursor) return;
-  const ticket = startList('images', q);
-  if (reset) { images = null; if (selected?.kind === 'image' && previous?.q !== q) selected = null; }
+  const ticket = startList('images', q), attention = state.attentionCount;
+  if (reset && !checking) { images = null; if (selected?.kind === 'image' && previous?.q !== q) selected = null; }
   scheduleRender(true);
   let failure: ReadFailure | null = null;
   try {
-    const result = await send(config, { path: assetsPath({ limit: 24, cursor, q: q || undefined }), channel: 'list' });
-    if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
+    const result = await send(config, { path: assetsPath({ limit: 24, cursor, q: q || undefined }), channel: 'list', ...(checking ? { retry: false } : {}) });
+    if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted'
+      || checking && (state.connectionChanging || attention !== state.attentionCount || state.prefs.tab !== 'insert' || state.prefs.browse !== 'images' || currentQuery() !== q)) return;
     if (result.status !== 200) {
       if (await replacedElsewhere(config, generation, result)) return;
+      if (checking && attention !== state.attentionCount) return;
       if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true);
       failure = readFailureOf(result, readFailure(result, config, 'insert'));
       throw new Error(failure.text);
     }
-    const page = parseAssetPage(result.payload);
+    const page = parseAssetPage(result.payload), retained = checking ? selectedImage() : !reset ? previous?.retained : null;
+    if (checking) restoreScroll = element('list-region').scrollTop;
     updateShortlist(page.assets);
     const added = previous && !reset ? page.assets.filter(asset => !previous.items.some(item => item.id === asset.id)) : page.assets;
-    images = { items: previous && !reset ? [...previous.items, ...added] : added, nextCursor: page.nextCursor, q };
+    images = { items: previous && !reset ? [...previous.items, ...added] : added, nextCursor: page.nextCursor, q, retained };
     if (selected?.kind === 'image' && !selectedImage()) selected = null;
-    markConnected();
+    if (attention === state.attentionCount) markConnected();
     // On the last page Load more hides; focus moves to the first new image rather than the page.
     if (!reset && added[0]) preferFocus(added[0].id);
+    if (checking) return `Library checked. ${page.assets.length} image${page.assets.length === 1 ? '' : 's'}${q ? ' matching your search' : ''}${page.nextCursor ? ' loaded; more available' : ' available'}.${retained && !page.assets.some(item => item.id === retained.id) ? ' Your selected image is kept outside these results.' : ''}`;
   } catch (error) {
     if (generation !== state.connectionGeneration || ticket !== listTicket) return;
+    if (checking) {
+      if (failure && refusedToken(failure)) showInsertError(TOKEN_NO_LONGER_ACCEPTED);
+      throw error;
+    }
     // A failed Load more keeps the pages already shown, and says so in the error line.
     if (!reset) {
       images = previous;
@@ -1121,6 +1132,7 @@ async function loadImages(reset: boolean): Promise<void> {
     }
     else showListError(failure ?? { kind: 'invalid', status: 200, text: errorText(error) });
   } finally { endList(ticket, generation); }
+  return undefined;
 }
 function searchImages(): void {
   searchTimer = null;
@@ -1249,7 +1261,7 @@ async function downloadInsert(config: Connection, generation: number, asset: Lib
  * An insert or a drop failed; an image removed since the list loaded offers Refresh, which brings the list up to date,
  * and a browser connection the console no longer accepts offers Connect again.
  */
-function showInsertError(text: string): void {
+export function showInsertError(text: string): void {
   showError(text, text === GONE_IMAGE ? { label: 'Refresh', run: refreshList }
     : (isReconnectText(text) || text === TOKEN_NO_LONGER_ACCEPTED) ? { label: 'Connect again', run: () => { void startConnect(hintOfCurrent()); } } : undefined);
 }
