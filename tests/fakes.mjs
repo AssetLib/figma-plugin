@@ -1,4 +1,3 @@
-import { webcrypto } from 'node:crypto';
 // Fake Figma, DOM, and console for tests/plugin.test.mjs and scripts/e2e-local.mjs. Not a test file itself.
 import vm from 'node:vm';
 import { build } from 'esbuild';
@@ -347,7 +346,7 @@ function abortError() { return Object.assign(new Error('The operation was aborte
  */
 export function createHarness({
   mainSource, uiSource, fetch, storage = [], fileKey = 'abc123', fileKeyUnavailable = false, selection = [], exportBytes = () => new Uint8Array(0), previewBytes,
-  createImageBitmap, crypto = webcrypto, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, zoom: 1 },
+  createImageBitmap, crypto = undefined, failingWrites = [], viewport = { center: { x: 500, y: 300 }, bounds: { x: 0, y: 0, width: 1000, height: 600 }, zoom: 1 },
   pages = [], imageSizes = {}, command = '', manualFrames = false, rootName = 'Untitled', rootPluginData = {}, readOnlyRoot = false, now, store: sharedStore,
 }) {
   // `now`: a clock for Date.now() (and new Date()) on both sides, so a test can move time; the real clock otherwise.

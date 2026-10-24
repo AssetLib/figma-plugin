@@ -22,7 +22,8 @@ const dev = watching || args.has('--dev');
 // 2026-10-24: explicit console return checks reuse library reads; main and minification stay unchanged.
 // 2026-10-24: grouped Send conflicts, faithful selected-layer inspection, and named catalog arrivals.
 // 2026-10-24: bounded app-library resume and current-canvas comparison reuse the existing inspector.
-const MAX_UI_BYTES = 267_000;
+// 2026-10-24: bundled SHA-256 supports Figma's opaque iframe without Web Crypto.
+const MAX_UI_BYTES = 272_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 // Raised on October 21, 2026 for bounded multi-selection, per-layer choices, and export guards.
 // Raised on October 23, 2026 for validated Draft review links and bounded on-demand inspection previews.
@@ -33,6 +34,7 @@ const templateUrl = new URL('../src/ui.html', import.meta.url);
 const marker = '<!-- ASSETLIB_SCRIPT -->';
 // Instrument Sans, copied from the workspace's brand/ by brand/sync.sh, is embedded as a data: URL: Figma's plugin
 // window loads nothing it is not given, and a font host would need a network domain.
+const hashLicenseUrl = new URL('../src/assets/noble-hashes-LICENSE.txt', import.meta.url);
 const fontUrl = new URL('../src/assets/instrument-sans-variable.woff2', import.meta.url);
 const fontMarker = '/* ASSETLIB_FONT */';
 const options = {
@@ -68,7 +70,7 @@ function compact(template) {
 
 /** Writes dist/ui.html; a release build over budget writes nothing and removes the previous one, so none is left to load. */
 async function writeUi(script) {
-  const [source, font] = await Promise.all([readFile(templateUrl, 'utf8'), readFile(fontUrl)]);
+  const [source, font, hashLicense] = await Promise.all([readFile(templateUrl, 'utf8'), readFile(fontUrl), readFile(hashLicenseUrl, 'utf8')]);
   const template = dev ? source : compact(source.replace(/<option data-development\b[^>]*>[\s\S]*?<\/option>/g, ''));
   if (template.split(marker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${marker} marker.`);
   if (template.split(fontMarker).length !== 2) throw new Error(`src/ui.html must contain exactly one ${fontMarker} marker.`);
@@ -81,6 +83,7 @@ async function writeUi(script) {
     html = html.replace(style[0], () => `<style>${css}</style>`);
   }
   html = html.replace(marker, () => `<script>${script.replace(/<\/script/gi, '<\\/script')}</script>`);
+  html = `<!-- @noble/hashes 1.8.0\n${hashLicense}\n-->\n${html}`;
   const size = Buffer.byteLength(html);
   if (!dev && size > MAX_UI_BYTES) {
     await rm(uiUrl, { force: true });

@@ -1,3 +1,4 @@
+import { browseScope } from '../shared/browse-scope.js';
 import { parseBrowseResume } from '../shared/browse.js';
 import type { BrowseChoice, BrowseContext, BrowseResume } from '../shared/browse.js';
 // The Insert tab: placements by screen and the image library, the cell strip and file inventory, Insert, and dragging rows and tiles onto the canvas.
@@ -143,17 +144,14 @@ function browseSnapshot(): BrowseResume | null {
     scroll: restoreScroll ?? element('list-region').scrollTop, ...(state.prefs.browse === 'images' ? { pages: images?.pages ?? 1 } : {}) };
   return parseBrowseResume({ browse: state.prefs.browse, filter: artFilter, contexts });
 }
-export async function loadBrowseResume(): Promise<void> {
+export function loadBrowseResume(): void {
   const connection = state.connection, generation = state.connectionGeneration;
   if (!connection || generation === null) return;
   try {
-    const input = new TextEncoder().encode(JSON.stringify([connection.origin, connection.orgId, connection.appId, connection.token]));
-    const digest = await crypto.subtle.digest('SHA-256', input);
-    if (connection !== state.connection || generation !== state.connectionGeneration) return;
-    resumeScope = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    resumeScope = browseScope(connection);
     resumeRequest = nextRequestId();
     post({ type: 'load-browse', requestId: resumeRequest, connectionGeneration: generation, scope: resumeScope });
-  } catch { /* Secure hashing unavailable: keep browsing in this session only. */ }
+  } catch { /* An invalid connection cannot own a saved browsing session. */ }
 }
 export function acceptBrowseResume(message: Extract<MainMessage, { type: 'browse-loaded' }>): void {
   if (message.requestId !== resumeRequest || message.connectionGeneration !== state.connectionGeneration || message.scope !== resumeScope) return;

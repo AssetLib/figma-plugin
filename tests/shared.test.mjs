@@ -1,3 +1,5 @@
+import { browseScope, sha256Hex } from '../.test-build/shared/browse-scope.js';
+import { createHash } from 'node:crypto';
 import { parseBrowseResume } from '../.test-build/shared/browse.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1213,4 +1215,19 @@ test('browse resume keeps bounded navigation only and excludes file selections a
   assert.equal(JSON.stringify(parsed).includes('private'), false);
   assert.equal(parseBrowseResume({ browse: 'file', contexts: {} }), null);
   assert.equal(parseBrowseResume({ browse: 'placements', contexts: { placements: { selected: { kind: 'placement', key: 'valid.key', cell: { state: null, appearance: 'invalid', arm: null } } } } }).contexts.placements.selected, null);
+});
+
+
+test('browse ownership uses bundled SHA-256 matching standard vectors and exact credential identities', () => {
+  assert.equal(sha256Hex(''), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  assert.equal(sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  assert.equal(sha256Hex('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq'), '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1');
+  assert.equal(sha256Hex('a'.repeat(1000000)), 'cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0');
+  for (const token of ['alk_secret', 'ไทย😀', '\ud800', ...Array.from({ length: 130 }, (_, n) => 'a'.repeat(n))]) {
+    const connection = { origin: 'https://console.assetlib.dev', orgId: 'org-one', appId: 'app-one', token };
+    const serialized = JSON.stringify([connection.origin, connection.orgId, connection.appId, connection.token]);
+    assert.equal(browseScope(connection), createHash('sha256').update(serialized).digest('hex'));
+    assert.equal(browseScope({ ...connection, appName: 'Renamed' }), browseScope(connection));
+    assert.notEqual(browseScope({ ...connection, token: `${token}b` }), browseScope(connection));
+  }
 });

@@ -100,6 +100,8 @@ class Browser {
 
 // ---- The page's fakes. This function is serialized into the page and runs before the UI script. ----
 function installFakes(config) {
+  // Figma's opaque plugin iframe does not expose secure-context Web Crypto.
+  Object.defineProperty(window, 'crypto', { configurable: true, value: undefined });
   // Figma's theme: its variables on :root and figma-light or figma-dark on <html>.
   if (config.theme) {
     const apply = () => {
@@ -4081,6 +4083,7 @@ for (const theme of ['light', 'dark']) test(`resume decisions restores reviewed 
     const page = await openUi({ images: 60, resume, selection: { ...DEFAULTS.selection, fileKey: null } }, { width, height: 480, theme });
     try {
       await page.waitFor(shown('browse-resume'));
+      assert.equal(await page.evaluate('typeof crypto'), 'undefined');
       assert.match(await page.evaluate(textOf('browse-resume-continue')), /Continue browsing Sample app/);
       assert.equal(await page.evaluate(valueOf('insert-search')), '');
       await page.click('#browse-resume-continue');

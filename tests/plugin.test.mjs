@@ -9071,7 +9071,7 @@ test('decision guidance never redirects a double-click to a different row after 
   assert.equal(app.insertMessages().length, 2, 'a fresh keyboard or normal click can establish intent');
 });
 
-test('resume decisions restores app-library search choice and scroll without file identity or canvas writes', async () => {
+test('resume decisions restores app-library search choice and scroll without Web Crypto or file identity', async () => {
   const entry = libraryAsset(510, 'Resume Coast', 800, 400);
   const first = harness({ fileKeyUnavailable: true, prefs: { tab: 'insert', browse: 'images' }, console: library([entry]) });
   await settle();
@@ -9127,16 +9127,10 @@ test('resume decisions revalidates removed images and exact cells without choosi
   assert.equal(reopened.insertMessages().length, 0);
 });
 
-test('resume decisions ignores delayed storage and hashing after connection changes and tolerates unavailable crypto', async () => {
-  const offlineCrypto = harness({ crypto: null }); await settle();
-  assert.equal(offlineCrypto.element('browse-resume').hidden, true);
-  const gate = deferred();
-  const app = harness({ crypto: { subtle: { digest: () => gate.promise } } }); await settle();
-  app.saveConnection({ ...connection, token: tok('rotated') }); await settle();
-  gate.resolve(new Uint8Array(32).buffer); await settle();
-  assert.equal(app.uiMessages.filter(m => m.type === 'load-browse').length, 1, 'the old digest never requests storage');
+test('resume decisions ignores delayed storage after connection changes without Web Crypto', async () => {
+  const app = harness(); await settle();
   const load = app.uiMessages.find(m => m.type === 'load-browse');
-  assert.equal(load.connectionGeneration, app.mainMessages.findLast(m => m.type === 'connection').connectionGeneration);
+  assert.ok(load, 'normal opaque-iframe runtime can load resume without crypto');
   const storageGate = deferred();
   app.figma.clientStorage.getAsync = async key => key === 'assetlib.browse.v1' ? storageGate.promise : app.storage.get(key);
   app.postToMain({ type: 'load-browse', requestId: 9001, connectionGeneration: load.connectionGeneration, scope: load.scope }); await settle();
