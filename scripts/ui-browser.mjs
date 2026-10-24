@@ -3742,7 +3742,7 @@ test('browse detours restore independent searches, artwork selections and scroll
 });
 
 for (const theme of ['light', 'dark']) test(`visual Send cells keep complex destinations readable and require an explicit Send (${theme})`, async () => {
-  for (const width of [320, 420]) {
+  for (const width of [320, 420]) for (const classicScrollbars of [false, true]) {
     const page = await openUi({ selection: { ...DEFAULTS.selection, node: { id: '94:1', name: 'Variant artwork', type: 'FRAME', width: 390, height: 520 }, reason: null }, declared: true, manyCells: true, preferences: { tab: 'send' }, unsetCells: [{ key: 'onboarding.hero', state: 'return', appearance: 'dark', arm: 'e' }] }, { width, height: 480, theme });
     try {
       await page.waitFor(`document.getElementById('placement').options.length > 1 && !document.getElementById('placement-toggle').disabled`);
@@ -3752,17 +3752,22 @@ for (const theme of ['light', 'dark']) test(`visual Send cells keep complex dest
       assert.equal(await page.evaluate(`document.querySelectorAll('#send-cells [tabindex="0"]').length`), 1);
       assert.equal(await page.evaluate(`document.getElementById('send-cells').clientHeight <= 204`), true);
       assert.deepEqual(await page.evaluate(`(() => { const cells = [...document.querySelectorAll('#send-cells .cell')]; return cells.flatMap(cell => { const box = cell.getBoundingClientRect(); return [...cell.children].filter(child => { const r = child.getBoundingClientRect(); return r.top < box.top - .5 || r.bottom > box.bottom + .5 || r.left < box.left - .5 || r.right > box.right + .5; }).map(child => child.className); }); })()`), [], 'every thumbnail and status stays within its own cell');
+      // Exercise native scrollbars plus a fixed-width gutter on every host OS.
+      if (classicScrollbars) {
+        await page.evaluate(`(() => { const style = document.createElement('style'); style.textContent = '#send-cells::-webkit-scrollbar { width: 16px; height: 16px; }'; document.head.append(style); })()`); await page.frames();
+        assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'); return grid.offsetWidth - grid.clientWidth; })()`), 16);
+      }
       const target = '#send-cells [data-state="return"][data-appearance="dark"][data-arm="e"]';
       await page.click(target); await page.press('Enter');
       await page.evaluate(`document.querySelector(${JSON.stringify(target)}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`); await page.frames();
       assert.match(await page.evaluate(textOf('send-cell-summary')), /return · Dark · arm e/);
-      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells').getBoundingClientRect(), cell = document.querySelector('#send-cells [aria-checked=true]').getBoundingClientRect(); return cell.left >= grid.left && cell.right <= grid.right && cell.top >= grid.top && cell.bottom <= grid.bottom; })()`), true, 'saved-choice acknowledgment keeps the selected cell in view');
+      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), bounds = grid.getBoundingClientRect(), left = bounds.left + grid.clientLeft, top = bounds.top + grid.clientTop, cell = grid.querySelector('[aria-checked=true]').getBoundingClientRect(); return cell.left >= left && cell.right <= left + grid.clientWidth && cell.top >= top && cell.bottom <= top + grid.clientHeight; })()`), true, 'saved-choice acknowledgment keeps the selected cell in view');
       assert.match(await page.evaluate(`document.querySelector(${JSON.stringify(target)}).innerText`), /No Draft art/);
       assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
       assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), r = grid.getBoundingClientRect(); return [...grid.querySelectorAll('.cell-header:not(.cell-state)')].filter(el => el.textContent).some(el => { const b = el.getBoundingClientRect(); return b.top >= r.top - 1 && b.top < r.top + 25 && b.right > r.left && b.left < r.right; }); })()`), true, 'column identity stays visible after scrolling');
-      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), r = grid.getBoundingClientRect(), headers = grid.querySelector('.cell-headers'), h = headers.getBoundingClientRect(), selected = grid.querySelector('[aria-checked=true]').getBoundingClientRect(); return h.top >= r.top - 1 && h.bottom <= selected.top && h.left <= r.left + 1 && h.right >= r.right - 5 && getComputedStyle(headers).backgroundColor !== 'rgba(0, 0, 0, 0)' && [...headers.children].every(el => { const b = el.getBoundingClientRect(); return b.top >= h.top && b.bottom <= h.bottom; }); })()`), true, 'one opaque header row covers the viewport and contains each column label');
-      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `send-cell-matrix-${theme}-${width}.png`)); }
+      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), r = grid.getBoundingClientRect(), headers = grid.querySelector('.cell-headers'), h = headers.getBoundingClientRect(), selected = grid.querySelector('[aria-checked=true]').getBoundingClientRect(); return h.top >= r.top - 1 && h.bottom <= selected.top && h.left <= r.left + 1 && h.right >= r.left + grid.clientLeft + grid.clientWidth - parseFloat(getComputedStyle(grid).paddingRight) - 1 && getComputedStyle(headers).backgroundColor !== 'rgba(0, 0, 0, 0)' && [...headers.children].every(el => { const b = el.getBoundingClientRect(); return b.top >= h.top && b.bottom <= h.bottom; }); })()`), true, 'one opaque header row covers the viewport and contains each column label');
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `send-cell-matrix-${theme}-${width}${classicScrollbars ? '-classic' : ''}.png`)); }
       await page.press('Home'); await page.frames();
       assert.match(await page.evaluate(textOf('send-cell-summary')), /return · Any · Control/);
       assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), label = [...grid.querySelectorAll(':scope > .cell-state')].find(el => el.textContent === 'return'), selected = grid.querySelector('[aria-checked=true]'); return selected.getBoundingClientRect().left >= label.getBoundingClientRect().right; })()`), true, 'keyboard selection stays clear of the sticky state label');
