@@ -436,6 +436,7 @@ export function createHarness({
   const makeNode = ({ pluginData = {}, children, main: component, ...spec }, parent = null) => {
     const data = new Map(Object.entries(pluginData));
     const item = {
+      relativeTransform: [[1, 0, 0], [0, 1, 0]], rotation: 0, opacity: 1, blendMode: 'NORMAL', effects: [], strokes: [], fills: [],
       removed: false, ...(spec.type === 'COMPONENT' ? { remote: false, description: '', documentationLinks: [] } : {}),
       parent,
       resize(width, height) { resizes.push({ id: this.id, width, height, layoutSizingVertical: this.layoutSizingVertical }); this.width = width; this.height = height; },

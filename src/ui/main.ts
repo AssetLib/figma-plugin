@@ -8,7 +8,7 @@ import { COMMAND, arrowKeys, element, failConsolePage, inField, post, reloaded, 
 import { acceptFileLinks, failFileScan, focusFile } from './infile.js';
 import { abortAll } from './http.js';
 import {
-  applyPreferences, beginArtworkRead, connectionKept, draftArtState, draftSnapshot, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
+  applyPreferences, beginArtworkRead, connectionKept, draftArtState, draftSnapshot, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar, restoreBrowseScroll,
   noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, reviewSendArtwork, resetInsert, rowFor, savePreferences, sendImpact,
 } from './insert.js';
 import { applyFileUrl, applySelection, choiceSaved, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
@@ -17,6 +17,7 @@ import { acceptSelectionPreview, initSendPreview, renderSendPreview } from './se
 import { actionsBlocked, state } from './state.js';
 import { initInspector, renderInspection } from './inspector.js';
 import { initIntake, renderIntake } from './intake.js';
+import { renderSendConflicts } from './send-conflicts.js';
 import { initSyncBar, launched, renderSyncBar, syncFromKeyboard } from './syncbar.js';
 import type { ReadFailure } from './state.js';
 
@@ -48,12 +49,14 @@ function render(): void {
   renderSend(problemInSettings());
   renderSendCurrent();
   renderSendPreview();
+  renderSendConflicts();
   renderPlacementPicker();
   renderInsertControls();
   renderInsertBar();
   renderSyncBar();
   renderInspection();
   renderIntake();
+  restoreBrowseScroll();
 }
 setRenderer({
   render, renderList, twin: rowFor,
@@ -253,7 +256,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // Figma's Copy link shortcut, as this platform spells it.
 element('copy-link-key').textContent = `${COMMAND}+L`;
 initConnection();
-initIntake();
+initIntake(() => setTab('insert'));
 initConnect();
 const showSend = () => setTab('send');
 initPlacementPicker();

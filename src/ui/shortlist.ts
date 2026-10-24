@@ -56,7 +56,7 @@ export function initShortlist(selected: () => LibraryAsset | null, choose: (id: 
     const candidates = [...items], epoch = revision, generation = state.connectionGeneration, selection = state.selection.revision;
     const target = state.selection.insertTarget ?? NEW_FRAME;
     const current = () => available() && revision === epoch && state.connectionGeneration === generation && state.selection.revision === selection;
-    openInspection({ current, returnTo: element('shortlist-compare'),
+    openInspection({ current, returnTo: element('shortlist-compare'), target: target.mode === 'fill' || target.mode === 'replace' ? state.selection.fillPreview ?? { reason: 'Select the layer again to check its paint settings.' } : undefined,
       refresh: () => { retryFailedThumbnails(); scheduleRender(); },
       usable: index => Boolean(insertRendition(candidates[index]!)),
       use: index => { if (current()) { choose(candidates[index]!.id); setStatus('Image selected. Choose Insert or Fill when ready.'); } },

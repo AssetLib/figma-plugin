@@ -8883,3 +8883,189 @@ for (const kind of ['images', 'placements']) test(`return check offers visible r
   assert.equal(app.element('error-action').hidden, false);
   assert.equal(app.drafts().length, 0); assert.equal(app.exports.length, 0);
 });
+
+const conflictButtons = (app, text) => descendants(app.element('send-conflict-list')).filter(item => item.tagName === 'BUTTON' && item.textContent === text);
+function duplicateBatch(extra = {}) {
+  const second = { ...node, id: '12:35', name: 'Alternative hero' };
+  return harness({ selection: [node, second], storage: [[storageKey(connection, second.id), { ...rememberedA, nodeId: second.id }]], ...extra });
+}
+test('decision guidance groups exact duplicate cells and resolves inclusion without changing destinations or sending', async () => {
+  const app = duplicateBatch(); await settle();
+  assert.equal(app.element('send-conflicts').hidden, false);
+  assert.match(textOf(app.element('send-conflict-list')), /Hero artwork/);
+  assert.match(textOf(app.element('send-conflict-list')), /Alternative hero/);
+  assert.equal(off(app, 'send'), true);
+  const stored = clone([...app.storage]);
+  conflictButtons(app, 'Keep this layer')[1].click(); await settle();
+  assert.equal(app.element('send-conflicts').hidden, true);
+  assert.equal(app.element('placement').value, rememberedA.placementKey);
+  assert.equal(app.element('state').value, rememberedA.state);
+  assert.match(textOf(app.element('send-items')), /Skipped/);
+  assert.equal(off(app, 'send'), false);
+  assert.deepEqual(clone([...app.storage]), stored, 'resolving inclusion does not erase remembered choices');
+  assert.equal(app.drafts().length, 0); assert.equal(app.exports.length, 0);
+});
+test('decision guidance previews collision partners on demand and stale resolution controls do nothing', async () => {
+  const app = duplicateBatch(); await settle();
+  const keep = conflictButtons(app, 'Keep this layer')[0];
+  const preview = conflictButtons(app, 'Preview layer')[1]; preview.click(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, false);
+  assert.match(app.element('inspect-caption').textContent, /Alternative hero/);
+  app.element('inspect-close').click(); await settle();
+  assert.equal(app.document.activeElement, preview);
+  conflictButtons(app, 'Choose another cell')[1].click(); await settle();
+  assert.equal(app.element('placement-panel').hidden, false);
+  app.element('state').value = 'new'; app.element('state').dispatch('change'); await settle();
+  assert.equal(app.element('send-conflicts').hidden, true);
+  keep.click(); await settle(); assert.doesNotMatch(textOf(app.element('send-items')), /Skipped/);
+  assert.equal(app.element('state').value, 'new');
+  assert.equal(app.drafts().length, 0); assert.equal(app.exports.length, 0);
+});
+test('decision guidance distinguishes state appearance and arm collisions and rejects old-generation actions', async () => {
+  const app = duplicateBatch(); await settle();
+  const skip = conflictButtons(app, 'Skip')[0];
+  app.element('appearance').value = 'dark'; app.element('appearance').dispatch('change'); await settle();
+  assert.equal(app.element('send-conflicts').hidden, true);
+  skip.click(); await settle(); assert.doesNotMatch(textOf(app.element('send-items')), /Skipped/);
+  app.element('appearance').value = 'light'; app.element('appearance').dispatch('change'); await settle();
+  assert.equal(app.element('send-conflicts').hidden, false);
+  const old = conflictButtons(app, 'Keep this layer')[0];
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('guidance_b') }); await settle(); old.click(); await settle();
+  assert.equal(app.drafts().length, 0); assert.doesNotMatch(textOf(app.element('send-items')), /Skipped/);
+});
+async function openFillInspection(app) {
+  await openInsert(app, { keep: true }); app.element('browse-images').click(); await settle();
+  tilesOf(app)[0].click(); await settle(); app.element('insert-inspect').click(); await settle();
+}
+test('decision guidance applies actual FILL or FIT bounds only in selected-layer inspection and never writes', async () => {
+  const entry = libraryAsset(300, 'Landscape', 800, 400);
+  for (const scaleMode of ['FILL', 'FIT']) {
+    const app = harness({ selection: [{ ...node, width: 300, height: 500, fills: [{ type: 'IMAGE', imageHash: 'old', scaleMode }] }], console: library([entry]) });
+    await openFillInspection(app); decodeInspection(app);
+    app.element('inspect-layer-panel').getBoundingClientRect = () => ({ width: 400, height: 400 });
+    app.element('inspect-pixels').click(); app.element('inspect-target').click();
+    assert.equal(app.element('inspect-layer-panel').getAttribute('data-layer'), 'true');
+    assert.equal(app.element('inspect-layer-panel').getAttribute('data-pixels'), 'false');
+    assert.equal(app.element('inspect-layer-frame').style.width, '240px');
+    assert.equal(app.element('inspect-layer-frame').style.height, '400px');
+    assert.equal(app.element('inspect-layer-image').style.objectFit, scaleMode === 'FILL' ? 'cover' : 'contain');
+    assert.equal(off(app, 'inspect-pixels'), true); app.element('inspect-pixels').click();
+    assert.equal(app.element('inspect-layer-panel').getAttribute('data-pixels'), 'false');
+    app.element('inspect-original').click(); assert.equal(off(app, 'inspect-pixels'), false);
+    assert.equal(app.element('inspect-layer-frame').style.width, '');
+    assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0); assert.equal(app.undoCommits.length, 0);
+  }
+});
+test('decision guidance refuses unsupported crop and compositing and invalidates same-hash edits', async () => {
+  const entry = libraryAsset(301, 'Landscape', 800, 400);
+  for (const paint of [{ scaleMode: 'CROP', imageTransform: [[1, 0, .2], [0, 1, 0]] }, { scaleMode: 'TILE' }, { scaleMode: 'FILL', rotation: 90 }, { scaleMode: 'FIT', filters: { exposure: .2 } }, { scaleMode: 'FILL', imageTransform: [[1, 0, .2], [0, 1, 0]] }, { scaleMode: 'FIT', imageTransform: [[0, -1, 0], [1, 0, 0]] }, { scaleMode: 'FILL', imageTransform: [[NaN, 0, 0], [0, 1, 0]] }]) {
+    const app = harness({ selection: [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'same', ...paint }] }], console: library([entry]) });
+    await openFillInspection(app);
+    assert.equal(off(app, 'inspect-target'), true); assert.ok(app.element('inspect-target-note').textContent);
+    app.element('inspect-target').click(); assert.equal(app.element('inspect-layer-panel').getAttribute('data-layer'), 'false');
+    assert.equal(app.insertMessages().length, 0);
+  }
+  const app = harness({ selection: [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'same', scaleMode: 'FILL' }] }], console: library([entry]) });
+  await openFillInspection(app); app.element('inspect-target').click();
+  const before = app.mainMessages.findLast(m => m.type === 'selection').selection.revision;
+  app.figma.currentPage.selection[0].fills[0].scaleMode = 'FIT'; app.tick(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true);
+  assert.ok(app.mainMessages.findLast(m => m.type === 'selection').selection.revision > before);
+  app.element('insert-inspect').click(); await settle(); app.element('inspect-target').click();
+  assert.equal(app.element('inspect-layer-image').style.objectFit, 'contain');
+  app.figma.currentPage.selection[0].opacity = .5; app.tick(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true);
+  app.element('insert-inspect').click(); await settle(); assert.equal(off(app, 'inspect-target'), true);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.exports.length, 0);
+});
+test('decision guidance names catalog arrivals by identity, preserves Send choices, and does not repeat arrivals', async () => {
+  const original = { ...placement, slotId: uuid(401) };
+  const app = harness({ console: { placements: [original] } }); await settle();
+  assert.equal(app.element('send-catalog-tools').hidden, false, 'checks remain available for populated catalogs');
+  const incoming = { ...placement, key: 'new.artwork', slotId: uuid(402) };
+  app.console.placements.push(incoming); app.console.artwork.placements.push({ ...incoming, cells: heroCells().map(cell => ({ ...cell, draft: null })) });
+  app.element('send-catalog-check').click(); await settle();
+  assert.match(textOf(app.element('send-catalog-added')), /new.artwork.*18 of 18 Draft cells need art/);
+  assert.equal(app.element('placement').value, rememberedA.placementKey);
+  const review = descendants(app.element('send-catalog-added')).find(item => item.tagName === 'BUTTON'); review.click(); await settle();
+  assert.equal(app.element('insert-title').textContent, 'new.artwork');
+  app.element('tab-send').click(); await settle(); assert.equal(app.element('placement').value, rememberedA.placementKey);
+  app.element('send-catalog-check').click(); await settle();
+  assert.match(app.element('send-catalog-result').textContent, /No new placements/);
+  assert.equal(app.element('send-catalog-arrivals').hidden, true);
+  app.console.placements[1] = { ...incoming, slotId: uuid(403) };
+  app.console.artwork.placements[1].slotId = uuid(403);
+  app.element('send-catalog-check').click(); await settle();
+  assert.match(app.element('send-catalog-summary').textContent, /1 new placement/);
+  assert.equal(app.drafts().length, 0); assert.equal(app.exports.length, 0);
+});
+test('decision guidance does not advance the catalog baseline on failed or stale artwork checks', async () => {
+  const app = harness({ console: { placements: [] } }); await settle();
+  const incoming = { ...placement, key: 'new.artwork', slotId: uuid(404) };
+  app.console.placements = [incoming]; app.console.artwork.placements = [{ ...incoming, cells: heroCells() }];
+  app.console.statuses.artwork = 503;
+  app.element('send-catalog-check').click(); await settle();
+  assert.equal(app.element('send-catalog-arrivals').hidden, true);
+  delete app.console.statuses.artwork;
+  app.element('send-catalog-check').click(); await settle();
+  assert.match(app.element('send-catalog-summary').textContent, /1 new placement/);
+  const before = app.element('send-catalog-summary').textContent;
+  const gate = deferred(); app.console.gates.artwork = gate;
+  app.element('send-catalog-check').click(); await settle();
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('guidance_new') }); await settle();
+  gate.resolve(); await settle();
+  assert.equal(app.element('send-catalog-arrivals').hidden, true);
+  assert.equal(app.drafts().length, 0); assert.ok(before);
+});
+
+test('decision guidance refuses hidden targets and ancestors and closes previews on visibility edits', async () => {
+  const entry = libraryAsset(302, 'Landscape', 800, 400);
+  const app = harness({ selection: [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'same', scaleMode: 'FILL', imageTransform: [[1, 0, 0], [0, 1, 0]] }] }], console: library([entry]) });
+  await openFillInspection(app); assert.equal(off(app, 'inspect-target'), false, 'neutral FILL transform is supported');
+  const selected = app.figma.currentPage.selection[0]; selected.visible = false; app.tick(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true);
+  app.element('insert-inspect').click(); await settle(); assert.equal(off(app, 'inspect-target'), true);
+  assert.match(app.element('inspect-target-note').textContent, /Hidden layers/);
+  app.element('inspect-close').click(); selected.visible = true;
+  selected.parent = { type: 'FRAME', visible: true, parent: app.figma.currentPage }; app.tick(); await settle();
+  app.element('insert-inspect').click(); await settle(); assert.equal(off(app, 'inspect-target'), false);
+  selected.parent.visible = false; app.tick(); await settle(); assert.equal(app.element('artwork-inspector').hidden, true);
+  app.element('insert-inspect').click(); await settle(); assert.match(app.element('inspect-target-note').textContent, /Hidden layers/);
+  assert.equal(app.undoCommits.length, 0); assert.equal(app.insertMessages().length, 0);
+});
+test('decision guidance rejects catalog checks overtaken by another placement load and invalidates older receipts', async () => {
+  const app = harness({ console: { placements: [] } }); await settle();
+  const incoming = { ...placement, key: 'new.artwork', slotId: uuid(405) };
+  app.console.placements = [incoming]; app.console.artwork.placements = [{ ...incoming, cells: heroCells() }];
+  const gate = deferred(); app.console.gates.artwork = gate;
+  app.element('send-catalog-check').click(); await settle();
+  const newer = { ...placement, key: 'newer.artwork', slotId: uuid(406) };
+  app.console.placements = [newer]; app.element('send-retry').click(); await settle();
+  assert.equal(app.element('placement').options.some(item => item.value === newer.key), true);
+  delete app.console.gates.artwork; gate.resolve(); await settle();
+  assert.equal(app.element('placement').options.some(item => item.value === incoming.key), false);
+  assert.equal(app.element('send-catalog-result').hidden, true);
+  app.console.artwork.placements = [{ ...newer, cells: heroCells() }];
+  app.element('send-catalog-check').click(); await settle();
+  assert.match(textOf(app.element('send-catalog-added')), /newer.artwork/);
+  const oldReview = descendants(app.element('send-catalog-added')).find(item => item.tagName === 'BUTTON');
+  app.console.placements = []; app.element('send-retry').click(); await settle();
+  assert.equal(app.element('send-catalog-result').hidden, true); oldReview.click(); await settle();
+  assert.equal(app.element('panel-insert').hidden, true);
+  assert.equal(app.drafts().length, 0);
+});
+
+test('decision guidance never redirects a double-click to a different row after layout or context changes', async () => {
+  const app = harness({ console: library([libraryAsset(303, 'First image', 800, 400), libraryAsset(304, 'Second image', 800, 400)]) });
+  await openInsert(app); app.element('browse-images').click(); await settle();
+  const [first, second] = tilesOf(app);
+  first.dispatch('click', { detail: 1 }); second.dispatch('click', { detail: 2 }); second.dispatch('dblclick', { detail: 2 }); await settle();
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.element('insert-title').textContent, 'First image');
+  second.dispatch('click', { detail: 1 }); second.dispatch('click', { detail: 2 }); second.dispatch('dblclick', { detail: 2 }); await settle();
+  assert.equal(app.insertMessages().length, 1); assert.equal(app.insertMessages()[0].name, 'Second image');
+  app.element('browse-placements').click(); await settle(); app.element('browse-images').click(); await settle();
+  const fresh = tilesOf(app)[1]; fresh.dispatch('click', { detail: 2 }); fresh.dispatch('dblclick', { detail: 2 }); await settle();
+  assert.equal(app.insertMessages().length, 1, 'rebuilt rows cannot reuse the prior click sequence');
+  fresh.dispatch('click', { detail: 0 }); fresh.dispatch('dblclick', { detail: 2 }); await settle();
+  assert.equal(app.insertMessages().length, 2, 'a fresh keyboard or normal click can establish intent');
+});

@@ -8,6 +8,7 @@ import type { RememberedTarget, SelectedLink, SelectionState } from '../shared/p
 import { validArm, validPlacementKey, validState } from '../shared/validation.js';
 import { currentFileKey, fileIdentity, markDocument } from './identity.js';
 import { LINK_KEY, main, post } from './state.js';
+import { fillFingerprint, fillPreview } from './fill-preview.js';
 
 // Client storage targets keep their original shape; insertedFrom is only ever derived from a link.
 export type StoredTarget = Omit<RememberedTarget, 'fileKey' | 'insertedFrom'> & { fileKey: string };
@@ -178,7 +179,7 @@ function canvasView(config: Connection | null): { nodes: SceneNode[]; view: Canv
   const truncated = selection.length > MAX_SEND_NODES;
   const reason = truncated ? `Select up to ${MAX_SEND_NODES} layers to send together.`
     : !node ? (selection.length === 0 ? 'Select a frame or layer to send.' : null) : sendReason(node);
-  return { nodes, view: { node: node ? describeNode(node) : null, reason, fileKey,
+  return { nodes, view: { node: node ? describeNode(node) : null, reason, fileKey, fillPreview: fillPreview(node),
     link: node ? selectedLink(node, config) : null, file: { source, name }, truncated,
     selectionIds: nodes.map(item => item.id).sort(),
     sendNodes: nodes.map(item => ({ node: describeNode(item), reason: sendReason(item), link: selectedLink(item, config), remembered: null })) } };
@@ -196,7 +197,7 @@ export async function reportSelection(): Promise<void> {
   const generation = main.connectionGeneration;
   const config = main.connection;
   const { nodes, view } = canvasView(config);
-  reported = JSON.stringify([generation, view, nodes.map(imageHashes)]);
+  reported = JSON.stringify([generation, view, nodes.map(fillFingerprint)]);
   const selection = [...figma.currentPage.selection];
   const target = await insertTarget(selection, config);
   const { fileKey } = view;
@@ -228,6 +229,7 @@ export async function reportSelection(): Promise<void> {
     return { ...item, remembered, choice };
   }));
   if (revision !== selectionRevision || generation !== main.connectionGeneration) return;
+  if (selectionStale()) { void reportSelection(); return; }
   const remembered = view.node ? sendNodes[0]?.remembered ?? null : null;
   const choice = view.node ? sendNodes[0]?.choice ?? null : null;
   post({ type: 'selection', connectionGeneration: generation, selection: { ...view, revision, remembered, choice, sendNodes, insertTarget: target } });
@@ -237,7 +239,7 @@ export async function reportSelection(): Promise<void> {
 export function selectionStale(): boolean {
   if (reported === null) return false;
   const { nodes, view } = canvasView(main.connection);
-  return JSON.stringify([main.connectionGeneration, view, nodes.map(imageHashes)]) !== reported;
+  return JSON.stringify([main.connectionGeneration, view, nodes.map(fillFingerprint)]) !== reported;
 }
 
 /** Metadata and link guard for a pending export. No bytes or token leave the sandbox in this snapshot. */

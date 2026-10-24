@@ -1,5 +1,6 @@
 import { sizeLabel, thumbnailRendition } from '../shared/index.js';
 import type { LibraryAsset } from '../shared/index.js';
+import type { FillPreview } from '../shared/protocol.js';
 import { arrowKeys, element, rovingStops, scheduleRender, setUnavailable } from './dom.js';
 import { actionsBlocked } from './state.js';
 import { showThumbnail } from './thumbnails.js';
@@ -10,6 +11,7 @@ export type InspectionItem = {
 };
 type Inspection = {
   items: () => InspectionItem[]; current: () => boolean; returnTo: HTMLElement;
+  target?: FillPreview;
   closed?: () => void; refresh?: () => void; use?: (index: number) => void; usable?: (index: number) => boolean;
 };
 const dialog = element('artwork-inspector');
@@ -19,8 +21,9 @@ const panels = names.map(name => element(`inspect-${name}-panel`));
 const images = names.map(name => element<HTMLImageElement>(`inspect-${name}-image`));
 const backgrounds = ['transparent', 'light', 'dark'].map(name => element<HTMLButtonElement>(`inspect-${name}`));
 const scales = ['fit', 'pixels'].map(name => element<HTMLButtonElement>(`inspect-${name}`));
+const views = ['original', 'target'].map(name => element<HTMLButtonElement>(`inspect-${name}`));
 let session: Inspection | null = null;
-let side = 0, background = 0, pixels = false;
+let side = 0, background = 0, pixels = false, inLayer = false;
 const unavailable = new Set<string>();
 
 function decoded(image: HTMLImageElement, item: InspectionItem): boolean {
@@ -35,7 +38,7 @@ export function closeInspection(): void {
 export function openInspection(next: Inspection): void {
   if (actionsBlocked() || !next.current()) return;
   if (session) closeInspection();
-  session = next; side = 0; pixels = false; unavailable.clear();
+  session = next; side = 0; pixels = false; inLayer = false; unavailable.clear();
   renderInspection(); sides[0]!.focus();
 }
 export function renderInspection(): void {
@@ -45,6 +48,14 @@ export function renderInspection(): void {
   const items = session.items().slice(0, 3);
   if (!items.length) { closeInspection(); return; }
   side = Math.min(side, items.length - 1);
+  const target = session.target && !('reason' in session.target) ? session.target : null;
+  element('inspect-views').hidden = !session.target;
+  views.forEach((button, index) => button.setAttribute('aria-checked', String(inLayer === Boolean(index))));
+  setUnavailable(views[1]!, !target);
+  rovingStops(views);
+  element('inspect-target-note').hidden = !session.target;
+  element('inspect-target-note').textContent = session.target && 'reason' in session.target ? session.target.reason
+    : inLayer && target ? `${sizeLabel(target)} layer bounds · ${target.mode} paint · surrounding canvas excluded` : '';
   items.forEach((item, index) => {
     const image = images[index]!;
     const blocked = unavailable.has(item.asset?.id ?? item.src ?? '');
@@ -61,6 +72,13 @@ export function renderInspection(): void {
     panels[index]!.setAttribute('aria-label', `${item?.label ?? ''} preview, scroll at 100%`);
     panels[index]!.setAttribute('data-background', ['transparent', 'light', 'dark'][background]!);
     panels[index]!.setAttribute('data-pixels', String(pixels)); panels[index]!.tabIndex = pixels && side === index ? 0 : -1;
+    panels[index]!.setAttribute('data-layer', String(inLayer));
+    const frame = element(`inspect-${names[index]}-frame`);
+    const box = panels[index]!.getBoundingClientRect();
+    const scale = target ? Math.min(box.width / target.width, box.height / target.height, 1) : 1;
+    frame.style.width = inLayer && target ? `${target.width * scale}px` : '';
+    frame.style.height = inLayer && target ? `${target.height * scale}px` : '';
+    images[index]!.style.objectFit = inLayer && target?.mode === 'FILL' ? 'cover' : 'contain';
     if (!item) showThumbnail(images[index]!, null);
   });
   const item = items[side]!, shown = images[side]!;
@@ -69,11 +87,12 @@ export function renderInspection(): void {
   element('inspect-size').textContent = [item.source ? `${item.sourceLabel} ${sizeLabel(item.source)}` : '', item.reference ? `Placement reference ${sizeLabel(item.reference)}` : '', loaded ? `Preview ${shown.naturalWidth} × ${shown.naturalHeight} px${pixels ? ' · 100%' : ' · Fit'}` : 'Preview not loaded'].filter(Boolean).join(' · ');
   backgrounds.forEach((button, index) => button.setAttribute('aria-checked', String(background === index)));
   scales.forEach((button, index) => button.setAttribute('aria-checked', String(pixels === Boolean(index))));
+  setUnavailable(scales[1]!, inLayer);
   rovingStops(backgrounds); rovingStops(scales);
   element('inspect-refresh').hidden = !session.refresh;
   element('inspect-use').hidden = !session.use;
   setUnavailable(element('inspect-use'), actionsBlocked() || !loaded || session.usable?.(side) === false);
-  element('inspect-help').textContent = `100% shows preview pixels, not app size. ← → compares artwork. Esc returns to ${session.use ? 'Images' : 'Send'}.`;
+  element('inspect-help').textContent = `${inLayer ? 'Original offers 100% preview pixels.' : '100% shows preview pixels, not app size.'} ← → compares artwork. Esc returns.`;
 }
 export function initInspector(): void {
   element('inspect-close').addEventListener('click', closeInspection);
@@ -93,7 +112,12 @@ export function initInspector(): void {
     unavailable.add(item.asset?.id ?? item.src ?? ''); image.removeAttribute('src'); renderInspection();
   }));
   backgrounds.forEach((button, index) => button.addEventListener('click', () => { background = index; renderInspection(); }));
-  scales.forEach((button, index) => button.addEventListener('click', () => { pixels = Boolean(index); renderInspection(); }));
+  scales.forEach((button, index) => button.addEventListener('click', () => { if (inLayer && index) return; pixels = Boolean(index); renderInspection(); }));
+  views.forEach((button, index) => button.addEventListener('click', () => {
+    if (index && (!session?.target || 'reason' in session.target)) return;
+    inLayer = Boolean(index); pixels = false; renderInspection();
+  }));
+  arrowKeys(element('inspect-views'), views, 'radios');
   arrowKeys(element('inspect-backgrounds'), backgrounds, 'radios'); arrowKeys(element('inspect-scales'), scales, 'radios');
   sides.forEach((button, index) => button.addEventListener('click', () => { side = index; renderInspection(); }));
   element('inspect-refresh').addEventListener('click', () => { if (session?.current() && !actionsBlocked()) { unavailable.clear(); session.refresh?.(); renderInspection(); } });
@@ -109,7 +133,7 @@ export function initInspector(): void {
       event.preventDefault(); const count = session.items().length;
       side = (side + (event.key === 'ArrowLeft' ? count - 1 : 1)) % count; renderInspection(); sides[side]!.focus();
     } else if (event.key === 'Tab') {
-      const controls = [...sides, element('inspect-refresh'), element('inspect-use'), element('inspect-close'), ...backgrounds, ...scales, panels[side]!].filter(control => !control.hidden && !(control as HTMLButtonElement).disabled && control.tabIndex !== -1);
+      const controls = [...sides, element('inspect-refresh'), element('inspect-use'), element('inspect-close'), ...backgrounds, ...scales, ...(session.target ? views : []), panels[side]!].filter(control => !control.hidden && !(control as HTMLButtonElement).disabled && control.tabIndex !== -1);
       event.preventDefault(); controls[(controls.indexOf(document.activeElement as HTMLElement) + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]!.focus();
     } else if (event.metaKey || event.ctrlKey || event.key === '/') event.preventDefault();
   });

@@ -47,6 +47,29 @@ export function initQueue(actions: { choose: () => void; needFile: () => void; s
 }
 export function activeSendRow(): SendRow | null { return rows.find(row => row.node.id === activeId) ?? rows[0] ?? null; }
 export function sendRows(): readonly SendRow[] { return rows; }
+export function duplicateDestinations(): SendRow[][] {
+  const groups: SendRow[][] = [];
+  for (const row of rows) {
+    if (!row.included || !validTarget(row)) continue;
+    const group = groups.find(items => sameTarget(items[0]!.target, row.target));
+    if (group) group.push(row); else groups.push([row]);
+  }
+  return groups.filter(group => group.length > 1);
+}
+/** Resolves only the reviewed collision; targets and all Send results stay intact. */
+export function resolveDuplicate(nodeId: string, target: CellBinding, members: string[], action: 'keep' | 'skip' | 'choose'): boolean {
+  if (actionsBlocked() || !hasCurrentSelection()) return false;
+  const group = duplicateDestinations().find(items => sameTarget(items[0]!.target, target));
+  if (!group || group.map(row => row.node.id).join() !== members.join()) return false;
+  const row = group.find(item => item.node.id === nodeId);
+  if (!row) return false;
+  if (action === 'keep') for (const item of group) item.included = item === row;
+  if (action === 'skip') row.included = false;
+  activeId = row.node.id; choose(); scheduleRender();
+  setStatus(action === 'keep' ? `${row.node.name} kept for this cell. ${group.length - 1} other layers skipped; their destinations are kept.`
+    : action === 'skip' ? `${row.node.name} skipped; its destination is kept.` : `Choose another cell for ${row.node.name}.`);
+  return true;
+}
 function keyOf(selection: SelectionState): string {
   return JSON.stringify([selection.fileKey, [...(selection.selectionIds ?? (selection.node ? [selection.node.id] : []))].sort()]);
 }

@@ -47,8 +47,10 @@ export type FileLinks = { type: 'file-links'; connectionGeneration: number; scop
  */
 export type FileState = { source: 'figma' | 'document' | 'session' | null; name: string };
 
+export type FillPreview = { width: number; height: number; mode: 'FILL' | 'FIT' } | { reason: string };
 export type SelectionState = {
   revision?: number;
+  fillPreview?: FillPreview;
   node: NodeSelection | null;
   reason: string | null;
   fileKey: string | null;

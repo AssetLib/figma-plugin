@@ -248,6 +248,8 @@
     .images-intake { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px 8px; }
     .images-intake p { flex: 1; min-width: 0; }
     .images-intake a { flex: none; }
+    .catalog-arrivals { max-height: 180px; overflow: auto; }
+    .catalog-arrivals p { overflow-wrap: anywhere; margin-top: 8px; }
     .intake-return { flex: none; padding: 0 12px 8px; }
     .intake-return p { margin-top: 4px; }
     .empty-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -276,6 +278,11 @@
     .selection-card.empty { border-style: dashed; }
     .selection-card.empty .title { color: var(--al-text-meta); font-weight: 400; }
     .send-items { display: grid; gap: 8px; max-height: 248px; overflow: auto; padding: 2px; margin: -2px; }
+    #send-conflict-list { max-height: 240px; overflow: auto; }
+    .conflict-layer { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 4px 8px; margin: 8px 0; }
+    .conflict-layer img { width: 40px; height: 40px; object-fit: contain; grid-row: span 2; }
+    .conflict-layer img:not([src]) { visibility: hidden; }
+    .conflict-layer p, #send-conflict-list .title { overflow-wrap: anywhere; }
     .send-items:empty { display: none; }
     .send-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
     .send-row[aria-current="true"] { border-color: var(--text); }
@@ -303,6 +310,8 @@
     .inspector-actions [aria-pressed="true"] { color: var(--text); border-color: var(--text); }
     .inspect-panel { grid-row: 4; min-height: 0; overflow: auto; display: flex; }
     #inspect-caption { overflow: auto; }
+    .inspect-panel[data-layer="true"] { align-items: center; justify-content: center; }
+    .inspect-panel[data-layer="true"] .thumb { overflow: hidden; border-radius: 0; }
     .inspect-panel .thumb { width: 100%; height: 100%; flex: none; }
     .inspect-panel[data-background="light"] .thumb { background: #fff; }
     .inspect-panel[data-background="dark"] .thumb { background: #111; }
@@ -547,7 +556,7 @@
         <div id="shortlist-names" class="shortlist-names"></div>
       </div>
       <div id="list-region" class="list-region">
-        <p id="insert-catalog-result" class="note" hidden></p>
+        <div id="insert-catalog-tools" hidden><button id="insert-catalog-check" class="text-action" type="button">Check for placements</button></div><p id="insert-catalog-result" class="note" hidden></p><details id="insert-catalog-arrivals" class="catalog-arrivals" hidden><summary id="insert-catalog-summary"></summary><div id="insert-catalog-added"></div><button id="insert-catalog-more" class="text-action" type="button" hidden>Show more</button></details>
         <div id="browse-results" class="browse-results" hidden>
           <div id="art-filters" class="segmented" role="radiogroup" aria-label="Placement artwork" hidden>
             <button id="art-all" type="button" role="radio" aria-checked="true">All</button>
@@ -569,7 +578,7 @@
             <button id="insert-token" class="secondary" type="button" hidden>Update token</button>
             <button id="insert-go-send" class="secondary" type="button" hidden>Go to Send</button>
             <a id="insert-empty-link" class="button" target="_blank" rel="noopener noreferrer" title="Open in the Assetlib console" hidden></a>
-            <button id="insert-catalog-check" class="secondary small" type="button" hidden>Check for placements</button>
+
           </div>
         </div>
       </div>
@@ -583,6 +592,7 @@
           <p id="selection-meta" class="meta"></p>
         </section>
         <div id="send-attention-bar" class="send-attention" hidden><p id="send-attention" class="meta"></p><button id="send-next-issue" class="text-action" type="button">Next issue</button></div>
+        <details id="send-conflicts" class="info" hidden open><summary id="send-conflict-summary"></summary><p class="meta">Preview each layer, then keep one for this cell. Nothing is sent until you choose Send.</p><div id="send-conflict-list"></div></details>
         <div id="send-items" class="send-items" role="list" aria-label="Selected artwork"></div>
         <!-- Asked for once per document when Figma doesn't give the plugin the file's key. -->
         <div id="file-fallback" class="info" hidden>
@@ -594,8 +604,8 @@
         <div id="file-line" class="file-line" hidden><p class="meta"><span id="file-name"></span> · <button id="file-change" class="text-action" type="button">Change</button></p><p id="file-session" class="meta" hidden></p></div>
         <!-- Why Send has no placements: the connection test failed. Shown here only while the connection settings are closed. -->
         <div id="send-problem" class="error" tabindex="-1" hidden><p id="send-problem-text"></p><button id="send-retry" class="secondary small" type="button" hidden>Try again</button><button id="send-token" class="secondary small" type="button" hidden>Update token</button></div>
-        <div id="send-catalog" class="info" hidden><p><strong>No placements yet.</strong> Sync the app catalog to define placements before sending selected layers to Draft. Image files go in Images.</p><a id="send-catalog-link" class="button secondary small" target="_blank" rel="noopener noreferrer" title="Set up this app’s catalog in the Assetlib console" hidden>Set up app catalog</a><button id="send-catalog-check" class="secondary small" type="button">Check for placements</button></div>
-        <p id="send-catalog-result" class="note" hidden></p>
+        <div id="send-catalog" class="info" hidden><p><strong>No placements yet.</strong> Sync the app catalog to define placements before sending selected layers to Draft. Image files go in Images.</p><a id="send-catalog-link" class="button secondary small" target="_blank" rel="noopener noreferrer" title="Set up this app’s catalog in the Assetlib console" hidden>Set up app catalog</a></div>
+        <div id="send-catalog-tools" hidden><button id="send-catalog-check" class="text-action" type="button">Check for placements</button></div><p id="send-catalog-result" class="note" hidden></p><details id="send-catalog-arrivals" class="catalog-arrivals" hidden><summary id="send-catalog-summary"></summary><div id="send-catalog-added"></div><button id="send-catalog-more" class="text-action" type="button" hidden>Show more</button></details>
         <label id="placement-search-field" class="field">Find placement<input id="placement-search" type="search" placeholder="Search by key or screen" autocomplete="off" spellcheck="false"></label>
         <div class="field"><label id="placement-label" for="placement-toggle">Placement</label><button id="placement-toggle" class="secondary placement-toggle" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="placement-options">Choose placement…</button><select id="placement" hidden disabled aria-label="Placement"><option value="">Choose placement…</option></select></div>
         <div id="placement-panel" class="placement-panel" hidden>
@@ -664,7 +674,7 @@
         </div>
         <button id="insert" class="primary" type="button" aria-disabled="true">Insert</button>
       </div>
-      <div class="footer-note"><p id="insert-note" hidden></p><button id="insert-send-here" class="text-action" type="button" hidden>Send selected layer here</button><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new layer</button></div>
+      <div class="footer-note"><p id="insert-note" hidden></p><button id="insert-send-here" class="text-action" type="button" hidden>Send selected layer here</button><a id="insert-note-link" class="text-action" target="_blank" rel="noopener noreferrer" hidden>Open in console</a><button id="insert-inspect" class="text-action" type="button" hidden>Preview in selected layer</button><button id="insert-new" class="text-action" type="button" aria-disabled="true" hidden>Insert as new layer</button></div>
     </footer>
     <footer id="send-bar" class="footer" hidden>
       <div class="footer-actions"><button id="send" class="primary" type="button" aria-disabled="true">Send to draft</button></div>
@@ -682,11 +692,12 @@
     <div class="inspector-actions"><button id="inspect-layer" class="secondary" type="button" aria-pressed="true">Figma layer</button><button id="inspect-draft" class="secondary" type="button" aria-pressed="false">Current Draft</button><button id="inspect-third" class="secondary" type="button" aria-pressed="false" hidden></button><button id="inspect-use" class="secondary" type="button" hidden>Use this image</button><button id="inspect-refresh" class="secondary" type="button">Refresh preview</button><button id="inspect-close" class="secondary" type="button">Close</button></div>
     <div class="inspector-actions">
       <div id="inspect-backgrounds" class="segmented" role="radiogroup" aria-label="Preview background"><button id="inspect-transparent" type="button" role="radio" aria-checked="true">Transparency</button><button id="inspect-light" type="button" role="radio" aria-checked="false">Light</button><button id="inspect-dark" type="button" role="radio" aria-checked="false">Dark</button></div>
+      <div id="inspect-views" class="segmented" role="radiogroup" aria-label="Preview context" hidden><button id="inspect-original" type="button" role="radio" aria-checked="true">Original</button><button id="inspect-target" type="button" role="radio" aria-checked="false">In selected layer</button></div><p id="inspect-target-note" class="meta" hidden></p>
       <div id="inspect-scales" class="segmented" role="radiogroup" aria-label="Preview scale"><button id="inspect-fit" type="button" role="radio" aria-checked="true">Fit</button><button id="inspect-pixels" type="button" role="radio" aria-checked="false">100%</button></div>
     </div>
-    <div id="inspect-layer-panel" class="inspect-panel" role="region" aria-label="Figma preview, scroll at 100%" tabindex="-1"><span class="thumb"><img id="inspect-layer-image" alt=""></span></div>
-    <div id="inspect-draft-panel" class="inspect-panel" role="region" aria-label="Draft preview, scroll at 100%" tabindex="-1" hidden><span class="thumb"><img id="inspect-draft-image" alt=""></span></div>
-    <div id="inspect-third-panel" class="inspect-panel" role="region" tabindex="-1" hidden><span class="thumb"><img id="inspect-third-image" alt=""></span></div>
+    <div id="inspect-layer-panel" class="inspect-panel" role="region" aria-label="Figma preview, scroll at 100%" tabindex="-1"><span id="inspect-layer-frame" class="thumb"><img id="inspect-layer-image" alt=""></span></div>
+    <div id="inspect-draft-panel" class="inspect-panel" role="region" aria-label="Draft preview, scroll at 100%" tabindex="-1" hidden><span id="inspect-draft-frame" class="thumb"><img id="inspect-draft-image" alt=""></span></div>
+    <div id="inspect-third-panel" class="inspect-panel" role="region" tabindex="-1" hidden><span id="inspect-third-frame" class="thumb"><img id="inspect-third-image" alt=""></span></div>
     <div><p id="inspect-caption" class="meta"></p><p id="inspect-size" class="meta"></p></div><p id="inspect-help" class="meta">100% shows preview pixels, not app size. ← → compares artwork. Esc returns to Send.</p>
   </section>
   <!-- ASSETLIB_SCRIPT -->

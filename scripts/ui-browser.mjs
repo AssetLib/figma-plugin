@@ -603,7 +603,8 @@ async function openUi(options = {}, { width = 420, height = 720, theme: mode = n
   /** A real double-click at the element's center: two clicks, then dblclick. */
   async function doubleClick(selector) {
     await frames();
-    const box = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    const box = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.scrollIntoView({block:'center'}); const r = el.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; const hit = document.elementFromPoint(x,y); return hit && (hit === el || el.contains(hit)) ? {x,y} : null; })()`);
+    assert.ok(box, `Double-click target is visible: ${selector}`);
     await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
     for (const clickCount of [1, 2]) {
       for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount });
@@ -1555,10 +1556,10 @@ test('footer, chip, grid, and tile details fit at 420 px', async () => {
     // Six cell columns overflow 420 px and scroll; the state names keep their own column.
     assert.ok(await page.evaluate(`document.querySelector('#insert-cells .cell-state').getBoundingClientRect().width >= 48`), 'state names keep their column');
   } finally { await page.close(); }
-  // Each empty state has the same inset within its scrolling list; Images has its comparison toolbar above it.
+  // Empty content keeps its inset after the persistent catalog check; Images has its toolbar above the list.
   const top = async options => {
     const view = await openUi(options);
-    try { await view.waitFor(shown('insert-empty')); return await view.evaluate(`Math.round(document.getElementById('insert-empty').getBoundingClientRect().top - document.getElementById('list-region').getBoundingClientRect().top)`); }
+    try { await view.waitFor(shown('insert-empty')); return await view.evaluate(`Math.round(document.getElementById('insert-empty').getBoundingClientRect().top - document.getElementById('list-region').getBoundingClientRect().top - document.getElementById('insert-catalog-tools').getBoundingClientRect().height)`); }
     finally { await view.close(); }
   };
   assert.equal(await top({ images: 0, preferences: { browse: 'images' } }), await top({ artwork: 'empty' }));
@@ -1608,7 +1609,7 @@ test('≤15 tab stops with 500 placements', async () => {
     }
     assert.ok(stops.length <= 15, `${stops.length} tab stops: ${stops.join(', ')}`);
     // Tabs → account → search → scope → list → footer; each tab list, radio group, and the list is one stop.
-    assert.deepEqual(stops, ['tab-insert', 'settings-summary', 'insert-search', 'insert-refresh', 'browse-placements', 'env-draft', 'art-all', 'screen0.slot0',
+    assert.deepEqual(stops, ['tab-insert', 'settings-summary', 'insert-search', 'insert-refresh', 'browse-placements', 'env-draft', 'insert-catalog-check', 'art-all', 'screen0.slot0',
       'insert-cell', 'scale-1', 'insert']);
     assert.deepEqual(await page.evaluate(listStops), ['screen0.slot0'], 'one of the 500 rows is a tab stop');
     // Shift+Tab from the footer comes back to the chosen row.
@@ -1710,8 +1711,8 @@ test('Enter inserts', async () => {
     await page.press('/');
     assert.equal(await page.focused(), 'insert-search');
     await page.type('home');
-    for (let i = 0; i < 6; i += 1) await page.press('Tab');
-    assert.equal(await page.focused(), 'home.banner', 'past Clear search, Refresh, Browse, Environment, and artwork filters, the first row');
+    for (let i = 0; i < 7; i += 1) await page.press('Tab');
+    assert.equal(await page.focused(), 'home.banner', 'past Clear search, Refresh, Browse, Environment, catalog check, and artwork filters, the first row');
     assert.deepEqual(await page.evaluate(chosenKeys), [], 'reaching the list chooses nothing');
     await page.press('Enter');
     await page.waitFor(`__harness.inserted() === 1 && document.getElementById('status').textContent === 'Inserted home.banner from Draft.'`, { message: 'the insert' });
@@ -1728,9 +1729,14 @@ test('Enter inserts', async () => {
     await page.press('Enter');
     await page.waitFor(`__harness.inserted() === 2 && document.getElementById('status').textContent === 'Inserted onboarding.hero · b · dark from Draft.'`, { message: 'the picked cell' });
 
-    // A double-click inserts too.
+    // The first click collapses a taller footer and can move another row under the pointer.
+    // That second click must never insert the wrong image. A stable double-click then uses the intended row.
     await page.doubleClick('#insert-list .placement[data-key="home.promo"]');
-    await page.waitFor(`__harness.inserted() === 3 && document.getElementById('status').textContent === 'Inserted home.promo from Draft.'`, { message: 'the double-click' });
+    await page.frames();
+    assert.equal(await page.evaluate('__harness.inserted()'), 2, 'a row moving under the pointer cannot redirect an insert');
+    assert.equal(await page.evaluate(textOf('insert-title')), 'home.promo');
+    await page.doubleClick('#insert-list .placement[data-key="home.promo"]');
+    await page.waitFor(`__harness.inserted() === 3 && document.getElementById('status').textContent === 'Inserted home.promo from Draft.'`, { message: 'the stable double-click' });
     assert.equal(await page.focused(), 'home.promo');
 
     // Enter on a row Insert can't use inserts nothing and says why, as the footer does.
@@ -3002,7 +3008,7 @@ test('a linked text layer with an image fill never offers Update', async () => {
   } finally { await page.close(); }
 });
 
-test('the bar title reveals the linked or copied cell from Images and the list stays within 15 tab stops', async () => {
+test('the bar title reveals the linked or copied cell and keeps bounded keyboard access to preview and catalog checks', async () => {
   const node = { id: '40:1', name: 'Hero', type: 'FRAME', width: 1000, height: 1000 };
   const key = 'screen0.slot0';
   const assetId = '00000000-0000-4000-8000-000000010000';
@@ -3026,7 +3032,7 @@ test('the bar title reveals the linked or copied cell from Images and the list s
       await page.evaluate(`document.getElementById('tab-insert').focus()`);
       const stops = ['tab-insert'];
       for (let i = 0; i < 30; i += 1) { await page.press('Tab'); const id = await page.focused(); if (id === 'body' || stops.includes(id)) break; stops.push(id); }
-      assert.ok(stops.length <= 15, `${kind}: ${stops.length} tab stops: ${stops.join(', ')}`);
+      assert.ok(stops.length <= 17, `${kind}: ${stops.length} tab stops including preview and catalog check: ${stops.join(', ')}`);
       assert.equal(stops.indexOf('sync-title'), stops.indexOf(key) + 1);
       assert.ok(stops.indexOf('insert-cell') > stops.indexOf(kind === 'linked' ? 'sync' : 'sync-send'));
     } finally { await page.close(); }
@@ -3984,5 +3990,83 @@ for (const theme of ['light', 'dark']) test(`console return checks preserve cont
       assert.equal(await empty.evaluate(valueOf('placement')), '', 'nothing is chosen for the user');
       assert.equal(await empty.evaluate(`__harness.received.includes('export') || __harness.log.some(item => item.route === 'drafts')`), false);
     } finally { await empty.close(); }
+  }
+});
+
+for (const theme of ['light', 'dark']) test(`decision guidance resolves duplicate cells with previews and explicit choices (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const nodes = [{ id:'95:1', name:'Original banner artwork', type:'FRAME', width:390, height:160 }, { id:'95:2', name:'Alternative banner artwork', type:'FRAME', width:390, height:160 }];
+    const selection = { ...DEFAULTS.selection, reason:null, sendNodes:nodes.map(node => ({node,reason:null,link:null,remembered:{fileKey:'abc123',nodeId:node.id,placementKey:'home.banner',state:null,appearance:null,arm:null,insertedFrom:null}})) };
+    const page = await openUi({ selection, inspection:true, preferences:{tab:'send'} }, {width,height:480,theme});
+    try {
+      await page.waitFor(shown('send-conflicts'));
+      assert.match(await page.evaluate(textOf('send-conflict-list')), /Original banner artwork.*Alternative banner artwork/s);
+      assert.equal(await page.evaluate(`Array.from(document.querySelectorAll('#send-conflict-list button')).every(button => {const s=getComputedStyle(button); return s.backgroundColor !== getComputedStyle(document.getElementById('send-conflicts')).backgroundColor && parseFloat(s.borderWidth) >= 1;})`),true,'conflict actions stand apart from their callout');
+      assert.equal(await page.evaluate(`document.getElementById('send').getAttribute('aria-disabled')`),'true');
+      await page.click('#send-conflict-list .conflict-layer:last-child button:first-child');
+      await page.waitFor(`!document.getElementById('artwork-inspector').hidden && document.getElementById('inspect-layer-image').naturalWidth > 0`);
+      assert.match(await page.evaluate(textOf('inspect-caption')), /Alternative banner artwork/);
+      await page.press('Escape'); assert.equal(await page.evaluate(`document.activeElement.textContent`),'Preview layer');
+      await page.evaluate(`document.getElementById('send-conflicts').scrollIntoView({block:'start'})`); await page.frames();
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.getElementById('send-conflict-list').clientHeight <= 240`),true);
+      if (shots) { await mkdir(shots,{recursive:true}); await page.screenshot(join(shots,`duplicate-cells-${theme}-${width}.png`)); }
+      await page.click('#send-conflict-list .conflict-layer:last-child button:nth-child(2)');
+      await page.waitFor(`document.getElementById('send-conflicts').hidden`);
+      assert.equal(await page.evaluate(valueOf('placement')),'home.banner');
+      assert.match(await page.evaluate(textOf('send-items')),/Skipped/);
+      assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.received.includes('insert') || __harness.log.some(item=>item.route==='drafts')`),false);
+    } finally { await page.close(); }
+  }
+});
+for (const theme of ['light', 'dark']) test(`decision guidance previews actual layer bounds and explains unsupported paint (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const target={ mode:'fill',label:'Fill image',count:1,nodeIds:['96:1'],name:'Portrait card',containerWidth:300,containerHeight:500 };
+    const selection={ ...DEFAULTS.selection,insertTarget:target,fillPreview:{width:300,height:500,mode:'FILL'} };
+    const page=await openUi({inspection:true,images:2,selection,preferences:{browse:'images'}},{width,height:480,theme});
+    try {
+      await page.waitFor(`${tiles} === 2`); await page.click('#image-grid [role=option]'); await page.click('#insert-inspect');
+      await page.waitFor(`document.getElementById('inspect-layer-image').naturalWidth > 0`);
+      await page.click('#inspect-target'); await page.click('#inspect-dark');
+      const box=await page.evaluate(`(()=>{const frame=document.getElementById('inspect-layer-frame').getBoundingClientRect(),panel=document.getElementById('inspect-layer-panel').getBoundingClientRect();return {w:frame.width,h:frame.height,inside:frame.left>=panel.left && frame.right<=panel.right+1 && frame.top>=panel.top && frame.bottom<=panel.bottom+1,fit:getComputedStyle(document.getElementById('inspect-layer-image')).objectFit};})()`);
+      assert.ok(box.w>40 && box.h>60 && Math.abs(box.w/box.h-.6)<.01 && box.inside); assert.equal(box.fit,'cover');
+      assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('inspect-layer-frame')).borderRadius`),'0px');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-pixels').getAttribute('aria-disabled')`),'true');
+      await page.evaluate(`document.getElementById('inspect-target').focus()`); await page.press('ArrowLeft');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-original').getAttribute('aria-checked')`),'true');
+      await page.press('ArrowRight'); assert.equal(await page.evaluate(`document.getElementById('inspect-target').getAttribute('aria-checked')`),'true');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`),true);
+      if(shots){await mkdir(shots,{recursive:true});await page.screenshot(join(shots,`layer-fill-${theme}-${width}.png`));}
+      await page.evaluate(`__harness.select(${JSON.stringify({...selection,fillPreview:{width:300,height:500,mode:'FIT'}})})`);
+      await page.waitFor(`document.getElementById('artwork-inspector').hidden`); await page.click('#insert-inspect'); await page.click('#inspect-target');
+      assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('inspect-layer-image')).objectFit`),'contain');
+      if(shots) await page.screenshot(join(shots,`layer-fit-${theme}-${width}.png`));
+      await page.evaluate(`__harness.select(${JSON.stringify({...selection,fillPreview:{reason:'Crop and Tile paint settings cannot be previewed here.'}})})`);
+      await page.waitFor(`document.getElementById('artwork-inspector').hidden`); await page.click('#insert-inspect'); await page.click('#inspect-target');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-target').getAttribute('aria-disabled')`),'true');
+      assert.match(await page.evaluate(textOf('inspect-target-note')),/Crop and Tile/);
+      await page.press('Escape'); assert.equal(await page.focused(),'insert-inspect');
+      assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.received.includes('insert') || __harness.log.some(item=>item.route==='drafts')`),false);
+    } finally { await page.close(); }
+  }
+});
+for (const theme of ['light', 'dark']) test(`decision guidance names new catalog placements and keeps compatible destinations (${theme})`, async () => {
+  for(const width of [320,420]) {
+    const page=await openUi({selection:linkedSelection({id:'97:1',name:'Existing banner',type:'FRAME',width:390,height:160}),preferences:{tab:'send'}},{width,height:480,theme});
+    try {
+      await page.waitFor(`document.getElementById('placement').value === 'home.banner'`);
+      await page.evaluate(`__harness.artwork.placements.push({key:'onboarding.new_hero',slotId:__harness.uuid(9902),screen:'Onboarding',width:600,height:400,states:null,defaultState:null,variants:null,origin:'declared',cells:[{state:null,arm:null,appearance:null,draft:null,staging:null,production:null}]})`);
+      await page.click('#send-catalog-check'); await page.waitFor(shown('send-catalog-arrivals'));
+      await page.click('#send-catalog-summary'); await page.frames();
+      assert.match(await page.evaluate(textOf('send-catalog-added')),/onboarding.new_hero.*1 of 1 Draft cells need art/s);
+      assert.equal(await page.evaluate(valueOf('placement')),'home.banner');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`),true);
+      if(shots){await mkdir(shots,{recursive:true});await page.screenshot(join(shots,`catalog-arrivals-${theme}-${width}.png`));}
+      await page.click('#send-catalog-added button'); await page.waitFor(shown('panel-insert'));
+      assert.equal(await page.evaluate(textOf('insert-title')),'onboarding.new_hero');
+      await page.click('#tab-send'); assert.equal(await page.evaluate(valueOf('placement')),'home.banner');
+      await page.click('#send-catalog-check'); await page.waitFor(`document.getElementById('send-catalog-result').textContent.includes('No new placements')`);
+      assert.equal(await page.evaluate(shown('send-catalog-arrivals')),false);
+      assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.received.includes('insert') || __harness.log.some(item=>item.route==='drafts')`),false);
+    } finally {await page.close();}
   }
 });

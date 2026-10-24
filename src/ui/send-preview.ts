@@ -12,9 +12,16 @@ let key = '';
 let requestId: number | null = null;
 let requested = false;
 let expanded = false;
+let cacheOwner = '';
+const previews = new Map<string, string>();
+export function localPreviewFor(nodeId: string): string | null {
+  return cacheOwner === `${state.connectionGeneration}:${state.selection.revision}` ? previews.get(nodeId) ?? null : null;
+}
 function ownerKey(): string { return `${state.connectionGeneration}:${state.selection.revision}:${activeSendRow()?.node.id}`; }
 
 export function renderSendPreview(): void {
+  const epoch = `${state.connectionGeneration}:${state.selection.revision}`;
+  if (cacheOwner !== epoch) { previews.clear(); cacheOwner = epoch; }
   const row = activeSendRow();
   const visible = state.prefs.tab === 'send' && hasCurrentSelection() && Boolean(state.connection && row && !row.reason);
   element('send-comparison').hidden = !visible;
@@ -44,7 +51,13 @@ export function acceptSelectionPreview(message: Extract<MainMessage, { type: 'se
   requestId = null;
   const size = message.bytes && message.bytes.byteLength <= (expanded ? 1048576 : 262144) ? pngSize(message.bytes) : null;
   const valid = size && Math.max(size.width, size.height) <= (expanded ? 1024 : 256);
-  if (valid) image.src = `data:image/png;base64,${bytesToBase64(message.bytes!)}`;
+  if (valid) {
+    image.src = `data:image/png;base64,${bytesToBase64(message.bytes!)}`;
+    if (!expanded) {
+      previews.set(message.nodeId, image.src);
+      if (previews.size > 8) previews.delete(previews.keys().next().value!);
+    }
+  }
   else image.removeAttribute('src');
   element('send-layer-status').textContent = valid ? 'Local preview' : 'Preview unavailable';
   scheduleRender();
@@ -54,15 +67,14 @@ function refreshPreview(): void {
   if (actionsBlocked() || requestId !== null) return;
   requested = false; image.removeAttribute('src'); scheduleRender();
 }
-export function initSendPreview(): void {
-  element('send-preview-enlarge').addEventListener('click', () => {
+export function inspectSendPreview(returnTo = element('send-preview-enlarge')): void {
     if (actionsBlocked() || state.prefs.tab !== 'send' || !hasCurrentSelection() || !state.connection || !activeSendRow() || activeSendRow()!.reason) return;
     expanded = true; requested = false; requestId = null;
     renderSendPreview();
     const owner = ownerKey();
     openInspection({
       current: () => expanded && state.prefs.tab === 'send' && hasCurrentSelection() && ownerKey() === owner,
-      returnTo: element('send-preview-enlarge'), refresh: refreshPreview,
+      returnTo, refresh: refreshPreview,
       closed: () => { expanded = false; requestId = null; requested = false; },
       items: () => {
         const choice = sendChoice(), preview = choice && sendPlacementPreview(choice.placementKey, choice.cell);
@@ -75,6 +87,8 @@ export function initSendPreview(): void {
         ];
       },
     });
-  });
+}
+export function initSendPreview(): void {
+  element('send-preview-enlarge').addEventListener('click', () => inspectSendPreview());
   element('send-preview-refresh').addEventListener('click', refreshPreview);
 }

@@ -1,15 +1,16 @@
 // The Insert tab: placements by screen and the image library, the cell strip and file inventory, Insert, and dragging rows and tiles onto the canvas.
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, changedArt, consoleLink,
-  draftImpact, environmentLabel, fillRendition, findCell, insideInstance, insertSize, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
+  cellOptions, draftImpact, environmentLabel, fillRendition, findCell, insideInstance, insertSize, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
   placementMeta, pngSize, reconnectText, refusalCode, renditionPath, sameCoordinate, tokenRefused,
 } from '../shared/index.js';
 import type {
-  ArtworkResponse, CanvasTarget, CellArtwork, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, PlacementArtwork, Preferences, RenditionInfo,
+  ArtworkResponse, CanvasTarget, CellArtwork, CellCoordinate, Connection, EnvironmentName, InsertLink, LibraryAsset, Placement, PlacementArtwork, Preferences, RenditionInfo,
 } from '../shared/index.js';
 import type { InsertDestination, MainMessage, SelectedLink, UiMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
 import { createCellRenderer, renderCells } from './cells.js';
+import { openInspection } from './inspector.js';
 import { initShortlist, renderShortlist, resetShortlist, shortlistAsset, updateShortlist } from './shortlist.js';
 import { cellAxes, fileRows, fileTag, renderFileScope, requestFileScan, resetFile, selectFileNode } from './infile.js';
 import { hintOfCurrent, startConnect } from './connect.js';
@@ -373,6 +374,16 @@ export function draftArtState(key: string, coordinate: CellCoordinate): 'own' | 
   const cell = currentCell(key, coordinate);
   return !cell ? null : !cell.draft ? 'empty' : owns(cell.draft, cell) ? 'own' : 'inherits';
 }
+/** A catalog receipt uses only current, complete Draft cells read after its check began. */
+export function catalogDraftStatus(item: Placement, after: number): string {
+  const placement = currentPlacement(item.key);
+  if (!placement || artworkFrom === null || artworkFrom < after || item.slotId && placement.slotId !== item.slotId) return 'Draft artwork not checked';
+  const axes = cellOptions(item), states = [...new Set(axes.states.map(state => state ?? item.defaultState))];
+  const cells = states.flatMap(state => axes.appearances.flatMap(appearance => axes.arms.map(arm => findCell(placement, { state, appearance, arm }))));
+  if (cells.some(cell => !cell)) return 'Draft artwork not checked';
+  const missing = cells.filter(cell => !cell!.draft).length;
+  return missing ? `${missing} of ${cells.length} Draft cells need art` : 'Draft artwork ready';
+}
 
 /** The currently displayed effective Draft image, including inheritance. Unknown stays distinct from empty. */
 export function draftSnapshot(key: string, coordinate: CellCoordinate): { assetId: string | null } | null {
@@ -451,11 +462,17 @@ function makeNode<K extends keyof HTMLElementTagNameMap>(tag: K, className: stri
   item.textContent = text;
   return item;
 }
+let clickedItem: { item: HTMLElement; generation: number | null; browse: Preferences['browse'] } | null = null;
 /** Rows and tiles share their listbox role, choice and drag handlers, and lookup entries. */
 function wireItem(item: HTMLElement, key: string, name: string, choose: (key: string) => void): HTMLElement {
   item.setAttribute('role', 'option');
-  item.addEventListener('click', () => choose(key));
-  item.addEventListener('dblclick', () => insertFrom(key));
+  const sameClick = () => clickedItem?.item === item && clickedItem.generation === state.connectionGeneration && clickedItem.browse === state.prefs.browse;
+  item.addEventListener('click', event => {
+    if (event.detail !== 2) clickedItem = { item, generation: state.connectionGeneration, browse: state.prefs.browse };
+    if (sameClick()) choose(key);
+  });
+  // A resized footer can move another row under the second click; it must never insert that row.
+  item.addEventListener('dblclick', () => { if (sameClick()) insertFrom(key); });
   item.draggable = canDrag(insertTarget(choiceFor(key)));
   item.addEventListener('dragstart', event => dragStart(event, key));
   item.addEventListener('dragend', dragEnd);
@@ -766,6 +783,10 @@ export function renderList(): void {
   renderEmpty(listState);
   renderIntro();
   element('images-more').hidden = browse !== 'images' || !images?.nextCursor;
+}
+
+/** Restore only after controls and footer have established the final scroll bounds. */
+export function restoreBrowseScroll(): void {
   if (restoreScroll !== null && !state.ops.loadingList) { element('list-region').scrollTop = restoreScroll; restoreScroll = null; }
 }
 
@@ -838,6 +859,8 @@ export function renderInsertBar(): void {
   // The whole line on hover, for a narrow window that shortens it.
   element('insert-meta').title = target?.meta ?? '';
   const canvas = canvasTarget(target);
+  element('insert-inspect').hidden = !target?.asset || !filling(canvas);
+  setUnavailable(element('insert-inspect'), actionsBlocked());
   const reported = reportedTarget();
   const beside = besideComponent(reported, target) ? `Figma doesn’t put components inside components, so this goes beside ${reported.name ?? 'the selection'}.` : '';
   const note = target?.note || (target?.ready ? [modeNote(canvas, target), beside].filter(Boolean).join(' ') : '');
@@ -1386,6 +1409,7 @@ export function failInsert(requestId: number, message: string): boolean {
 }
 
 export function resetInsert(): void {
+  clickedItem = null;
   resetShortlist();
   resetFile();
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
@@ -1550,6 +1574,15 @@ function listKeydown(event: KeyboardEvent): void {
 
 export function initInsert(goToSend: () => void): void {
   initShortlist(selectedImage, selectImage);
+  element('insert-inspect').addEventListener('click', () => {
+    const target = insertTarget(), generation = state.connectionGeneration, revision = state.selection.revision;
+    if (actionsBlocked() || !target?.asset || !filling(canvasTarget(target))) return;
+    const asset = target.asset;
+    openInspection({ returnTo: element('insert-inspect'), target: state.selection.fillPreview ?? { reason: 'Select the layer again to check its paint settings.' },
+      current: () => state.prefs.tab === 'insert' && generation === state.connectionGeneration && revision === state.selection.revision && insertTarget()?.asset?.id === asset.id,
+      items: () => [{ label: asset.name || 'Image', caption: target.title, source: asset, sourceLabel: 'Source', asset }],
+    });
+  });
   artFilterButtons.forEach((button, index) => button.addEventListener('click', () => {
     artFilter = artFilters[index]!;
     if (!actionsBlocked()) selected = null;
