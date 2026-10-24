@@ -4593,7 +4593,8 @@ test('copy of linked frame shows copy state', async () => {
   app.element('sync-send').dispatch('click');
   assert.equal(app.element('panel-send').hidden, false, 'Send… opens the Send tab');
   assert.deepEqual(['placement', 'state', 'appearance', 'arm'].map(id => app.element(id).value), [placement.key, 'old', 'light', null].map(value => value ?? ''), 'the first other cell without own Draft art');
-  assert.equal(app.activeElement(), app.element('state'));
+  assert.equal(app.activeElement().getAttribute('aria-checked'), 'true');
+  assert.ok(app.element('send-cells').contains(app.activeElement()));
   await settle(); app.element('send').dispatch('click');
   await settle();
   assert.equal(app.drafts().length, 1);
@@ -6462,7 +6463,8 @@ test('copy Send chooses an inherited or null Draft cell and focuses its first pi
       console: { placements: [p], artwork: { ...artwork(), placements: [{ ...p, cells }] } } });
     await settle(); app.element('sync-send').dispatch('click');
     assert.equal(app.element('appearance').value, inherited === 'single' ? '' : 'dark');
-    assert.equal(app.activeElement(), app.element(inherited === 'single' ? 'send' : 'appearance'));
+    if (inherited === 'single') assert.equal(app.activeElement(), app.element('send'));
+    else { assert.ok(app.element('send-cells').contains(app.activeElement())); assert.equal(app.activeElement().getAttribute('aria-checked'), 'true'); }
   }
 });
 
@@ -8450,4 +8452,95 @@ test('review handoff uses the server resolved binding when the default changes d
   await settle(); startSend(app); await settle();
   const link = app.element('result').children.find(item => item.tagName === 'A');
   assert.deepEqual(JSON.parse(decodeURIComponent(link.href.split('#review=')[1])), [{ key: placement.key, state: 'new', appearance: 'light', arm: 'b' }]);
+});
+
+const sendCellRadios = app => descendants(app.element('send-cells')).filter(item => item.getAttribute?.('role') === 'radio');
+const sendCellAt = (app, state, appearance = '', arm = '') => sendCellRadios(app).find(item => item.getAttribute('data-state') === state && item.getAttribute('data-appearance') === appearance && item.getAttribute('data-arm') === arm);
+
+test('visual Send cells show declared coordinates and inheritance, save choices, and never send on activation', async () => {
+  const data = artwork(); data.placements[0].cells.find(cell => cell.state === 'new' && cell.appearance === 'dark' && cell.arm === 'c').draft = null;
+  const app = harness({ console: { artwork: data } }); await settle();
+  assert.equal(app.element('send-cell-pickers').hidden, true);
+  assert.equal(sendCellRadios(app).length, 18);
+  assert.equal(sendCellRadios(app).filter(item => item.getAttribute('tabindex') === '0').length, 1);
+  assert.equal(sendCellAt(app, 'old', 'light', 'b').getAttribute('aria-checked'), 'true');
+  assert.match(textOf(sendCellAt(app, 'old', 'light', 'b')), /Assigned/);
+  assert.match(textOf(sendCellAt(app, 'old', 'dark', 'b')), /Inherits Control · Any/);
+  assert.match(textOf(sendCellAt(app, 'new', 'dark', 'c')), /No Draft art/);
+  const next = sendCellAt(app, 'new', 'dark', 'c');
+  app.element('send-cells').scrollLeft = 450; app.element('send-cells').scrollTop = 40;
+  next.click(); await settle();
+  assert.equal(app.element('send-cells').scrollLeft, 450); assert.equal(app.element('send-cells').scrollTop, 40);
+  app.keydown({ key: 'Enter' }, next); next.dispatch('dblclick'); await settle();
+  assert.match(app.element('send-cell-summary').textContent, /new · Dark · arm c/);
+  assert.equal(app.element('state').value, 'new'); assert.equal(app.element('appearance').value, 'dark'); assert.equal(app.element('arm').value, 'c');
+  assert.equal(app.uiMessages.findLast(message => message.type === 'save-send-choice').state, 'new');
+  assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0); assert.equal(app.insertMessages().length, 0);
+  app.keydown({ key: 'Home' }, sendCellAt(app, 'new', 'dark', 'c')); await settle();
+  assert.equal(app.element('appearance').value, ''); assert.equal(app.element('arm').value, '');
+  app.element('tab-insert').click(); app.element('tab-send').click(); await settle();
+  assert.equal(sendCellAt(app, 'new').getAttribute('aria-checked'), 'true');
+});
+
+test('visual Send cells retain unknown-art selectors and drop detached or busy choices', async () => {
+  const gate = deferred(); const data = artwork();
+  data.placements[0].cells = data.placements[0].cells.filter(cell => cell.state !== 'new' || cell.appearance !== 'dark');
+  const app = harness({ console: { gates: { artwork: gate }, artwork: data } }); await settle();
+  assert.equal(app.element('send-cells').hidden, true); assert.equal(app.element('send-cell-pickers').hidden, false);
+  gate.resolve(); await settle();
+  assert.equal(sendCellAt(app, 'new', 'dark', 'c'), undefined);
+  const old = sendCellAt(app, 'old', 'dark');
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('cells_new') }); await settle();
+  const before = app.uiMessages.filter(message => message.type === 'save-send-choice').length;
+  old.click(); await settle();
+  assert.equal(app.uiMessages.filter(message => message.type === 'save-send-choice').length, before);
+  assert.equal(app.drafts().length, 0);
+  const hold = deferred();
+  const running = harness({ console: { gates: { drafts: hold } } }); await settle();
+  const held = sendCellAt(running, 'new', 'dark'); running.element('send').click(); await settle();
+  assert.equal(held.getAttribute('aria-disabled'), 'true'); held.click(); await settle();
+  assert.equal(running.element('state').value, 'old');
+  hold.resolve(); await settle();
+});
+
+test('visual Send cells keep batch destinations separate when changing the active row', async () => {
+  const app = harness({ selection: [node, { ...node, id: '12:35', name: 'Second layer' }] }); await settle();
+  const first = sendCellAt(app, 'new', 'dark', 'c'); first.click(); await settle();
+  const rows = app.element('send-items').children;
+  descendants(rows[1]).find(item => item.tagName === 'BUTTON' && item.textContent === 'Second layer').click(); await settle();
+  assert.equal(app.element('placement').value, '');
+  first.click(); await settle(); assert.equal(app.element('placement').value, '', 'old row tiles cannot choose for a newer owner');
+  await pick(app, 'placement', placement.key); sendCellAt(app, 'old', 'dark').click(); await settle();
+  descendants(rows[0]).find(item => item.tagName === 'BUTTON' && item.textContent === node.name).click(); await settle();
+  assert.equal(sendCellAt(app, 'new', 'dark', 'c').getAttribute('aria-checked'), 'true');
+  assert.equal(app.drafts().length, 0);
+});
+
+test('inspector backgrounds and pixel scale preserve destinations and report preview versus reference sizes', async () => {
+  const app = harness({ selection: [{ ...node, width: 2000, height: 2000 }], previewBytes: () => pngHeader(512, 512) }); await settle();
+  app.element('send-preview-enlarge').click(); await settle();
+  const image = app.element('inspect-layer-image');
+  image.src = app.element('send-layer-thumb').src;
+  app.element('send-layer-thumb').setAttribute('src', image.src); image.setAttribute('src', image.src);
+  image.complete = true; image.naturalWidth = 512; image.naturalHeight = 512; image.currentSrc = image.src;
+  let writes = 0; const source = image.src;
+  Object.defineProperty(image, 'src', { configurable: true, get: () => source, set: () => { writes += 1; } });
+  image.dispatch('load');
+  assert.equal(writes, 0, 'decoded current artwork does not reassign its own src and trigger another load');
+  assert.match(app.element('inspect-size').textContent, /Figma layer 2000\s×\s2000/);
+  assert.match(app.element('inspect-size').textContent, /Placement reference 1000\s×\s1000/);
+  assert.match(app.element('inspect-size').textContent, /Preview 512 × 512 px/);
+  app.element('inspect-light').click(); app.element('inspect-pixels').click();
+  assert.equal(app.element('inspect-layer-panel').getAttribute('data-background'), 'light');
+  assert.equal(app.element('inspect-layer-panel').getAttribute('data-pixels'), 'true');
+  assert.equal(app.element('appearance').value, 'light', 'inspection background is independent from the saved cell appearance');
+  app.element('inspect-dark').click(); assert.equal(app.element('appearance').value, 'light');
+  app.element('inspect-layer-panel').focus();
+  const arrow = app.keydown({ key: 'ArrowRight' }, app.element('artwork-inspector'));
+  assert.equal(arrow.defaultPrevented, false, 'viewport arrows scroll instead of switching sides');
+  assert.equal(app.element('inspect-layer-panel').hidden, false);
+  app.keydown({ key: 'Escape' }, app.element('artwork-inspector')); await settle();
+  const caption = app.element('inspect-size').textContent;
+  image.dispatch('load'); assert.equal(app.element('inspect-size').textContent, caption);
+  assert.equal(app.element('app').inert, false); assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0);
 });

@@ -198,12 +198,14 @@ function installFakes(config) {
     }
     if (config.declared && i === 0) {
       const cells = [];
-      for (const state of ['welcome', 'return']) for (const appearance of (config.noAny ? ['light', 'dark'] : [null, 'light', 'dark'])) for (const arm of [null, 'b']) {
+      const states = config.manyCells ? ['welcome', 'return', ...Array.from({ length: 14 }, (_, i) => `state${i}`)] : ['welcome', 'return'];
+      const arms = config.manyCells ? ['b', 'c', 'd', 'e'] : ['b'];
+      for (const state of states) for (const appearance of (config.noAny ? ['light', 'dark'] : [null, 'light', 'dark'])) for (const arm of [null, ...arms]) {
         // Named cells may be null while the other variants inherit Control · Any, as the console reports them.
         const empty = config.unsetCells?.some(cell => cell.key === key && cell.state === state && cell.appearance === appearance && cell.arm === arm);
         cells.push({ state, appearance, arm, draft: empty ? null : draft, staging: null, production: draft });
       }
-      return { key, screen, width, height, states: ['welcome', 'return'], defaultState: 'welcome', variants: { appearance: ['light', 'dark'], arm: ['b'] },
+      return { key, screen, width, height, states, defaultState: 'welcome', variants: { appearance: ['light', 'dark'], arm: arms },
         origin: 'declared', cells };
     }
     return { key, screen, width, height, states: null, defaultState: null, variants: null, origin: 'declared',
@@ -1195,7 +1197,7 @@ const linkedSelection = layer => ({ node: layer, reason: null, fileKey: 'abc123'
 test('no overflow at 320×480, 420×720, 640×900', async () => {
   // Nothing wider than the window, and the page itself never scrolls either way: only the list (or the Send form) does.
   const check = `(() => { const width = document.documentElement.clientWidth; const region = document.getElementById('list-region');
-    const wide = [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden') && (!el.closest('#insert-cells') || el.id === 'insert-cells')).filter(el => { const r = el.getBoundingClientRect();
+    const wide = [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden') && (!el.closest('#insert-cells, #send-cells') || el.id === 'insert-cells' || el.id === 'send-cells')).filter(el => { const r = el.getBoundingClientRect();
       return r.width > 0 && r.right > width + 0.5; }).map(el => el.id || el.getAttribute('data-key') || el.className || el.tagName);
     return { page: document.documentElement.scrollWidth - width, pageY: document.documentElement.scrollHeight - document.documentElement.clientHeight,
       list: region.scrollWidth - region.clientWidth, wide: wide.slice(0, 5) }; })()`;
@@ -2562,7 +2564,7 @@ const batch2Fits = `(() => {
   const width = document.documentElement.clientWidth;
   const region = document.getElementById('list-region');
   return document.documentElement.scrollWidth <= width && region.scrollWidth <= region.clientWidth
-    && [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden') && (!el.closest('#insert-cells') || el.id === 'insert-cells')).every(el => {
+    && [...document.querySelectorAll('body *')].filter(el => !el.closest('.visually-hidden') && (!el.closest('#insert-cells, #send-cells') || el.id === 'insert-cells' || el.id === 'send-cells')).every(el => {
       const r = el.getBoundingClientRect(); return !r.width || r.right <= width + 0.5;
     });
 })()`;
@@ -2712,7 +2714,7 @@ test('copy Send chooses another cell and ratio callouts describe the result', as
     await page.waitFor(`${rows} === 30`);
     assert.equal(await page.evaluate(textOf('sync-meta')), 'Copies aren’t linked. Send it to a cell of screen0.slot0.');
     await page.click('#sync-send');
-    assert.equal(await page.focused(), 'state');
+    assert.equal(await page.evaluate(`document.activeElement === document.querySelector('#send-cells [aria-checked=true]')`), true);
     assert.deepEqual(await page.evaluate(`['state', 'appearance', 'arm'].map(id => document.getElementById(id).value)`), ['welcome', '', 'b']);
     // The click left the pointer where the footer now is; move it off so Send shows its own colour, not its hover.
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 }); await page.frames();
@@ -3678,7 +3680,23 @@ for (const theme of ['light', 'dark']) test(`artwork inspection preserves fit, f
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
       await page.press('Tab'); assert.equal(await page.focused(), 'inspect-refresh');
       await page.press('Tab'); assert.equal(await page.focused(), 'inspect-close');
+      await page.press('Tab'); assert.equal(await page.focused(), 'inspect-transparent');
+      await page.press('ArrowRight'); assert.equal(await page.focused(), 'inspect-light');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-draft').getAttribute('aria-pressed')`), 'true', 'background arrow does not switch artwork');
+      assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#inspect-draft-panel .thumb')).backgroundColor`), 'rgb(255, 255, 255)');
+      await page.press('ArrowRight'); assert.equal(await page.focused(), 'inspect-dark');
+      assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#inspect-draft-panel .thumb')).backgroundColor`), 'rgb(17, 17, 17)');
+      await page.press('Tab'); assert.equal(await page.focused(), 'inspect-fit');
+      await page.press('ArrowRight'); assert.equal(await page.focused(), 'inspect-pixels');
+      assert.deepEqual(await page.evaluate(`(() => { const image = document.getElementById('inspect-draft-image'), r = image.getBoundingClientRect(); return [r.width, r.height, image.naturalWidth, image.naturalHeight]; })()`), [390, 160, 390, 160]);
+      assert.match(await page.evaluate(textOf('inspect-size')), /Draft source 1170\s×\s480.*Placement reference 1170\s×\s480.*Preview 390 × 160 px/);
+      await page.press('Tab'); assert.equal(await page.focused(), 'inspect-draft-panel');
+      await page.press('ArrowRight'); await page.frames();
+      if (width === 320) await page.waitFor(`document.getElementById('inspect-draft-panel').scrollLeft > 0`);
+      assert.equal(await page.evaluate(`document.getElementById('inspect-draft').getAttribute('aria-pressed')`), 'true');
       await page.press('Tab'); assert.equal(await page.focused(), 'inspect-layer');
+      await page.click('#inspect-fit');
+      await page.click('#inspect-transparent');
       if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `artwork-inspection-${theme}-${width}.png`)); }
       await page.press('Escape'); await page.frames();
       assert.equal(await page.focused(), 'send-preview-enlarge');
@@ -3721,4 +3739,39 @@ test('browse detours restore independent searches, artwork selections and scroll
     assert.equal(await page.evaluate(valueOf('insert-search')), 'layer');
     assert.equal(await page.evaluate(`__harness.received.includes('insert')`), false);
   } finally { await page.close(); }
+});
+
+for (const theme of ['light', 'dark']) test(`visual Send cells keep complex destinations readable and require an explicit Send (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const page = await openUi({ selection: { ...DEFAULTS.selection, node: { id: '94:1', name: 'Variant artwork', type: 'FRAME', width: 390, height: 520 }, reason: null }, declared: true, manyCells: true, preferences: { tab: 'send' }, unsetCells: [{ key: 'onboarding.hero', state: 'return', appearance: 'dark', arm: 'e' }] }, { width, height: 480, theme });
+    try {
+      await page.waitFor(`document.getElementById('placement').options.length > 1 && !document.getElementById('placement-toggle').disabled`);
+      await page.click('#placement-toggle'); await page.click('#placement-options [data-key="onboarding.hero"]');
+      await page.waitFor(`document.querySelectorAll('#send-cells [role=radio]').length === 240`);
+      assert.equal(await page.evaluate(shown('send-cell-pickers')), false);
+      assert.equal(await page.evaluate(`document.querySelectorAll('#send-cells [tabindex="0"]').length`), 1);
+      assert.equal(await page.evaluate(`document.getElementById('send-cells').clientHeight <= 204`), true);
+      assert.deepEqual(await page.evaluate(`(() => { const cells = [...document.querySelectorAll('#send-cells .cell')]; return cells.flatMap(cell => { const box = cell.getBoundingClientRect(); return [...cell.children].filter(child => { const r = child.getBoundingClientRect(); return r.top < box.top - .5 || r.bottom > box.bottom + .5 || r.left < box.left - .5 || r.right > box.right + .5; }).map(child => child.className); }); })()`), [], 'every thumbnail and status stays within its own cell');
+      const target = '#send-cells [data-state="return"][data-appearance="dark"][data-arm="e"]';
+      await page.click(target); await page.press('Enter');
+      await page.evaluate(`document.querySelector(${JSON.stringify(target)}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`); await page.frames();
+      assert.match(await page.evaluate(textOf('send-cell-summary')), /return · Dark · arm e/);
+      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells').getBoundingClientRect(), cell = document.querySelector('#send-cells [aria-checked=true]').getBoundingClientRect(); return cell.left >= grid.left && cell.right <= grid.right && cell.top >= grid.top && cell.bottom <= grid.bottom; })()`), true, 'saved-choice acknowledgment keeps the selected cell in view');
+      assert.match(await page.evaluate(`document.querySelector(${JSON.stringify(target)}).innerText`), /No Draft art/);
+      assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
+      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), r = grid.getBoundingClientRect(); return [...grid.querySelectorAll('.cell-header:not(.cell-state)')].filter(el => el.textContent).some(el => { const b = el.getBoundingClientRect(); return b.top >= r.top - 1 && b.top < r.top + 25 && b.right > r.left && b.left < r.right; }); })()`), true, 'column identity stays visible after scrolling');
+      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), r = grid.getBoundingClientRect(), headers = grid.querySelector('.cell-headers'), h = headers.getBoundingClientRect(), selected = grid.querySelector('[aria-checked=true]').getBoundingClientRect(); return h.top >= r.top - 1 && h.bottom <= selected.top && h.left <= r.left + 1 && h.right >= r.right - 5 && getComputedStyle(headers).backgroundColor !== 'rgba(0, 0, 0, 0)' && [...headers.children].every(el => { const b = el.getBoundingClientRect(); return b.top >= h.top && b.bottom <= h.bottom; }); })()`), true, 'one opaque header row covers the viewport and contains each column label');
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `send-cell-matrix-${theme}-${width}.png`)); }
+      await page.press('Home'); await page.frames();
+      assert.match(await page.evaluate(textOf('send-cell-summary')), /return · Any · Control/);
+      assert.equal(await page.evaluate(`(() => { const grid = document.getElementById('send-cells'), label = [...grid.querySelectorAll(':scope > .cell-state')].find(el => el.textContent === 'return'), selected = grid.querySelector('[aria-checked=true]'); return selected.getBoundingClientRect().left >= label.getBoundingClientRect().right; })()`), true, 'keyboard selection stays clear of the sticky state label');
+      assert.match(await page.evaluate(`document.querySelector('#send-cells [aria-checked=true]').innerText`), /Assigned/);
+      await page.press('ArrowRight'); await page.frames();
+      assert.match(await page.evaluate(`document.querySelector('#send-cells [aria-checked=true]').innerText`), /Inherits Control · Any/);
+      await page.click('#tab-insert'); await page.click('#tab-send');
+      assert.match(await page.evaluate(textOf('send-cell-summary')), /return · Light · Control/);
+      assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
+    } finally { await page.close(); }
+  }
 });

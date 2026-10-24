@@ -289,12 +289,16 @@
     .send-comparison .thumb { width: 100%; height: 104px; }
     .send-comparison p { overflow-wrap: anywhere; }
     .send-comparison .text-action { justify-self: start; }
-    .artwork-inspector { position: fixed; inset: 0; z-index: 10; padding: 16px; background: var(--bg); display: grid; grid-template-rows: auto auto minmax(0, 1fr) 3em 2.5em; gap: 12px; }
+    .artwork-inspector { position: fixed; inset: 0; z-index: 10; padding: 16px; background: var(--bg); display: grid; grid-template-rows: auto auto auto minmax(96px, 1fr) auto auto; gap: 8px; overflow: auto; }
     .inspector-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .inspector-actions [aria-pressed="true"] { color: var(--text); border-color: var(--text); }
-    .inspect-panel { grid-row: 3; min-height: 0; display: flex; }
+    .inspect-panel { grid-row: 4; min-height: 0; overflow: auto; display: flex; }
     #inspect-caption { overflow: auto; }
-    .inspect-panel .thumb { width: 100%; height: 100%; }
+    .inspect-panel .thumb { width: 100%; height: 100%; flex: none; }
+    .inspect-panel[data-background="light"] .thumb { background: #fff; }
+    .inspect-panel[data-background="dark"] .thumb { background: #111; }
+    .inspect-panel[data-pixels="true"] .thumb { display: flex; width: max-content; height: max-content; min-width: 100%; min-height: 100%; }
+    .inspect-panel[data-pixels="true"] img { width: auto; height: auto; max-width: 2048px; max-height: 2048px; flex: none; margin: auto; }
     #export-note:empty { display: none; }
     .inline-form { display: flex; align-items: end; gap: 8px; margin-top: 8px; }
     .inline-form .field { flex: 1; }
@@ -344,6 +348,12 @@
     .cell[aria-checked="true"] { box-shadow: 0 0 0 2px var(--text); }
     .cell:focus-visible { outline-offset: 2px; }
     .cell[aria-checked="true"]:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus); }
+    .send-cells { max-height: 192px; grid-auto-rows: max-content; align-content: start; padding-top: 0; padding-left: 0; scroll-padding: 44px 4px 4px 76px; }
+    .cell-headers { display: grid; grid-column: 1 / -1; gap: 8px; position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 6px 0; }
+    .send-cells .cell-state { position: sticky; left: 0; align-self: stretch; z-index: 1; background: var(--bg); display: flex; align-items: center; max-width: none; margin-right: -8px; padding-right: 8px; }
+    .send-cells .cell { height: max-content; min-height: 80px; flex-direction: column; gap: 4px; padding: 4px; }
+    .send-cells .cell > * { flex: none; }
+    .send-cells .cell .meta { text-align: center; overflow-wrap: anywhere; }
     .cell-header { color: var(--al-text-meta); font-size: 11px; white-space: pre-line; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; }
     .cell-state { white-space: nowrap; max-width: 64px; text-align: left; }
     .thumb.inherits { outline: 1px dashed var(--al-text-meta); outline-offset: -1px; }
@@ -576,11 +586,13 @@
           <p id="placement-empty" class="meta" role="status" hidden>No matching placements.</p>
           <button id="placement-clear" class="text-action" type="button" hidden>Clear search</button>
         </div>
-        <div class="pickers">
+        <div id="send-cell-pickers" class="pickers">
           <label id="state-label" class="picker" hidden>State<select id="state"></select></label>
           <label id="appearance-label" class="picker" hidden>Appearance<select id="appearance"></select></label>
           <label id="arm-label" class="picker" hidden>A/B arm<select id="arm"></select></label>
         </div>
+        <p id="send-cell-summary" class="meta" hidden></p>
+        <div id="send-cells" class="cell-strip send-cells" role="radiogroup" aria-label="Send destination cells" hidden></div>
         <section id="send-comparison" class="send-comparison" aria-label="Compare artwork before sending" hidden>
           <div><p class="title">Selected Figma layer</p><span class="thumb"><img id="send-layer-thumb" alt=""></span><p id="send-layer-name" class="meta"></p><p id="send-layer-status" class="meta"></p><button id="send-preview-refresh" class="text-action" type="button">Refresh preview</button></div>
           <div id="send-current" hidden><p class="title">Current Draft</p><span id="send-current-preview" class="thumb"><img id="send-current-thumb" alt=""></span><p id="send-current-text" class="meta"></p></div>
@@ -645,9 +657,13 @@
   <section id="artwork-inspector" class="artwork-inspector" role="dialog" aria-modal="true" aria-labelledby="inspect-title" hidden>
     <p id="inspect-title" class="title">Compare artwork</p>
     <div class="inspector-actions"><button id="inspect-layer" class="secondary" type="button" aria-pressed="true">Figma layer</button><button id="inspect-draft" class="secondary" type="button" aria-pressed="false">Current Draft</button><button id="inspect-refresh" class="secondary" type="button">Refresh preview</button><button id="inspect-close" class="secondary" type="button">Close</button></div>
-    <div id="inspect-layer-panel" class="inspect-panel"><span class="thumb"><img id="inspect-layer-image" alt=""></span></div>
-    <div id="inspect-draft-panel" class="inspect-panel" hidden><span class="thumb"><img id="inspect-draft-image" alt=""></span></div>
-    <p id="inspect-caption" class="meta"></p><p class="meta">Use ← → to compare at the same fit. Esc returns to Send.</p>
+    <div class="inspector-actions">
+      <div id="inspect-backgrounds" class="segmented" role="radiogroup" aria-label="Preview background"><button id="inspect-transparent" type="button" role="radio" aria-checked="true">Transparency</button><button id="inspect-light" type="button" role="radio" aria-checked="false">Light</button><button id="inspect-dark" type="button" role="radio" aria-checked="false">Dark</button></div>
+      <div id="inspect-scales" class="segmented" role="radiogroup" aria-label="Preview scale"><button id="inspect-fit" type="button" role="radio" aria-checked="true">Fit</button><button id="inspect-pixels" type="button" role="radio" aria-checked="false">100%</button></div>
+    </div>
+    <div id="inspect-layer-panel" class="inspect-panel" role="region" aria-label="Figma preview, scroll at 100%" tabindex="-1"><span class="thumb"><img id="inspect-layer-image" alt=""></span></div>
+    <div id="inspect-draft-panel" class="inspect-panel" role="region" aria-label="Draft preview, scroll at 100%" tabindex="-1" hidden><span class="thumb"><img id="inspect-draft-image" alt=""></span></div>
+    <div><p id="inspect-caption" class="meta"></p><p id="inspect-size" class="meta"></p></div><p class="meta">100% shows preview pixels, not app size. ← → compares artwork. Esc returns to Send.</p>
   </section>
   <!-- ASSETLIB_SCRIPT -->
 </body>

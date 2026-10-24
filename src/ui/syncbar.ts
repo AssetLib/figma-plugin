@@ -132,6 +132,11 @@ export function initSyncBar(actions: { showSend: () => void; showInsert: () => v
     else return;
     showSend();
     flushRender();
-    element(current.kind === 'copy' ? ['state', 'appearance', 'arm'].find(id => !element(`${id}-label`).hidden) ?? 'send' : 'placement-toggle').focus();
+    const cells = element('send-cells');
+    const options = Array.from(cells.children).filter(item => item.getAttribute('role') === 'radio');
+    const visual = current.kind === 'copy' && !cells.hidden && options.length > 1 ? options.find(item => item.getAttribute('aria-checked') === 'true') as HTMLElement | undefined : undefined;
+    const fallback = current.kind !== 'copy' ? 'placement-toggle' : cells.hidden
+      ? ['state', 'appearance', 'arm'].find(id => !element(`${id}-label`).hidden) ?? 'send' : 'send';
+    (visual ?? element(fallback)).focus();
   });
 }

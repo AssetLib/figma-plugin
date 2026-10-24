@@ -176,6 +176,12 @@ export function chooseSendPlacement(key: string): void {
   placementPicker.value = key;
   buildPlacementOptions(); updateCellPickers(); savePicker();
 }
+/** A visual cell choice uses the same validation and saved-destination path as the selectors. */
+export function chooseSendCell(key: string, cell: CellCoordinate): void {
+  const placement = chosenPlacement();
+  if (!hasCurrentSelection() || actionsBlocked() || placementPicker.disabled || placement?.key !== key) return;
+  try { updateCellPickers(validateBinding(placement, { slotKey: key, ...cell })); savePicker(); } catch { return; }
+}
 export function clearPlacementSearch(): void {
   placementSearch.value = ''; buildPlacementOptions(); scheduleRender();
 }

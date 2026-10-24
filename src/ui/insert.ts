@@ -9,7 +9,7 @@ import type {
 } from '../shared/index.js';
 import type { InsertDestination, MainMessage, SelectedLink, UiMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
-import { renderCells } from './cells.js';
+import { createCellRenderer, renderCells } from './cells.js';
 import { cellAxes, fileRows, fileTag, renderFileScope, requestFileScan, resetFile, selectFileNode } from './infile.js';
 import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
@@ -19,7 +19,8 @@ import {
 } from './dom.js';
 import { readFailure, send } from './http.js';
 import type { HttpResult } from './http.js';
-import { bindingLabel, prefillSend, sendChoice, syncBar } from './send.js';
+import { bindingLabel, chooseSendCell, prefillSend, sendChoice, syncBar } from './send.js';
+import { activeSendRow } from './send-queue.js';
 import { NEW_FRAME, actionsBlocked, hasCurrentSelection, nextRequestId, readProblem, refusedToken, state } from './state.js';
 import type { ReadFailure } from './state.js';
 import { releaseListImages, resetThumbnails, retryFailedThumbnails, showThumbnail, thumbnailFrame } from './thumbnails.js';
@@ -390,12 +391,20 @@ export function sendPlacementPreview(key: string, coordinate: CellCoordinate): {
   return { asset, empty: !art, caption };
 }
 
+const renderSendCells = createCellRenderer('send-cells', true);
 /** The chosen Send cell's current Draft art, loaded whenever the form shows it. */
 export function renderSendCurrent(): void {
   const choice = sendChoice();
   const cell = choice && currentCell(choice.placementKey, choice.cell);
   const current = element('send-current');
   current.hidden = state.prefs.tab !== 'send' || !state.connection || !choice;
+  const placement = choice && !current.hidden ? currentPlacement(choice.placementKey) : null;
+  element('send-cell-pickers').hidden = Boolean(placement);
+  element('send-cell-summary').hidden = !placement;
+  element('send-cell-summary').textContent = placement && choice ? `Send to: ${cellAxes(placement, choice.cell) || 'Default'}` : '';
+  renderSendCells(placement, choice?.cell ?? null, 'draft', artwork,
+    coordinate => { if (choice) chooseSendCell(choice.placementKey, coordinate); }, undefined, actionsBlocked() || element<HTMLSelectElement>('placement').disabled,
+    `${state.connectionGeneration}:${activeSendRow()?.node.id}`);
   const art = cell?.draft ?? null;
   element('send-current-preview').className = art || !cell ? 'thumb' : 'thumb slot';
   element('send-current-text').textContent = !cell ? 'Draft artwork not loaded' : !art ? 'Nothing in Draft yet' : owns(art, cell) ? 'Now in Draft'

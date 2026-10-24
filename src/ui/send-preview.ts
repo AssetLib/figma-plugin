@@ -1,6 +1,6 @@
-import { bytesToBase64, pngSize } from '../shared/index.js';
+import { bytesToBase64, pngSize, sizeLabel } from '../shared/index.js';
 import type { MainMessage } from '../shared/protocol.js';
-import { element, post, scheduleRender, setUnavailable } from './dom.js';
+import { arrowKeys, element, post, rovingStops, scheduleRender, setUnavailable } from './dom.js';
 import { sendPlacementPreview } from './insert.js';
 import { sendChoice } from './send.js';
 import { showThumbnail } from './thumbnails.js';
@@ -14,7 +14,12 @@ let requested = false;
 let expanded = false;
 let side = 0;
 const dialog = element('artwork-inspector');
-const sides = [element('inspect-layer'), element('inspect-draft')];
+const sides = [element<HTMLButtonElement>('inspect-layer'), element<HTMLButtonElement>('inspect-draft')];
+const backgrounds = ['transparent', 'light', 'dark'].map(name => element<HTMLButtonElement>(`inspect-${name}`));
+const scales = ['fit', 'pixels'].map(name => element<HTMLButtonElement>(`inspect-${name}`));
+let background = 0, pixels = false;
+let unavailableDraft: string | null = null;
+function ownerKey(): string { return `${state.connectionGeneration}:${state.selection.revision}:${activeSendRow()?.node.id}`; }
 function closeInspector(): void {
   expanded = false; dialog.hidden = true;
   showThumbnail(element<HTMLImageElement>('inspect-draft-image'), null);
@@ -29,15 +34,29 @@ function renderInspector(): void {
   const choice = sendChoice();
   const preview = choice && sendPlacementPreview(choice.placementKey, choice.cell);
   const local = element<HTMLImageElement>('inspect-layer-image');
-  if (image.getAttribute('src')) local.src = image.src; else local.removeAttribute('src');
+  if (image.getAttribute('src')) { if (local.src !== image.src) local.src = image.src; } else local.removeAttribute('src');
   local.alt = image.alt;
   const draft = element<HTMLImageElement>('inspect-draft-image');
-  showThumbnail(draft, preview?.asset ?? null, false, true);
+  showThumbnail(draft, preview?.asset?.id === unavailableDraft ? null : preview?.asset ?? null, false, true);
   draft.alt = choice?.placementKey ?? '';
   sides.forEach((button, index) => { button.setAttribute('aria-pressed', String(side === index)); });
   element('inspect-layer-panel').hidden = side !== 0;
   element('inspect-draft-panel').hidden = side !== 1;
   element('inspect-caption').textContent = side === 0 ? `${image.alt} · ${element('send-layer-status').textContent}` : `${choice ? `${choice.placementKey} · ` : ''}${preview?.caption ?? 'Choose a destination to compare Draft artwork.'}${preview?.asset && !draft.getAttribute('data-sha') ? ' · Preview unavailable' : ''}`;
+  backgrounds.forEach((button, index) => button.setAttribute('aria-checked', String(background === index)));
+  scales.forEach((button, index) => button.setAttribute('aria-checked', String(pixels === Boolean(index))));
+  rovingStops(backgrounds); rovingStops(scales);
+  for (const id of ['inspect-layer-panel', 'inspect-draft-panel']) {
+    const panel = element(id);
+    panel.setAttribute('data-background', ['transparent', 'light', 'dark'][background]!);
+    panel.setAttribute('data-pixels', String(pixels));
+    panel.tabIndex = pixels ? 0 : -1;
+  }
+  const shown = side === 0 ? local : draft;
+  const source = side === 0 ? activeSendRow()?.node : preview?.asset;
+  const placement = state.placements.find(item => item.key === choice?.placementKey);
+  const decoded = shown.getAttribute('src') && shown.complete && shown.naturalWidth > 0 && Math.max(shown.naturalWidth, shown.naturalHeight) <= (side === 0 ? 1024 : 2048) && (!shown.currentSrc || shown.currentSrc === shown.src);
+  element('inspect-size').textContent = [source ? `${side === 0 ? 'Figma layer' : 'Draft source'} ${sizeLabel(source)}` : '', placement ? `Placement reference ${sizeLabel(placement)}` : '', decoded ? `Preview ${shown.naturalWidth} × ${shown.naturalHeight} px${pixels ? ' · 100%' : ' · Fit'}` : 'Preview not loaded'].filter(Boolean).join(' · ');
 }
 
 export function renderSendPreview(): void {
@@ -80,17 +99,34 @@ export function acceptSelectionPreview(message: Extract<MainMessage, { type: 'se
 export function initSendPreview(): void {
   element('send-preview-enlarge').addEventListener('click', () => {
     if (actionsBlocked() || state.prefs.tab !== 'send' || !hasCurrentSelection() || !state.connection || !activeSendRow() || activeSendRow()!.reason) return;
-    expanded = true; side = 0; requested = false; requestId = null;
+    expanded = true; side = 0; pixels = false; unavailableDraft = null; requested = false; requestId = null;
     renderSendPreview(); sides[0]!.focus();
   });
   element('inspect-close').addEventListener('click', closeInspector);
+  for (const id of ['inspect-layer-image', 'inspect-draft-image']) {
+    const preview = element<HTMLImageElement>(id);
+    preview.addEventListener('load', () => {
+      if (!expanded || key !== ownerKey() || !preview.getAttribute('src') || !preview.complete || (preview.currentSrc && preview.currentSrc !== preview.src)) return;
+      if (Math.max(preview.naturalWidth, preview.naturalHeight) > (id === 'inspect-layer-image' ? 1024 : 2048)) {
+        if (id === 'inspect-draft-image') { const choice = sendChoice(); unavailableDraft = choice ? sendPlacementPreview(choice.placementKey, choice.cell).asset?.id ?? null : null; }
+        preview.removeAttribute('src');
+      }
+      renderInspector();
+    });
+  }
+  backgrounds.forEach((button, index) => button.addEventListener('click', () => { background = index; renderInspector(); }));
+  scales.forEach((button, index) => button.addEventListener('click', () => { pixels = Boolean(index); renderInspector(); }));
+  arrowKeys(element('inspect-backgrounds'), backgrounds, 'radios');
+  arrowKeys(element('inspect-scales'), scales, 'radios');
   sides.forEach((button, index) => button.addEventListener('click', () => { side = index; renderInspector(); }));
   dialog.addEventListener('keydown', event => {
+    if (event.defaultPrevented) return;
     if (event.key === 'Escape') { event.preventDefault(); closeInspector(); }
     else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      if (pixels && (document.activeElement === element('inspect-layer-panel') || document.activeElement === element('inspect-draft-panel'))) return;
       event.preventDefault(); side = 1 - side; renderInspector(); sides[side]!.focus();
     } else if (event.key === 'Tab') {
-      const controls = [...sides, element('inspect-refresh'), element('inspect-close')];
+      const controls = [...sides, element('inspect-refresh'), element('inspect-close'), ...backgrounds, ...scales, element(side === 0 ? 'inspect-layer-panel' : 'inspect-draft-panel')].filter(control => !control.hidden && !(control as HTMLButtonElement).disabled && control.tabIndex !== -1);
       event.preventDefault(); controls[(controls.indexOf(document.activeElement as HTMLElement) + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]!.focus();
     } else if (event.metaKey || event.ctrlKey || event.key === '/') event.preventDefault();
   });
