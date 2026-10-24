@@ -18,7 +18,8 @@ const dev = watching || args.has('--dev');
 // Raised on October 23, 2026 for local artwork comparison, counted destination filters, and batch issue navigation.
 // Raised on October 23, 2026 for retained browsing, exact Draft review links, bounded artwork inspection, and focused recovery.
 // Raised on October 23, 2026 for visual Send cells and independent inspection background/pixel-scale controls.
-const MAX_UI_BYTES = 235_000;
+// Raised on October 23, 2026 for exact Draft impact review and a bounded image shortlist sharing the inspector.
+const MAX_UI_BYTES = 247_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 // Raised on October 21, 2026 for bounded multi-selection, per-layer choices, and export guards.
 // Raised on October 23, 2026 for validated Draft review links and bounded on-demand inspection previews.
@@ -79,7 +80,7 @@ async function writeUi(script) {
   const size = Buffer.byteLength(html);
   if (!dev && size > MAX_UI_BYTES) {
     await rm(uiUrl, { force: true });
-    throw new Error(`dist/ui.html would be ${kb(size)}, over the ${kb(MAX_UI_BYTES)} budget; it was not written.`);
+    throw new Error(`dist/ui.html would be ${size.toLocaleString('en-US')} bytes, over the ${kb(MAX_UI_BYTES)} budget; it was not written.`);
   }
   await writeFile(uiUrl, html);
   return size;

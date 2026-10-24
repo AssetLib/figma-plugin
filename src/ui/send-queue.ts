@@ -1,5 +1,5 @@
 // The reviewed selection is sent sequentially. Each row keeps its own receipt; uncertain writes are never retried.
-import { aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, consoleLink, consoleReviewLink, findCell, mapHttpError,
+import { aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, consoleLink, consoleReviewLink, draftImpact, findCell, mapHttpError,
   mapNetworkError, mapTimeoutError, parseArtwork, parseDraftResponse, parsePngDimensions, sameCoordinate,
   validateBinding, MAX_EXPORT_EDGE, EXPORT_FAILED, DRAFT_MAY_HAVE_ARRIVED, TOKEN_NO_LONGER_ACCEPTED, reconnectText, refusalCode, tokenRefused, validUuid } from '../shared/index.js';
 import type { CellBinding, Connection, DraftResult, Placement } from '../shared/index.js';
@@ -9,10 +9,10 @@ import { clearError, element, errorText, post, reloadConnection, scheduleRender,
 import { send } from './http.js';
 import { actionsBlocked, hasCurrentSelection, nextRequestId, state } from './state.js';
 
-type Status = 'ready' | 'sending' | 'sent' | 'failed' | 'unknown' | 'partial' | 'conflict';
+type Status = 'ready' | 'sending' | 'sent' | 'failed' | 'unknown' | 'partial' | 'conflict' | 'impact';
 export type SendRow = SendNode & { target: CellBinding | null; included: boolean; status: Status; detail: string;
   receipt?: CellBinding; expected?: string | null; review?: string | null; reviewing?: boolean; assetId?: string; saving?: number; saveError?: string };
-type Run = { rows: SendRow[]; connection: Connection; generation: number; fileKey: string; selectionIds: string[]; stopped: boolean; index: number };
+type Run = { rows: SendRow[]; connection: Connection; generation: number; fileKey: string; selectionIds: string[]; stopped: boolean; index: number; impacts: Map<SendRow, string | null> };
 type Operation = { id: number; run: Run; row: SendRow; placement: Placement; bind: CellBinding; uploaded: boolean; result?: DraftResult };
 let rows: SendRow[] = [];
 let activeId: string | null = null;
@@ -29,10 +29,11 @@ let refused: (text?: string) => void = () => {};
 let reconnect: () => void = () => {};
 let beginArtworkRead: () => number = () => 0;
 let reviewArtwork: (payload: unknown, generation: number, from: number, attention: number) => void = () => {};
+let impactSnapshot: (key: string, cell: CellBinding) => string | null = () => null;
 let snapshot: (key: string, cell: CellBinding) => { assetId: string | null } | null = () => null;
 
-export function initQueue(actions: { choose: () => void; needFile: () => void; setupReady: () => boolean; artworkChanged: () => void; refused: (text?: string) => void; reconnect: () => void; reviewArtwork: typeof reviewArtwork; beginArtworkRead: () => number; snapshot: typeof snapshot }): void {
-  ({ choose, needFile, setupReady, artworkChanged, refused, reconnect, reviewArtwork, beginArtworkRead, snapshot } = actions);
+export function initQueue(actions: { choose: () => void; needFile: () => void; setupReady: () => boolean; artworkChanged: () => void; refused: (text?: string) => void; reconnect: () => void; reviewArtwork: typeof reviewArtwork; beginArtworkRead: () => number; snapshot: typeof snapshot; impactSnapshot: typeof impactSnapshot }): void {
+  ({ choose, needFile, setupReady, artworkChanged, refused, reconnect, reviewArtwork, beginArtworkRead, snapshot, impactSnapshot } = actions);
   element('send-next-issue').addEventListener('click', () => {
     if (actionsBlocked()) return;
     const start = rows.findIndex(row => row.node.id === activeId);
@@ -148,7 +149,7 @@ function candidates(): SendRow[] {
   return included.every(row => row.status === 'sent') ? included : included.filter(row => row.status === 'ready' || row.status === 'failed');
 }
 function needsAttention(row: SendRow): boolean {
-  return row.included && Boolean(problem(row) || row.saveError || ['conflict', 'failed', 'partial', 'unknown'].includes(row.status));
+  return row.included && Boolean(problem(row) || row.saveError || ['conflict', 'impact', 'failed', 'partial', 'unknown'].includes(row.status));
 }
 export function queueAvailable(): boolean {
   return Boolean(state.connection && hasCurrentSelection() && setupReady() && !actionsBlocked() && !state.tokenRefused && !state.selection.truncated
@@ -184,7 +185,7 @@ async function retryReview(row: SendRow): Promise<void> {
     const placement = artwork.placements.find(item => item.key === target.slotKey);
     const cell = placement && findCell(placement, target);
     if (!cell) { row.status = 'failed'; row.detail = 'This destination is no longer available. Choose another.'; return; }
-    row.review = cell.draft?.assetId ?? null; row.detail = 'Draft changed. Review before replacing it.';
+    row.review = cell.draft?.assetId ?? null; row.detail = row.status === 'impact' ? 'Review the refreshed Draft impact before sending.' : 'Draft changed. Review before replacing it.';
   } catch (error) {
     if (generation === state.connectionGeneration && rows.includes(row)) row.detail = errorText(error);
   } finally {
@@ -227,7 +228,7 @@ export function renderQueue(): void {
     view.skip.textContent = row.included ? 'Skip' : 'Include';
     view.retry.hidden = row.status !== 'sent' && row.status !== 'failed';
     view.retry.textContent = row.status === 'sent' ? 'Send again' : 'Retry';
-    view.review.hidden = row.status !== 'conflict';
+    view.review.hidden = row.status !== 'conflict' && row.status !== 'impact';
     view.console.hidden = !row.assetId && row.status !== 'unknown';
     if (state.connection) view.console.href = consoleLink(state.connection, row.assetId ? 'images' : 'releases', validUuid(row.assetId) ? row.assetId : undefined);
     for (const control of [view.name, view.skip, view.retry, view.review]) setUnavailable(control, actionsBlocked());
@@ -236,7 +237,23 @@ export function renderQueue(): void {
   if (nodes.length !== list.children.length || nodes.some((node, index) => list.children[index] !== node)) list.replaceChildren(...nodes);
   const row = activeSendRow();
   const review = element('send-review');
-  review.hidden = !row?.included || row.status !== 'conflict';
+  review.hidden = !row?.included || (row.status !== 'conflict' && row.status !== 'impact');
+  if (row?.status === 'impact') {
+    const fingerprint = row.target && impactSnapshot(row.target.slotKey, row.target);
+    const key = `impact:${row.node.id}:${fingerprint}:${Boolean(row.reviewing)}`;
+    if (review.getAttribute('data-row') !== key) {
+      review.setAttribute('data-row', key);
+      const text = document.createElement('p'); text.textContent = 'Other Draft cells changed. Review the current impact below before sending. Nothing was sent for this layer.';
+      const accept = button('Impact reviewed', () => {
+        if (actionsBlocked() || activeSendRow() !== row || row.status !== 'impact' || !row.target || fingerprint === null || impactSnapshot(row.target.slotKey, row.target) !== fingerprint) return;
+        row.status = 'ready'; row.detail = 'Impact reviewed. Ready to send.'; scheduleRender();
+      });
+      setUnavailable(accept, fingerprint === null);
+      const retry = button(row.reviewing ? 'Checking…' : 'Refresh impact', () => { if (activeSendRow() === row) void retryReview(row); });
+      retry.hidden = fingerprint !== null; setUnavailable(retry, Boolean(row.reviewing));
+      review.replaceChildren(text, accept, retry);
+    }
+  }
   if (row?.status === 'conflict' && review.getAttribute('data-row') !== `${row.node.id}:${destination(row)}:${row.review}:${Boolean(row.reviewing)}`) {
     review.setAttribute('data-row', `${row.node.id}:${destination(row)}:${row.review}:${Boolean(row.reviewing)}`);
     const text = document.createElement('p'); text.textContent = 'Draft artwork changed since this layer’s last send or your review. Review the current draft shown here, then choose whether to replace it.';
@@ -282,7 +299,7 @@ function finishRun(): void {
   if (latest && keyOf(latest) !== selectionKey) queueSelection(latest);
   scheduleRender();
 }
-async function checkDrafts(current: Run): Promise<boolean> {
+async function checkDrafts(current: Run, remaining = current.rows): Promise<boolean> {
   const from = beginArtworkRead(), attention = state.attentionCount;
   const response = await send(current.connection, { path: 'placements/artwork', retry: false });
   if (run !== current || current.stopped) return false;
@@ -291,14 +308,14 @@ async function checkDrafts(current: Run): Promise<boolean> {
     const replaced = current.connection.method === 'browser' && await reloadConnection(current.generation);
     if (run !== current) { if (replaced) showError(CONNECTION_REPLACED); return false; }
     const message = current.connection.method === 'browser' ? reconnectText(refusalCode(response.payload)) : TOKEN_NO_LONGER_ACCEPTED;
-    for (const row of current.rows) { row.status = 'failed'; row.detail = message; }
+    for (const row of remaining) { row.status = 'failed'; row.detail = message; }
     finishRun(); refused(message); showError(message, { label: 'Connect again', run: reconnect });
     return false;
   }
   if (response.kind !== 'ok') throw new Error('Couldn’t check the current drafts. Try again before sending.');
   const artwork = parseArtwork(response.payload);
   reviewArtwork(response.payload, current.generation, from, attention);
-  for (const row of current.rows) {
+  for (const row of remaining) {
     const target = validTarget(row);
     const placement = artwork.placements.find(item => item.key === target?.bind.slotKey);
     const cell = placement && target ? findCell(placement, target.bind) : null;
@@ -306,7 +323,13 @@ async function checkDrafts(current: Run): Promise<boolean> {
     const observed = cell.draft?.assetId ?? null;
     if (row.expected !== undefined && row.expected !== observed) {
       row.status = 'conflict'; row.review = observed; row.detail = 'Draft changed. Review before replacing it.';
-    } else row.expected = observed;
+    } else {
+      row.expected = observed;
+      const before = current.impacts.get(row);
+      if (before != null && before !== draftImpact(placement!, target!.bind)?.fingerprint) {
+        row.status = 'impact'; row.detail = 'Other Draft cells changed. Review the current impact before sending.';
+      }
+    }
   }
   return true;
 }
@@ -315,7 +338,7 @@ export async function sendSelection(): Promise<void> {
   if (!state.selection.fileKey) { needFile(); return; }
   clearError();
   const current: Run = { rows: candidates(), connection: { ...state.connection }, generation: state.connectionGeneration, fileKey: state.selection.fileKey,
-    selectionIds: [...(state.selection.selectionIds ?? rows.map(row => row.node.id))].sort(), stopped: false, index: 0 };
+    selectionIds: [...(state.selection.selectionIds ?? rows.map(row => row.node.id))].sort(), stopped: false, index: 0, impacts: new Map(candidates().map(row => [row, row.target ? impactSnapshot(row.target.slotKey, row.target) : null])) };
   run = current; state.ops.sending = true; element('result').hidden = true; setStatus('Checking current drafts…'); scheduleRender();
   try {
     if (await checkDrafts(current)) nextItem();
@@ -334,7 +357,7 @@ function nextItem(): void {
     finishRun(); return;
   }
   const row = current.rows[current.index++]!;
-  if (row.status === 'conflict' || (row.status === 'failed' && row.detail.startsWith('This destination'))) { nextItem(); return; }
+  if (row.status === 'conflict' || row.status === 'impact' || (row.status === 'failed' && row.detail.startsWith('This destination'))) { nextItem(); return; }
   const target = validTarget(row);
   if (!target) { row.status = 'failed'; row.detail = 'Choose a valid destination.'; nextItem(); return; }
   pending = { id: nextRequestId(), run: current, row, ...target, uploaded: false };
@@ -346,7 +369,15 @@ function nextItem(): void {
 function complete(operation: Operation, status: Status, detail: string): void {
   operation.row.status = status; operation.row.detail = detail;
   if (pending !== operation) return;
-  pending = null; scheduleRender(); nextItem();
+  pending = null; scheduleRender();
+  const current = operation.run, remaining = current.rows.slice(current.index);
+  if (status === 'sent' && remaining.some(row => row.target?.slotKey === operation.bind.slotKey)) {
+    void checkDrafts(current, remaining).then(ok => { if (run === current) { if (ok) nextItem(); else finishRun(); } }).catch(error => {
+      if (run !== current) return;
+      for (const row of remaining) { row.status = 'failed'; row.detail = errorText(error); }
+      finishRun(); showError(errorText(error));
+    });
+  } else nextItem();
 }
 export async function queueExport(message: Extract<MainMessage, { type: 'exported' }>): Promise<void> {
   const operation = pending;

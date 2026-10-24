@@ -9,12 +9,13 @@ import { acceptFileLinks, failFileScan, focusFile } from './infile.js';
 import { abortAll } from './http.js';
 import {
   applyPreferences, beginArtworkRead, connectionKept, draftArtState, draftSnapshot, dropped, ensureArtwork, enterInsert, failDrop, failInsert, focusSearch, initInsert, inserted, listUnavailable, renderInsertBar,
-  noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, reviewSendArtwork, resetInsert, rowFor, savePreferences,
+  noteLinkSeen, refreshArtworkIfStale, renderInsertControls, renderList, renderSendCurrent, reviewSendArtwork, resetInsert, rowFor, savePreferences, sendImpact,
 } from './insert.js';
 import { applyFileUrl, applySelection, choiceSaved, failSend, fileMismatch, fileSaved, initSend, presentSendProblem, remembered, renderSend, sendExport, sendHidden } from './send.js';
 import { initPlacementPicker, placementSearchChanged, renderPlacementPicker } from './send-picker.js';
 import { acceptSelectionPreview, initSendPreview, renderSendPreview } from './send-preview.js';
 import { actionsBlocked, state } from './state.js';
+import { initInspector, renderInspection } from './inspector.js';
 import { initSyncBar, launched, renderSyncBar, syncFromKeyboard } from './syncbar.js';
 import type { ReadFailure } from './state.js';
 
@@ -50,6 +51,7 @@ function render(): void {
   renderInsertControls();
   renderInsertBar();
   renderSyncBar();
+  renderInspection();
 }
 setRenderer({
   render, renderList, twin: rowFor,
@@ -252,7 +254,8 @@ initConnect();
 const showSend = () => setTab('send');
 initPlacementPicker();
 initSendPreview();
-initSend({ placementSearchChanged, refused: (text = TOKEN_NO_LONGER_ACCEPTED) => needsAttention({ text, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState, draftSnapshot, reviewArtwork: reviewSendArtwork, beginArtworkRead });
+initInspector();
+initSend({ placementSearchChanged, refused: (text = TOKEN_NO_LONGER_ACCEPTED) => needsAttention({ text, field: 'token' }, true), retry: () => { if (!actionsBlocked()) testConnection(); }, updateToken: openSettings, reconnect: () => { void startConnect(hintOfCurrent()); }, showSend, artworkChanged: () => ensureArtwork(true), draftArtState, draftSnapshot, impactSnapshot: (key, cell) => sendImpact(key, cell)?.fingerprint ?? null, reviewArtwork: reviewSendArtwork, beginArtworkRead });
 initSyncBar({ showSend, showInsert: () => setTab('insert') });
 initInsert(() => { setTab('send'); tabSend.focus(); });
 post({ type: 'init' });

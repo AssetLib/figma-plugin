@@ -1553,10 +1553,10 @@ test('footer, chip, grid, and tile details fit at 420 px', async () => {
     // Six cell columns overflow 420 px and scroll; the state names keep their own column.
     assert.ok(await page.evaluate(`document.querySelector('#insert-cells .cell-state').getBoundingClientRect().width >= 48`), 'state names keep their column');
   } finally { await page.close(); }
-  // The images empty state sits where the placements' does.
+  // Each empty state has the same inset within its scrolling list; Images has its comparison toolbar above it.
   const top = async options => {
     const view = await openUi(options);
-    try { await view.waitFor(shown('insert-empty')); return await view.evaluate(`Math.round(document.getElementById('insert-empty').getBoundingClientRect().top)`); }
+    try { await view.waitFor(shown('insert-empty')); return await view.evaluate(`Math.round(document.getElementById('insert-empty').getBoundingClientRect().top - document.getElementById('list-region').getBoundingClientRect().top)`); }
     finally { await view.close(); }
   };
   assert.equal(await top({ images: 0, preferences: { browse: 'images' } }), await top({ artwork: 'empty' }));
@@ -3779,4 +3779,80 @@ for (const theme of ['light', 'dark']) test(`visual Send cells keep complex dest
       assert.equal(await page.evaluate(`__harness.received.includes('export')`), false);
     } finally { await page.close(); }
   }
+});
+
+
+for (const theme of ['light', 'dark']) test(`image shortlist compares decoded candidates without inserting or losing context (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const target = { mode: 'fill', label: 'Fill image', count: 1, nodeIds: ['71:1'], name: 'Card artwork', containerWidth: 320, containerHeight: 200 };
+    const page = await openUi({ inspection: true, images: 4, imageNames: ['Coast', 'Garden', 'Mountain', 'Lake'], selection: { ...DEFAULTS.selection, insertTarget: target } }, { width, height: 480, theme });
+    try {
+      await page.waitFor(`${rows} === 7`); await page.click('#browse-images'); await page.waitFor(`${tiles} === 4`);
+      for (let i = 1; i <= 3; i++) { await page.click(`#image-grid [data-asset-id="00000000-0000-4000-8000-${String(i).padStart(12, '0')}"]`); await page.click('#shortlist-add'); }
+      assert.equal(await page.evaluate(`document.getElementById('shortlist-names').children.length`), 3);
+      await page.click('#image-grid [data-asset-id="00000000-0000-4000-8000-000000000004"]');
+      assert.equal(await page.evaluate(`document.getElementById('shortlist-add').getAttribute('aria-disabled')`), 'true');
+      await page.click('#insert-search'); await page.type('Lake'); await page.waitFor(`${tiles} === 1`);
+      assert.equal(await page.evaluate(`document.getElementById('shortlist-compare').disabled`), false);
+      await page.click('#shortlist-compare'); await page.waitFor(`!document.getElementById('artwork-inspector').hidden && document.getElementById('inspect-use').getAttribute('aria-disabled') !== 'true'`);
+      assert.match(await page.evaluate(textOf('inspect-caption')), /Figma target: Card artwork.*320.*200.*different aspect ratio/);
+      assert.match(await page.evaluate(textOf('inspect-size')), /Source 400.*200.*Preview 390 × 195 px/);
+      await page.click('#inspect-dark'); await page.click('#inspect-pixels');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-layer-panel').getAttribute('data-background')`), 'dark');
+      assert.deepEqual(await page.evaluate(`(() => { const image = document.getElementById('inspect-layer-image'), r = image.getBoundingClientRect(); return [r.width, r.height]; })()`), [390, 195]);
+      await page.click('#inspect-draft');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-draft-panel').getAttribute('data-background')`), 'dark');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-draft-panel').getAttribute('data-pixels')`), 'true');
+      await page.evaluate(`document.getElementById('inspect-draft-panel').focus()`); await page.press('ArrowRight');
+      assert.equal(await page.evaluate(`document.getElementById('inspect-draft').getAttribute('aria-pressed')`), 'true');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `image-shortlist-${theme}-${width}.png`)); }
+      await page.click('#inspect-use'); await page.frames();
+      assert.equal(await page.evaluate(shown('artwork-inspector')), false);
+      assert.equal(await page.evaluate(valueOf('insert-search')), 'Lake');
+      assert.match(await page.evaluate(textOf('insert-title')), /Garden/);
+      assert.equal(await page.focused(), 'shortlist-compare');
+      assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
+      await page.click('#shortlist-compare'); await page.press('Escape'); assert.equal(await page.focused(), 'shortlist-compare');
+      await page.click('#insert-refresh'); await page.waitFor(`document.getElementById('shortlist-names').children.length === 0`);
+    } finally { await page.close(); }
+  }
+});
+test('image shortlist keeps Use disabled on unreadable previews, retries, and drops late replies after selection changes', async () => {
+  const page = await openUi({ inspection: true, images: 2, statuses: { rendition: 404 } }, { width: 320, height: 480 });
+  try {
+    await page.waitFor(`${rows} === 7`); await page.click('#browse-images'); await page.waitFor(`${tiles} === 2`);
+    for (let i = 1; i <= 2; i++) { await page.click(`#image-grid [data-asset-id="00000000-0000-4000-8000-${String(i).padStart(12, '0')}"]`); await page.click('#shortlist-add'); }
+    await page.click('#shortlist-compare'); await page.frames();
+    assert.equal(await page.evaluate(`document.getElementById('inspect-use').getAttribute('aria-disabled')`), 'true');
+    await page.click('#inspect-use'); assert.equal(await page.evaluate(shown('artwork-inspector')), true);
+    await page.evaluate(`__harness.setStatus('rendition', 0)`); await page.click('#inspect-refresh');
+    await page.waitFor(`document.getElementById('inspect-use').getAttribute('aria-disabled') !== 'true'`);
+    await page.evaluate(`document.getElementById('inspect-layer-image').dispatchEvent(new Event('error'))`); await page.frames();
+    assert.equal(await page.evaluate(`document.getElementById('inspect-use').getAttribute('aria-disabled')`), 'true');
+    assert.match(await page.evaluate(textOf('inspect-caption')), /Preview unavailable/);
+    await page.click('#inspect-close');
+    await page.evaluate(`__harness.select(${JSON.stringify({ ...DEFAULTS.selection, node: { id: '72:1', name: 'Another layer', type: 'FRAME', width: 400, height: 200 }, reason: null })})`);
+    await page.click('#shortlist-compare'); await page.evaluate(`__harness.select(${JSON.stringify(DEFAULTS.selection)})`);
+    await page.waitFor(`document.getElementById('artwork-inspector').hidden && !document.getElementById('app').inert`);
+    assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export')`), false);
+  } finally { await page.close(); }
+});
+for (const theme of ['light', 'dark']) test(`Send impact shows exact inherited Draft cells and partial-family warnings (${theme})`, async () => {
+  const page = await openUi({ declared: true, preferences: { tab: 'send' }, selection: { ...DEFAULTS.selection, node: { id: '74:1', name: 'Hero', type: 'FRAME', width: 390, height: 520 }, reason: null } }, { width: 320, height: 480, theme });
+  try {
+    await page.waitFor(`document.getElementById('placement').options.length > 1 && !document.getElementById('placement-toggle').disabled`);
+    await page.click('#placement-toggle'); await page.click('#placement-options [data-key="onboarding.hero"]');
+    await page.waitFor(`document.querySelectorAll('#send-cells [role=radio]').length === 12`);
+    assert.match(await page.evaluate(textOf('send-impact-summary')), /5 other Draft cells/);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#send-cells [data-impact=true]').length`), 5);
+    await page.click('#send-cells [data-state="welcome"][data-appearance="dark"][data-arm="b"]');
+    assert.match(await page.evaluate(textOf('send-impact-summary')), /1 other Draft cell.*1 state missing artwork/);
+    await page.click('#send-impact-summary'); await page.frames();
+    assert.match(await page.evaluate(textOf('send-impact-warning')), /return has no artwork.*do not fall back/);
+    assert.match(await page.evaluate(textOf('send-impact-cells')), /return.*Dark.*arm b.*no Draft art/);
+    assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
+    if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `send-impact-${theme}-320.png`)); }
+    assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
+  } finally { await page.close(); }
 });

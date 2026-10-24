@@ -8544,3 +8544,120 @@ test('inspector backgrounds and pixel scale preserve destinations and report pre
   image.dispatch('load'); assert.equal(app.element('inspect-size').textContent, caption);
   assert.equal(app.element('app').inert, false); assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0);
 });
+
+
+async function compareLibrary(app, entries) {
+  await openInsert(app); app.element('browse-images').click(); await settle();
+  for (const entry of entries) { tilesOf(app).find(tile => tile.getAttribute('data-asset-id') === entry.asset.id).click(); await settle(); app.element('shortlist-add').click(); await settle(); }
+  app.element('shortlist-compare').click(); await settle();
+}
+function decodeInspection(app, name = 'layer') {
+  const image = app.element(`inspect-${name}-image`);
+  image.setAttribute('src', image.src); image.complete = true; image.naturalWidth = 400; image.naturalHeight = 200; image.currentSrc = image.src; image.dispatch('load');
+}
+test('image shortlist caps at three, retains search and explicitly selects only a decoded image', async () => {
+  const entries = ['Coast', 'Garden', 'Mountain', 'Lake'].map((name, i) => libraryAsset(200 + i, name, 400, 200));
+  const app = harness({ console: library(entries) }); await compareLibrary(app, entries.slice(0, 3));
+  assert.equal(app.element('artwork-inspector').hidden, false);
+  assert.equal(off(app, 'inspect-use'), true); app.element('inspect-use').click(); assert.equal(app.element('artwork-inspector').hidden, false);
+  decodeInspection(app); assert.equal(off(app, 'inspect-use'), false);
+  app.element('inspect-dark').click(); app.element('inspect-pixels').click();
+  assert.match(app.element('inspect-size').textContent, /Source 400\s×\s200/);
+  assert.match(app.element('inspect-caption').textContent, /New Figma layer/);
+  app.element('inspect-use').click(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true);
+  assert.equal(tilesOf(app).find(tile => tile.getAttribute('aria-selected') === 'true').getAttribute('data-asset-id'), entries[0].asset.id);
+  tilesOf(app).find(tile => tile.getAttribute('data-asset-id') === entries[3].asset.id).click(); await settle();
+  assert.equal(off(app, 'shortlist-add'), true); app.element('shortlist-add').click(); await settle();
+  assert.equal(app.element('shortlist-names').children.length, 3);
+  app.element('insert-search').value = 'Lake'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+  app.element('shortlist-compare').click(); await settle(); decodeInspection(app); app.element('inspect-use').click(); await settle();
+  assert.equal(app.element('insert-search').value, 'Lake');
+  assert.equal(app.element('insert-bar').hidden, false, 'candidate remains selected outside the current search results');
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+test('image shortlist refuses failed previews, retries explicitly, and closes on selection or connection changes', async () => {
+  const entries = ['Coast', 'Garden'].map((name, i) => libraryAsset(210 + i, name, 400, 200));
+  const app = harness({ console: library(entries) }); await compareLibrary(app, entries);
+  decodeInspection(app); app.element('inspect-layer-image').dispatch('error'); await settle();
+  assert.equal(off(app, 'inspect-use'), true); assert.match(app.element('inspect-caption').textContent, /Preview unavailable/);
+  app.element('inspect-use').click(); assert.equal(app.element('artwork-inspector').hidden, false);
+  app.element('inspect-refresh').click(); await settle(); decodeInspection(app); assert.equal(off(app, 'inspect-use'), false);
+  app.select([node]); await settle(); assert.equal(app.element('artwork-inspector').hidden, true); assert.equal(app.element('app').inert, false);
+  app.element('shortlist-compare').click(); await settle();
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('shortlist_other') }); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true); assert.equal(app.element('shortlist-names').children.length, 0);
+  app.element('inspect-layer-image').dispatch('load'); app.element('inspect-use').click(); await settle();
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+test('image shortlist keeps remove controls working after identical search reloads and clears on Refresh', async () => {
+  const entries = ['Coast', 'Garden'].map((name, i) => libraryAsset(220 + i, name, 400, 200));
+  const app = harness({ console: library(entries) }); await compareLibrary(app, entries); app.element('inspect-close').click(); await settle();
+  const remove = app.element('shortlist-names').children[0];
+  for (const query of ['Coast', '']) { app.element('insert-search').value = query; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle(); }
+  remove.click(); await settle(); assert.equal(app.element('shortlist-names').children.length, 1);
+  app.element('insert-refresh').click(); await settle(); assert.equal(app.element('shortlist-names').children.length, 0);
+});
+test('Send Draft impact highlights inherited cells, names partial missing states, and refuses sparse counts', async () => {
+  const app = harness(); await settle(); sendCellAt(app, 'old').click(); await settle();
+  assert.match(app.element('send-impact-summary').textContent, /7 other Draft cells/);
+  assert.equal(sendCellRadios(app).filter(cell => cell.getAttribute('data-impact') === 'true').length, 7);
+  sendCellAt(app, 'old', 'dark', 'c').click(); await settle();
+  assert.match(app.element('send-impact-summary').textContent, /1 other Draft cell/); assert.match(app.element('send-impact-warning').textContent, /new has no artwork/);
+  assert.match(textOf(app.element('send-impact-cells')), /no Draft art/);
+  app.console.artwork.placements[0].cells.pop(); app.focusWindow(); app.element('tab-insert').click(); app.element('insert-refresh').click(); await settle(); app.element('tab-send').click(); await settle();
+  assert.match(app.element('send-impact-summary').textContent, /unavailable/);
+  assert.equal(app.drafts().length, 0);
+});
+test('Send preflight requires renewed impact review when sibling inheritance changes but target artwork does not', async () => {
+  const app = harness(); await settle(); sendCellAt(app, 'old').click(); await settle();
+  for (const cell of app.console.artwork.placements[0].cells) if (cell.appearance === 'dark' && cell.state === 'old') cell.draft = cellArt(baseArt, null, 'dark');
+  for (const cell of app.console.artwork.placements[0].cells) if (cell.appearance === 'dark' && cell.state === 'new') cell.draft = null;
+  startSend(app); await settle();
+  assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0); assert.match(sendFeedback(app), /Other Draft cells changed/);
+  const accept = descendants(app.element('send-review')).find(button => button.textContent === 'Impact reviewed'); assert.ok(accept); accept.click(); await settle();
+  assert.equal(app.drafts().length, 0); startSend(app); await settle(); assert.equal(app.drafts().length, 1);
+  assert.equal(app.drafts()[0].body.expectedAssetId, baseArt); assert.equal(app.drafts()[0].body.rebind, false);
+});
+
+test('Send rechecks later same-placement rows after a successful write changes their reviewed impact', async () => {
+  const second = { ...node, id: '12:35', name: 'Second layer' };
+  const app = harness({ selection: [node, second] }); await settle();
+  sendCellAt(app, 'old', 'dark', 'c').click(); await settle();
+  descendants(app.element('send-items').children[1]).find(item => item.tagName === 'BUTTON' && item.textContent === 'Second layer').click(); await settle();
+  await pick(app, 'placement', placement.key); sendCellAt(app, 'new').click(); await settle();
+  app.console.draft = body => {
+    const result = boundDraft(body);
+    for (const cell of app.console.artwork.placements[0].cells) if (cell.arm === 'c' && cell.appearance === 'dark') cell.draft = cell.state === 'old' ? cellArt(result.asset.id, 'c', 'dark') : null;
+    return result;
+  };
+  startSend(app); await settle();
+  assert.equal(app.drafts().length, 1); assert.equal(app.exportMessages().length, 1);
+  assert.match(sendFeedback(app), /Second layer.*Other Draft cells changed/s);
+  assert.match(app.element('result').textContent || textOf(app.element('result')), /1 of 2 layers/);
+});
+test('Send refuses a formerly exact impact that becomes sparse, then offers an explicit refreshed review', async () => {
+  const app = harness(); await settle(); sendCellAt(app, 'old').click(); await settle();
+  const complete = clone(app.console.artwork); app.console.artwork.placements[0].cells.pop();
+  startSend(app); await settle();
+  assert.equal(app.drafts().length, 0);
+  let accept = descendants(app.element('send-review')).find(button => button.textContent === 'Impact reviewed');
+  assert.equal(accept.getAttribute('aria-disabled'), 'true'); accept.click(); await settle(); assert.equal(off(app, 'send'), true);
+  app.console.artwork = complete;
+  descendants(app.element('send-review')).find(button => button.textContent === 'Refresh impact').click(); await settle();
+  accept = descendants(app.element('send-review')).find(button => button.textContent === 'Impact reviewed');
+  assert.notEqual(accept.getAttribute('aria-disabled'), 'true'); accept.click(); await settle(); assert.equal(off(app, 'send'), false);
+  assert.equal(app.drafts().length, 0);
+});
+
+test('closing the image shortlist inspector discards delayed large previews without selecting a candidate', async () => {
+  const entries = ['Coast', 'Garden'].map((name, i) => libraryAsset(230 + i, name, 400, 200));
+  const app = harness({ console: library(entries) }); await openInsert(app); app.element('browse-images').click(); await settle();
+  for (const entry of entries) { tilesOf(app).find(tile => tile.getAttribute('data-asset-id') === entry.asset.id).click(); await settle(); app.element('shortlist-add').click(); await settle(); }
+  const selected = app.element('insert-title').textContent, gate = deferred(); app.console.gates.rendition = gate;
+  app.element('shortlist-compare').click(); await settle(); assert.equal(off(app, 'inspect-use'), true);
+  app.element('inspect-close').click(); await settle(); gate.resolve(); await settle();
+  const image = app.element('inspect-layer-image'); assert.equal(image.getAttribute('src'), null); image.dispatch('load'); app.element('inspect-use').click(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true); assert.equal(app.element('app').inert, false); assert.equal(app.element('insert-title').textContent, selected);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+});

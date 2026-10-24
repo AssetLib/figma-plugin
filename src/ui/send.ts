@@ -463,11 +463,11 @@ export function failSend(requestId: number, message: string): boolean {
 }
 
 export function initSend(actions: { refused: (text?: string) => void; retry: () => void; updateToken: () => void; reconnect: () => void; showSend: () => void; artworkChanged: () => void;
-  placementSearchChanged: () => void; draftArtState: typeof draftArtState; draftSnapshot: (key: string, cell: CellBinding) => { assetId: string | null } | null; reviewArtwork: (payload: unknown, generation: number, from: number, attention: number) => void; beginArtworkRead: () => number }): void {
+  placementSearchChanged: () => void; draftArtState: typeof draftArtState; impactSnapshot: (key: string, cell: CellBinding) => string | null; draftSnapshot: (key: string, cell: CellBinding) => { assetId: string | null } | null; reviewArtwork: (payload: unknown, generation: number, from: number, attention: number) => void; beginArtworkRead: () => number }): void {
   showSend = actions.showSend;
   draftArtState = actions.draftArtState;
   initQueue({ choose: selectRow, needFile: askForFile, setupReady: () => pendingFile === null && mismatch === null
-    && (!fileAsked || Boolean(state.selection.fileKey && fileUrl.value.trim() === lastSavedFileUrl)), artworkChanged: actions.artworkChanged, refused: actions.refused, reconnect: actions.reconnect, reviewArtwork: actions.reviewArtwork, beginArtworkRead: actions.beginArtworkRead, snapshot: actions.draftSnapshot });
+    && (!fileAsked || Boolean(state.selection.fileKey && fileUrl.value.trim() === lastSavedFileUrl)), artworkChanged: actions.artworkChanged, refused: actions.refused, reconnect: actions.reconnect, reviewArtwork: actions.reviewArtwork, beginArtworkRead: actions.beginArtworkRead, snapshot: actions.draftSnapshot, impactSnapshot: actions.impactSnapshot });
   element('send-retry').addEventListener('click', () => { if (!actionsBlocked()) actions.retry(); });
   element('send-token').addEventListener('click', () => {
     if (sendProblemShown(false)?.action === 'reconnect') actions.reconnect(); else actions.updateToken();

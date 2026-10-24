@@ -1,7 +1,7 @@
 // The Insert tab: placements by screen and the image library, the cell strip and file inventory, Insert, and dragging rows and tiles onto the canvas.
 import {
   ENVIRONMENTS, GONE_IMAGE, TOKEN_NO_LONGER_ACCEPTED, appearanceLabel, artworkAsset, assetsPath, baseCoordinate, changedArt, consoleLink,
-  environmentLabel, fillRendition, findCell, insideInstance, insertSize, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
+  draftImpact, environmentLabel, fillRendition, findCell, insideInstance, insertSize, insertRendition, isReconnectText, layerName, parseArtwork, parseAssetPage, parsePreferences, placementMarker,
   placementMeta, pngSize, reconnectText, refusalCode, renditionPath, sameCoordinate, tokenRefused,
 } from '../shared/index.js';
 import type {
@@ -10,6 +10,7 @@ import type {
 import type { InsertDestination, MainMessage, SelectedLink, UiMessage } from '../shared/protocol.js';
 import { webpToPng } from '../image.js';
 import { createCellRenderer, renderCells } from './cells.js';
+import { initShortlist, renderShortlist, resetShortlist, shortlistAsset, updateShortlist } from './shortlist.js';
 import { cellAxes, fileRows, fileTag, renderFileScope, requestFileScan, resetFile, selectFileNode } from './infile.js';
 import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
@@ -161,7 +162,7 @@ function selectedPlacement(current = selected): PlacementArtwork | null {
   return current?.kind === 'placement' ? artwork?.placements.find(item => item.key === current.key) ?? null : null;
 }
 function selectedImage(current = selected): LibraryAsset | null {
-  return current?.kind === 'image' ? images?.items.find(item => item.id === current.assetId) ?? null : null;
+  return current?.kind === 'image' ? images?.items.find(item => item.id === current.assetId) ?? shortlistAsset(current.assetId) : null;
 }
 type InsertTarget = {
   title: string; meta: string; note: string; noteLink: string | null; name: string; asset: LibraryAsset | null; ready: boolean;
@@ -303,7 +304,7 @@ function selectPlacement(key: string): void {
   selectionChanged(key);
 }
 function selectImage(assetId: string): void {
-  if (!images?.items.some(item => item.id === assetId)) return;
+  if (!images?.items.some(item => item.id === assetId) && !shortlistAsset(assetId)) return;
   activeKey = assetId;
   selected = { kind: 'image', assetId };
   selectionChanged(assetId);
@@ -393,6 +394,36 @@ export function sendPlacementPreview(key: string, coordinate: CellCoordinate): {
 
 const renderSendCells = createCellRenderer('send-cells', true);
 /** The chosen Send cell's current Draft art, loaded whenever the form shows it. */
+export function sendImpact(key: string, coordinate: CellCoordinate) {
+  const placement = currentPlacement(key);
+  return placement ? draftImpact(placement, coordinate) : null;
+}
+function renderSendImpact(placement: PlacementArtwork | null, coordinate: CellCoordinate | null): void {
+  const impact = placement && coordinate ? draftImpact(placement, coordinate) : null;
+  element('send-impact').hidden = !coordinate || state.prefs.tab !== 'send';
+  element('send-impact-summary').textContent = !impact ? 'Draft impact unavailable until all cells are loaded' : impact.cells.length
+    ? `Also changes ${impact.cells.length} other Draft cell${impact.cells.length === 1 ? '' : 's'}` : 'No other Draft cells change';
+  if (impact?.missingStates.length) element('send-impact-summary').textContent += ` · ${impact.missingStates.length} state${impact.missingStates.length === 1 ? '' : 's'} missing artwork`;
+  element('send-impact-warning').textContent = impact?.missingStates.length
+    ? `Partial Draft override: ${impact.missingStates.join(', ')} ${impact.missingStates.length === 1 ? 'has' : 'have'} no artwork in this family. These states do not fall back to another family.` : '';
+  element('send-impact-warning').hidden = !impact?.missingStates.length;
+  const labels = impact?.cells.map(change => {
+    const from = change.before?.assetId ? `from ${cellAxes(placement!, { ...change.cell, ...change.before.via }) || 'Default'}` : 'from no Draft art';
+    const to = change.after?.assetId === '$selected-figma-layer' ? 'selected Figma layer' : change.after?.assetId ? 'existing artwork with a new fallback source' : 'no Draft art';
+    return `${cellAxes(placement!, change.cell) || 'Default'}: ${from} → ${to}`;
+  }) ?? [];
+  const list = element('send-impact-cells'), key = JSON.stringify(labels);
+  if (list.getAttribute('data-content') !== key) {
+    list.setAttribute('data-content', key);
+    list.replaceChildren(...labels.map(label => makeNode('li', 'meta', label)));
+  }
+  const changed = new Set(impact?.cells.map(({ cell }) => JSON.stringify([cell.state ?? '', cell.appearance ?? '', cell.arm ?? ''])));
+  for (const cell of Array.from(element('send-cells').children).filter(cell => cell.getAttribute('role') === 'radio')) {
+    const affected = changed.has(JSON.stringify(['state', 'appearance', 'arm'].map(axis => cell.getAttribute(`data-${axis}`))));
+    cell.setAttribute('data-impact', String(affected));
+    cell.setAttribute('title', `${cell.getAttribute('aria-label') ?? ''}${affected ? ' · Also affected by this Send' : ''}`);
+  }
+}
 export function renderSendCurrent(): void {
   const choice = sendChoice();
   const cell = choice && currentCell(choice.placementKey, choice.cell);
@@ -405,6 +436,7 @@ export function renderSendCurrent(): void {
   renderSendCells(placement, choice?.cell ?? null, 'draft', artwork,
     coordinate => { if (choice) chooseSendCell(choice.placementKey, coordinate); }, undefined, actionsBlocked() || element<HTMLSelectElement>('placement').disabled,
     `${state.connectionGeneration}:${activeSendRow()?.node.id}`);
+  renderSendImpact(placement, choice?.cell ?? null);
   const art = cell?.draft ?? null;
   element('send-current-preview').className = art || !cell ? 'thumb' : 'thumb slot';
   element('send-current-text').textContent = !cell ? 'Draft artwork not loaded' : !art ? 'Nothing in Draft yet' : owns(art, cell) ? 'Now in Draft'
@@ -745,6 +777,7 @@ function renderIntro(): void {
 
 export function renderInsertControls(): void {
   const { browse } = state.prefs;
+  renderShortlist(selectedImage());
   element('browse-placements').setAttribute('aria-checked', String(browse === 'placements'));
   element('browse-images').setAttribute('aria-checked', String(browse === 'images'));
   element('browse-file').setAttribute('aria-checked', String(browse === 'file'));
@@ -1071,9 +1104,10 @@ async function loadImages(reset: boolean): Promise<void> {
       throw new Error(failure.text);
     }
     const page = parseAssetPage(result.payload);
+    updateShortlist(page.assets);
     const added = previous && !reset ? page.assets.filter(asset => !previous.items.some(item => item.id === asset.id)) : page.assets;
     images = { items: previous && !reset ? [...previous.items, ...added] : added, nextCursor: page.nextCursor, q };
-    if (selected?.kind === 'image' && !images.items.some(item => item.id === (selected as { assetId: string }).assetId)) selected = null;
+    if (selected?.kind === 'image' && !selectedImage()) selected = null;
     markConnected();
     // On the last page Load more hides; focus moves to the first new image rather than the page.
     if (!reset && added[0]) preferFocus(added[0].id);
@@ -1340,6 +1374,7 @@ export function failInsert(requestId: number, message: string): boolean {
 }
 
 export function resetInsert(): void {
+  resetShortlist();
   resetFile();
   artwork = null; artworkGeneration = null; images = null; selected = null; pendingInsert = null; activeKey = null; dragFollows = null;
   artFilter = 'all'; browseContext.clear(); searchInput.value = ''; restoreScroll = 0;
@@ -1392,6 +1427,7 @@ function setScale(next: 1 | 2 | 3): void {
 }
 /** Refresh, and the list's Try again: failed previews are tried again with the list. */
 function refreshList(): void {
+  resetShortlist();
   if (!state.connection) return;
   retryFailedThumbnails();
   if (state.prefs.browse === 'file') requestFileScan();
@@ -1501,6 +1537,7 @@ function listKeydown(event: KeyboardEvent): void {
 }
 
 export function initInsert(goToSend: () => void): void {
+  initShortlist(selectedImage, selectImage);
   artFilterButtons.forEach((button, index) => button.addEventListener('click', () => {
     artFilter = artFilters[index]!;
     if (!actionsBlocked()) selected = null;

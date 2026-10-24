@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, STAGING_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
+  draftImpact, MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_INSERT_DOWNLOAD, MAX_PREVIEW_BYTES, MISSING_INSERT, PRODUCTION_ORIGIN, STAGING_ORIGIN, DEVELOPMENT_ORIGIN, LEGACY_PRODUCTION_ORIGIN,
   apiUrl, artworkAsset, aspectMismatch, aspectRatioDifference, assertDraftBodyLimit, assetsUrl, baseCoordinate, buildDraftBody, bytesToBase64,
   cellOptions, changedArt, chooseExportSettings, ratioName, insertSize, connectionErrorField, decodedBase64Length, matchedHeight, ratioLabel, sizeLabel, defaultPreferences, encodeBase64, environmentLabel, findCell,
   insertRendition, isUint8Array, layerName, linkMatches, loadSavedConnection, mapHttpError, mapNetworkError,
@@ -1131,4 +1131,56 @@ test('inspection chooses the largest bounded rendition across formats without ch
   assert.equal(thumbnailRendition({ renditions: [small, large, oversized, heavy] }), small);
   assert.equal(thumbnailRendition({ renditions: [small, large, oversized, heavy] }, true), large);
   assert.equal(thumbnailRendition({ renditions: [oversized, heavy] }, true), null);
+});
+
+
+function impactMatrix(families, complete = true) {
+  const contract = { ...placement, states: ['idle', 'busy'], defaultState: 'idle', variants: { appearance: ['light', 'dark'], arm: ['b'] } };
+  const cells = contract.states.flatMap(state => [null, 'b'].flatMap(arm => [null, 'light', 'dark'].map(appearance => {
+    let draft = null;
+    for (const via of [{ arm, appearance }, { arm, appearance: null }, { arm: null, appearance }, { arm: null, appearance: null }]) {
+      const family = families[`${via.arm ?? ''}/${via.appearance ?? ''}`];
+      if (family && Object.keys(family).length) { draft = family[state] ? { assetId: family[state], via } : null; break; }
+    }
+    return { state, arm, appearance, draft, staging: null, production: null };
+  })));
+  return { ...contract, cells: complete ? cells : cells.slice(1) };
+}
+test('Draft impact follows whole-family priority and explicit ownership even when asset IDs match', () => {
+  const matrix = impactMatrix({ '/': { idle: 'same', busy: 'busy' }, 'b/light': { idle: 'same', busy: 'busy' } });
+  const impact = draftImpact(matrix, { state: 'idle', arm: null, appearance: null });
+  assert.equal(impact.cells.length, 4);
+  assert.ok(impact.cells.every(change => change.cell.state === 'idle' && !(change.cell.arm === 'b' && change.cell.appearance === 'light')));
+  assert.deepEqual(impact.missingStates, []);
+  const inherited = draftImpact(matrix, { state: 'idle', arm: 'b', appearance: 'dark' });
+  assert.deepEqual(inherited.missingStates, ['busy']);
+  assert.deepEqual(inherited.cells.map(item => item.cell), [{ state: 'busy', arm: 'b', appearance: 'dark' }]);
+  assert.equal(inherited.cells[0].after.assetId, null, 'an occupied partial family blocks the lower base family');
+  assert.deepEqual(inherited.cells[0].after.via, { arm: 'b', appearance: 'dark' });
+});
+test('Draft impact uses arm Any before Control appearance, marks sparse or inconsistent evidence unknown', () => {
+  const matrix = impactMatrix({ '/': { idle: 'base', busy: 'base-busy' }, '/dark': { idle: 'dark', busy: 'dark-busy' }, 'b/': { idle: 'arm' } });
+  const impact = draftImpact(matrix, { state: 'idle', arm: 'b', appearance: null });
+  assert.equal(impact.cells.length, 2);
+  assert.ok(impact.cells.every(change => change.before.assetId === 'arm'));
+  assert.deepEqual(impact.missingStates, ['busy']);
+  assert.equal(draftImpact({ ...matrix, cells: matrix.cells.slice(1) }, { state: 'idle', arm: null, appearance: null }), null);
+  const invalid = structuredClone(matrix); invalid.cells[0].draft.assetId = 'inconsistent';
+  assert.equal(draftImpact(invalid, { state: 'idle', arm: null, appearance: null }), null);
+  assert.equal(draftImpact(matrix, { state: 'removed', arm: null, appearance: null }), null);
+});
+test('Draft impact fingerprint notices affected family changes and supports the default state and no-state contracts', () => {
+  const before = impactMatrix({ '/': { idle: 'base', busy: 'busy' } });
+  const after = impactMatrix({ '/': { idle: 'base', busy: 'busy' }, '/dark': { idle: 'base' } });
+  const target = { state: null, arm: null, appearance: null };
+  assert.notEqual(draftImpact(before, target).fingerprint, draftImpact(after, target).fingerprint);
+  const simple = { ...placement, cells: [{ state: null, arm: null, appearance: null, draft: null, staging: null, production: null }] };
+  assert.deepEqual(draftImpact(simple, target).cells, []);
+  assert.deepEqual(draftImpact(simple, target).missingStates, []);
+});
+
+test('Draft impact warns when the first Control Any assignment leaves a base family incomplete', () => {
+  const impact = draftImpact(impactMatrix({}), { state: 'idle', arm: null, appearance: null });
+  assert.deepEqual(impact.missingStates, ['busy']);
+  assert.equal(impact.cells.filter(change => change.after?.assetId === null).length, 6);
 });
