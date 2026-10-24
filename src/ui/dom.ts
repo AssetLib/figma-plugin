@@ -1,5 +1,5 @@
 import type { DropMetadata, MainMessage, UiMessage } from '../shared/protocol.js';
-import { consoleLink, type ConsoleSection } from '../shared/links.js';
+import { consoleLink, isConsoleLink, type ConsoleSection } from '../shared/links.js';
 import { nextRequestId, state } from './state.js';
 
 export function element<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -11,13 +11,30 @@ export function element<T extends HTMLElement = HTMLElement>(id: string): T {
 /** Navigation follows the current app and disappears while a replacement connection is being saved. */
 export function renderConsoleLink(id: string, section: ConsoleSection | null): void {
   const link = element<HTMLAnchorElement>(id);
-  const current = () => state.connection && state.connectionGeneration !== null && !state.connectionChanging;
-  link.hidden = !section || !current();
-  if (!link.hidden) link.setAttribute('href', consoleLink(state.connection!, section!));
+  link.hidden = !section || !state.connection || state.connectionGeneration === null || state.connectionChanging;
+  bindConsoleLink(link, link.hidden ? null : consoleLink(state.connection!, section!));
+}
+
+let consolePage: { id: number; generation: number } | null = null;
+/** Keep a normal link, but open through Figma: iframe popup navigation is not reliable on every host. */
+export function bindConsoleLink(link: HTMLAnchorElement, url: string | null): void {
+  const generation = state.connectionGeneration;
+  if (url && generation !== null && !state.connectionChanging && isConsoleLink(url, state.connection)) link.setAttribute('href', url);
   else link.removeAttribute('href');
   link.onclick = event => {
-    if (!section || !current() || link.getAttribute('href') !== consoleLink(state.connection!, section)) event.preventDefault();
+    event.preventDefault();
+    if (generation === null || generation !== state.connectionGeneration || state.connectionChanging
+      || link.getAttribute('href') !== url || !isConsoleLink(url, state.connection)) return;
+    consolePage = { id: nextRequestId(), generation };
+    post({ type: 'open-console-page', requestId: consolePage.id, connectionGeneration: generation, url });
   };
+}
+export function failConsolePage(id: number): boolean {
+  if (consolePage?.id !== id) return false;
+  const current = consolePage.generation === state.connectionGeneration;
+  consolePage = null;
+  if (current) showError('Figma couldn’t open this page. Try the link again.');
+  return true;
 }
 
 export function post(message: UiMessage): void { parent.postMessage({ pluginMessage: message }, '*'); }

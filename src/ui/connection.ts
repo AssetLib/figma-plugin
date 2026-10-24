@@ -2,7 +2,7 @@
 // the token form (one-click Connect's secondary path, connect.ts) and its GET /api/token step, the connection test,
 // Disconnect, and the chip's label.
 import {
-  STAGING_ORIGIN, OLDER_CONSOLE, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink, consolePageOrigin,
+  STAGING_ORIGIN, OLDER_CONSOLE, TOKEN_NO_LONGER_ACCEPTED, TOKEN_REFUSED, TOKEN_SCOPE, checkTokenFormat, connectionErrorField, connectionLabel, consoleLink,
   fieldError, mapNetworkError, normalizeConsoleOrigin,
   parsePlacements, parseTokenIdentity, PRODUCTION_ORIGIN, reconnectText, refusalCode, tokenPrefix, validateConnection,
 } from '../shared/index.js';
@@ -10,7 +10,7 @@ import type { Connection, Placement } from '../shared/index.js';
 import { DISCONNECTED, DISCONNECTED_BROWSER, DISCONNECTED_LOCAL, DISCONNECTED_REFUSED, toastText } from '../shared/protocol.js';
 import type { MainMessage } from '../shared/protocol.js';
 import {
-  announceError, clearError, element, errorText, flushRender, inField, post, reloadConnection, scheduleRender, setBusy, setStatus, setUnavailable, showError,
+  announceError, bindConsoleLink, clearError, element, errorText, flushRender, inField, post, reloadConnection, scheduleRender, setBusy, setStatus, setUnavailable, showError,
 } from './dom.js';
 import { consoleAnswers, identify, readFailure, revokeConnection, send } from './http.js';
 import type { HttpResult } from './http.js';
@@ -203,7 +203,7 @@ export function renderConnection(): void {
   element('token-prefix').textContent = !connection ? ''
     : [connection.workspaceName, browser ? connection.connectedAs && `Connected as ${connection.connectedAs}` : `Connected with token ${tokenPrefix(connection.token)}`]
       .filter(Boolean).join(' · ');
-  element<HTMLAnchorElement>('open-console').href = connection ? consoleLink(connection, 'overview') : `${consolePageOrigin(chosenOrigin())}/`;
+  bindConsoleLink(element<HTMLAnchorElement>('open-console'), connection ? consoleLink(connection, 'overview') : null);
   idFields.hidden = !idsShown();
   // The account's own controls exist only with a connection (ui.html also hides the account block on the first run);
   // a Connect request waiting for approval takes their place.

@@ -99,6 +99,7 @@ export type UiMessage =
   | { type: 'clear-connection'; requestId: number; revoked?: boolean }
   // One-click Connect: main opens the console's connect page for this write key, built from a fixed map (connectPageUrl).
   | { type: 'open-connect-page'; requestId: number; origin: string; writeKey: string }
+  | { type: 'open-console-page'; requestId: number; connectionGeneration: number; url: string }
   // The request waiting for approval, kept so a reopened plugin resumes it (and this window keeps the turn to ask about
   // it), and forgotten once it ends, unless another window's request replaced it. Never refused.
   | { type: 'save-pairing'; pairing: PairingRecord }
@@ -237,6 +238,7 @@ export function parseUiMessage(value: unknown): UiMessage {
       case 'match-ratio': return requestId(m.requestId) && text(m.nodeId) && size(m.width) && size(m.height);
       case 'clear-connection': return requestId(m.requestId) && (m.revoked === undefined || typeof m.revoked === 'boolean');
       case 'open-connect-page': return requestId(m.requestId) && text(m.origin) && text(m.writeKey);
+      case 'open-console-page': return requestId(m.requestId) && generation(m.connectionGeneration) && text(m.url);
       // Main checks the record's values itself.
       case 'save-pairing': return isRecord(m.pairing);
       case 'clear-pairing': return text(m.userCode);

@@ -15,7 +15,7 @@ import { cellAxes, fileRows, fileTag, renderFileScope, requestFileScan, resetFil
 import { hintOfCurrent, startConnect } from './connect.js';
 import { markConnected, needsAttention, openSettings, problemInSettings } from './connection.js';
 import {
-  announceError, arrowKeys, clearError, element, errorText, flushRender, inField, keyOf, post, postDrop, preferFocus, reloadConnection, rovingStops,
+  announceError, arrowKeys, bindConsoleLink, clearError, element, errorText, flushRender, inField, keyOf, post, postDrop, preferFocus, reloadConnection, rovingStops,
   renderConsoleLink, scheduleRender, sentence, setBusy, setStatus, setUnavailable, showError,
 } from './dom.js';
 import { readFailure, send } from './http.js';
@@ -846,7 +846,7 @@ export function renderInsertBar(): void {
   setUnavailable(element('insert-send-here'), actionsBlocked());
   const noteLink = element<HTMLAnchorElement>('insert-note-link');
   noteLink.hidden = !target?.noteLink;
-  if (target?.noteLink) noteLink.href = target.noteLink;
+  bindConsoleLink(noteLink, target?.noteLink ?? null);
   renderCells(selectedPlacement(), selected?.kind === 'placement' ? selected.cell : null, shownEnvironment(), artwork,
     cell => { if (selected?.kind === 'placement') { selected = { ...selected, cell }; scheduleRender(); flushRender(); } },
     () => { if (selected?.kind === 'placement') insertFrom(selected.key); });

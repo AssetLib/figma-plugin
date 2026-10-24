@@ -1,7 +1,7 @@
 // Linked artwork context on Insert. Outgoing actions open Send's destination review.
 import { consoleLink, environmentLabel } from '../shared/index.js';
 import { startConnect } from './connect.js';
-import { element, flushRender, setBusy, setUnavailable } from './dom.js';
+import { bindConsoleLink, element, flushRender, setBusy, setUnavailable } from './dom.js';
 import { isUpdating, linkedArt, linkArtworkMeta, linkStatus, linkUpdate, otherCell, revealPlacement, slotIdOf, updateLinked } from './insert.js';
 import { matchRatio, otherDeclaredCell, prefillSend, sendElsewhere, syncBar } from './send.js';
 import type { SyncBar } from './send.js';
@@ -85,7 +85,8 @@ export function renderSyncBar(): void {
   switchButton.hidden = !(shown?.kind === 'other' && shown.hint);
   const slotId = linked ? slotIdOf(linked.key) : null;
   consoleAnchor.hidden = !(linked && (slotId || linked.assetId) && state.connection) || Boolean(linked?.ratio || update);
-  if (linked && state.connection && (slotId || linked.assetId)) consoleAnchor.href = slotId ? consoleLink(state.connection, 'placements', slotId) : consoleLink(state.connection, 'images', linked.assetId!);
+  bindConsoleLink(consoleAnchor, linked && state.connection && (slotId || linked.assetId)
+    ? slotId ? consoleLink(state.connection, 'placements', slotId) : consoleLink(state.connection, 'images', linked.assetId!) : null);
 }
 
 /** A layer relaunch opens its review; it never sends by itself. */

@@ -446,6 +446,7 @@ function installFakes(config) {
         break;
       // As code.ts does: the connect page opens in the browser, and the request's record is kept and forgotten.
       case 'open-connect-page': opened.push(`${message.origin}/connect/figma#${message.writeKey}`); break;
+      case 'open-console-page': if (message.connectionGeneration === generation) opened.push(message.url); break;
       case 'save-pairing': config.pairing = message.pairing; break;
       case 'clear-pairing': if (config.pairing?.userCode === message.userCode) config.pairing = null; break;
       // One window: no other saved the request's connection or replaced this one, and the turn to ask is always this one's.
@@ -3734,7 +3735,8 @@ for (const theme of ['light', 'dark']) test(`content intake links stay discovera
       await images.click('#image-grid [role=option]');
       const selected = await images.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`);
       await images.click('#images-upload');
-      assert.deepEqual(await images.evaluate('__navigation'), { href: `${base}images`, refused: false });
+      assert.deepEqual(await images.evaluate('__navigation'), { href: `${base}images`, refused: true });
+      await images.waitFor(`__harness.opened.includes('${base}images')`);
       assert.equal(await images.evaluate(valueOf('insert-search')), 'Image 2');
       assert.equal(await images.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`), selected);
       if (shots) await images.screenshot(join(shots, `intake-images-${theme}-${width}.png`));
@@ -3742,6 +3744,10 @@ for (const theme of ['light', 'dark']) test(`content intake links stay discovera
       await images.evaluate(`document.getElementById('images-upload').setAttribute('href', '${base.replace('app-a', 'app-b')}images')`);
       await images.click('#images-upload');
       assert.equal(await images.evaluate('__navigation.refused'), true);
+      assert.deepEqual(await images.evaluate('__harness.opened'), [`${base}images`], 'a tampered href never reaches the native bridge');
+      await images.click('#settings-summary'); await images.click('#open-console');
+      await images.waitFor(`__harness.opened.includes('${base}overview')`);
+      await images.click('#settings-summary');
       await images.click('#insert-search'); await images.type('zzzz');
       await images.waitFor(shown('insert-empty'));
       assert.equal(await images.evaluate(inViewport('images-upload')), true, 'Upload remains available with no matching images');
@@ -3758,13 +3764,17 @@ for (const theme of ['light', 'dark']) test(`content intake links stay discovera
       assert.equal(await empty.evaluate(textOf('insert-empty-link')), 'Set up app catalog');
       assert.equal(await empty.evaluate(inViewport('insert-empty-link')), true);
       await empty.click('#insert-empty-link');
-      assert.deepEqual(await empty.evaluate('__navigation'), { href: `${base}settings/connect`, refused: false });
+      assert.deepEqual(await empty.evaluate('__navigation'), { href: `${base}settings/connect`, refused: true });
+      await empty.waitFor(`__harness.opened.length === 1`);
+      assert.deepEqual(await empty.evaluate('__harness.opened'), [`${base}settings/connect`]);
       if (shots) await empty.screenshot(join(shots, `intake-catalog-${theme}-${width}.png`));
       await empty.click('#tab-send'); await empty.waitFor(shown('send-catalog'));
       await empty.evaluate(`document.getElementById('send-catalog-link').scrollIntoView({ block: 'nearest' })`);
       assert.equal(await empty.evaluate(inViewport('send-catalog-link')), true);
       await empty.click('#send-catalog-link');
-      assert.deepEqual(await empty.evaluate('__navigation'), { href: `${base}settings/connect`, refused: false });
+      assert.deepEqual(await empty.evaluate('__navigation'), { href: `${base}settings/connect`, refused: true });
+      await empty.waitFor(`__harness.opened.length === 2`);
+      assert.deepEqual(await empty.evaluate('__harness.opened'), [`${base}settings/connect`, `${base}settings/connect`]);
       assert.equal(await empty.evaluate(`document.getElementById('send').getAttribute('aria-disabled')`), 'true');
       if (shots) await empty.screenshot(join(shots, `intake-send-${theme}-${width}.png`));
       await empty.click('#tab-insert'); await empty.click('#browse-images'); await empty.waitFor(shown('insert-empty'));

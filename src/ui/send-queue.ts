@@ -5,7 +5,7 @@ import { aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, c
 import type { CellBinding, Connection, DraftResult, Placement } from '../shared/index.js';
 import { CONNECTION_REPLACED } from '../shared/protocol.js';
 import type { MainMessage, SelectionState, SendNode } from '../shared/protocol.js';
-import { clearError, element, errorText, post, reloadConnection, scheduleRender, setStatus, setUnavailable, showError, toast } from './dom.js';
+import { bindConsoleLink, clearError, element, errorText, post, reloadConnection, scheduleRender, setStatus, setUnavailable, showError, toast } from './dom.js';
 import { send } from './http.js';
 import { actionsBlocked, hasCurrentSelection, nextRequestId, state } from './state.js';
 
@@ -230,7 +230,7 @@ export function renderQueue(): void {
     view.retry.textContent = row.status === 'sent' ? 'Send again' : 'Retry';
     view.review.hidden = row.status !== 'conflict' && row.status !== 'impact';
     view.console.hidden = !row.assetId && row.status !== 'unknown';
-    if (state.connection) view.console.href = consoleLink(state.connection, row.assetId ? 'images' : 'releases', validUuid(row.assetId) ? row.assetId : undefined);
+    bindConsoleLink(view.console, state.connection ? consoleLink(state.connection, row.assetId ? 'images' : 'releases', validUuid(row.assetId) ? row.assetId : undefined) : null);
     for (const control of [view.name, view.skip, view.retry, view.review]) setUnavailable(control, actionsBlocked());
   }
   const nodes = rows.map(row => rowElements.get(row.node.id)!.root);
@@ -293,7 +293,7 @@ function finishRun(): void {
   const result = element('result'); const summary = document.createElement('p'); summary.textContent = `${message} Publish from the console when ready.`;
   const details = document.createElement('ul');
   for (const row of completed.rows) { const item = document.createElement('li'); item.textContent = `${row.node.name} → ${destination(row)}: ${row.detail || row.status}`; details.append(item); }
-  const link = document.createElement('a'); link.className = 'text-action'; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.href = consoleReviewLink(completed.connection, completed.rows.flatMap(row => row.status === 'sent' && row.receipt ? [{ key: row.receipt.slotKey, ...(row.receipt.state ? { state: row.receipt.state } : {}), ...(row.receipt.appearance ? { appearance: row.receipt.appearance } : {}), ...(row.receipt.arm ? { arm: row.receipt.arm } : {}) }] : [])); link.textContent = sent ? 'Review these drafts' : 'Open releases in console';
+  const link = document.createElement('a'); link.className = 'text-action'; link.target = '_blank'; link.rel = 'noopener noreferrer'; bindConsoleLink(link, consoleReviewLink(completed.connection, completed.rows.flatMap(row => row.status === 'sent' && row.receipt ? [{ key: row.receipt.slotKey, ...(row.receipt.state ? { state: row.receipt.state } : {}), ...(row.receipt.appearance ? { appearance: row.receipt.appearance } : {}), ...(row.receipt.arm ? { arm: row.receipt.arm } : {}) }] : []))); link.textContent = sent ? 'Review these drafts' : 'Open releases in console';
   result.replaceChildren(summary, details, link); result.hidden = false;
   if (sent) { artworkChanged(); toast(message, { text: 'Review', url: link.href }); }
   if (latest && keyOf(latest) !== selectionKey) queueSelection(latest);

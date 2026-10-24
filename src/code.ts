@@ -84,7 +84,7 @@ function postConnection(replaced?: { origin: string; token: string }): void {
   void scanLinks();
 }
 
-/** The one way main opens a page in the browser: a console link (a toast's button) or the connect page, checked first. */
+/** The one way main opens a page in the browser: a validated current-app console link or the connect page. */
 function openUrl(url: string): void {
   figma.openExternal(url);
 }
@@ -278,6 +278,11 @@ async function handleMessage(message: UiMessage): Promise<void> {
       await reportSelection();
       break;
     }
+    case 'open-console-page': {
+      if (message.connectionGeneration !== main.connectionGeneration || !isConsoleLink(message.url, main.connection)) throw new Error(CONNECT_PAGE_REFUSED);
+      openUrl(message.url);
+      break;
+    }
     case 'open-connect-page': {
       // Only the console's connect page for one of the two origins, never a URL the UI built.
       const url = connectPageUrl(message.origin, message.writeKey);
@@ -311,8 +316,12 @@ async function handleMessage(message: UiMessage): Promise<void> {
     }
     case 'notify': {
       const { button } = message;
+      const generation = main.connectionGeneration;
       // Only a link into the connected app's console; any other button is dropped, and the toast still shows.
-      const action = button && isConsoleLink(button.url, main.connection) ? { text: toastText(button.text).slice(0, 24), action: () => { openUrl(button.url); } } : null;
+      const action = button && isConsoleLink(button.url, main.connection) ? { text: toastText(button.text).slice(0, 24), action: () => {
+        if (generation !== main.connectionGeneration || !isConsoleLink(button.url, main.connection)) return;
+        try { openUrl(button.url); } catch { figma.notify('Figma couldn’t open this page. Try the link again.'); }
+      } } : null;
       figma.notify(toastText(message.text), action ? { button: action } : undefined);
       break;
     }

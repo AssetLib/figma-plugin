@@ -104,6 +104,7 @@ export class Element {
   dispatch(type, init = {}) {
     const event = { type, target: this, defaultPrevented: false, preventDefault() { event.defaultPrevented = true; }, ...init };
     this.listeners.get(type)?.(event);
+    this[`on${type}`]?.(event);
     return event;
   }
   click() { this.dispatch('click'); }
@@ -125,6 +126,8 @@ export class Element {
   }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+  get href() { return this.getAttribute('href') ?? ''; }
+  set href(value) { this.setAttribute('href', value); }
   removeAttribute(name) { this.attributes.delete(name); if (name === 'src') this.src = ''; }
   scrollIntoView(options) { this.scrolledIntoView = options; }
   // There is no layout: every box is empty, so the UI measures nothing (connection.ts fits the chip only in a box).

@@ -4,7 +4,7 @@ import { TOKEN_NO_LONGER_ACCEPTED, clampWindow } from '../shared/index.js';
 import type { MainMessage } from '../shared/protocol.js';
 import { adopted, applyPairing, connectFocus, failOpenPage, hintOfCurrent, initConnect, releaseHeld, renderConnect, saveRefused, startConnect, turned } from './connect.js';
 import { applyConnection, failConnection, initConnection, loadPlacements, needsAttention, openSettings, problemInSettings, renderConnection } from './connection.js';
-import { COMMAND, arrowKeys, element, inField, post, reloaded, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
+import { COMMAND, arrowKeys, element, failConsolePage, inField, post, reloaded, rovingStops, scheduleRender, setRenderer, setStatus, showError } from './dom.js';
 import { acceptFileLinks, failFileScan, focusFile } from './infile.js';
 import { abortAll } from './http.js';
 import {
@@ -115,6 +115,7 @@ function onError(message: Extract<MainMessage, { type: 'error' }>): void {
   if (failConnection(id, message.message)) { connectionKept(); saveRefused(id); return; }
   if (failFileScan(id, message.message)) return;
   if (failOpenPage(id)) return;
+  if (failConsolePage(id)) return;
   if (failSend(id, message.message)) return;
   if (failInsert(id, message.message)) return;
   failDrop(id, message.message);

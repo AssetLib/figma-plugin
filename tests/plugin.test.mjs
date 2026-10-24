@@ -91,6 +91,11 @@ test('content intake keeps upload available and empty catalog setup scoped to th
   const base = 'https://console.assetlib.dev/w/org-one/app-a/';
   assert.equal(app.element('images-upload').hidden, false);
   assert.equal(app.element('images-upload').getAttribute('href'), `${base}images`);
+  assert.equal(app.element('images-upload').dispatch('click').defaultPrevented, true);
+  await flush();
+  assert.deepEqual(app.externalUrls, [`${base}images`], 'the native opener receives the upload handoff');
+  app.element('open-console').dispatch('click'); await flush();
+  assert.equal(app.externalUrls.at(-1), `${base}overview`, 'the existing account link uses the same bridge');
   assert.equal(app.element('insert-empty-link').textContent, 'Upload images…');
   assert.match(app.element('insert-empty-text').textContent, /sync the app catalog before sending/);
   app.element('browse-placements').dispatch('click'); await flush();
@@ -98,9 +103,13 @@ test('content intake keeps upload available and empty catalog setup scoped to th
   assert.equal(app.element('images-upload').getAttribute('href'), null);
   assert.equal(app.element('insert-empty-link').textContent, 'Set up app catalog');
   assert.equal(app.element('insert-empty-link').getAttribute('href'), `${base}settings/connect`);
+  app.element('insert-empty-link').dispatch('click'); await flush();
+  assert.equal(app.externalUrls.at(-1), `${base}settings/connect`);
   app.element('tab-send').dispatch('click'); await flush();
   assert.equal(app.element('send-catalog').hidden, false);
   assert.equal(app.element('send-catalog-link').getAttribute('href'), `${base}settings/connect`);
+  app.element('send-catalog-link').dispatch('click'); await flush();
+  assert.equal(app.externalUrls.at(-1), `${base}settings/connect`);
   assert.equal(off(app, 'send'), true);
   assert.equal(app.drafts().length, 0);
   const write = app.delayConnectionWrite();
@@ -108,8 +117,63 @@ test('content intake keeps upload available and empty catalog setup scoped to th
   await flush(); await flush();
   assert.equal(app.element('send-catalog-link').hidden, true, 'no stale setup link during a connection save');
   assert.equal(app.element('send-catalog-link').getAttribute('href'), null);
+  const opened = app.externalUrls.length;
+  app.element('send-catalog-link').dispatch('click'); await flush();
+  assert.equal(app.externalUrls.length, opened, 'a connection save cannot open the previous app');
   write.resolve(); await flush(); await flush();
   assert.equal(app.element('send-catalog-link').getAttribute('href'), 'https://console.assetlib.dev/w/org-one/app-b/settings/connect');
+});
+
+test('native console handoff rejects foreign links and stale generations and reports browser failures', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await flush();
+  const base = 'https://console.assetlib.dev/w/org-one/app-a/';
+  const message = { type: 'open-console-page', requestId: 500, connectionGeneration: 0, url: `${base}images` };
+  app.postToMain(message); await flush();
+  assert.deepEqual(app.externalUrls, [message.url]);
+  for (const changes of [
+    { connectionGeneration: 1 }, { connectionGeneration: -1 }, { connectionGeneration: null },
+    { url: `${base.replace('app-a', 'app-b')}images` }, { url: `${base}settings/tokens` },
+    { url: `${base}images?token=secret` }, { url: 'https://evil.test' }, { url: null },
+  ]) { app.postToMain({ ...message, ...changes }); await flush(); }
+  assert.equal(app.externalUrls.length, 1);
+  app.element('images-upload').setAttribute('href', `${base.replace('app-a', 'app-b')}images`);
+  app.element('images-upload').dispatch('click'); await flush();
+  assert.equal(app.externalUrls.length, 1, 'UI also refuses a foreign href');
+  app.element('images-upload').setAttribute('href', message.url);
+  app.figma.openExternal = () => { throw new Error('No browser'); };
+  app.element('images-upload').dispatch('click'); await flush();
+  assert.match(app.element('error').textContent, /couldn’t open this page/);
+  assert.equal(app.exports.length, 0);
+  assert.equal(app.drafts().length, 0);
+  const disconnected = harness({ saved: null }); await flush();
+  disconnected.postToMain(message); await flush();
+  assert.deepEqual(disconnected.externalUrls, []);
+});
+
+test('native receipt links retain their completed app and cannot open after a connection change', async () => {
+  const app = harness(); await flush(); startSend(app); await flush();
+  const link = app.element('result').children.find(child => child.textContent === 'Review these drafts');
+  assert.ok(link);
+  link.dispatch('click'); await flush();
+  assert.deepEqual(app.externalUrls, [link.href]);
+  assert.match(link.href, /\/app-a\/releases#review=/);
+  const toastReview = app.notifications.findLast(item => item.options?.button?.text === 'Review').options.button.action;
+  const draftCount = app.drafts().length;
+  const imageLink = descendants(app.element('send-items')).find(child => child.tagName === 'A' && child.textContent === 'View in console');
+  imageLink.dispatch('click'); await flush();
+  assert.equal(app.externalUrls.at(-1), imageLink.href);
+  const openExternal = app.figma.openExternal;
+  app.figma.openExternal = () => { throw new Error('No browser'); };
+  assert.doesNotThrow(() => toastReview());
+  assert.match(app.notifications.at(-1).message, /couldn’t open this page/);
+  app.figma.openExternal = openExternal;
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('draft_b') }); await flush(); await flush();
+  const opened = app.externalUrls.length;
+  link.dispatch('click'); await flush();
+  toastReview();
+  assert.equal(app.externalUrls.length, opened);
+  assert.match(link.href, /\/app-a\/releases#review=/, 'a retained old receipt is never rewritten to the new app');
+  assert.equal(app.drafts().length, draftCount);
 });
 
 test('catalog setup waits for a successful empty placements read', async () => {
