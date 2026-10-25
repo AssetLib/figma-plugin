@@ -9414,3 +9414,19 @@ test('visual batch review and inspection withdraw retained Draft art during fail
   assert.equal(app.element('inspect-draft-image').src, '');
   assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0);
 });
+
+test('batch previews and image usage accept real artwork ids with contract-only placement reads', async () => {
+  const data = artwork(); data.placements[0].slotId = uuid(980);
+  const app = harness({ selection: [node, { ...node, id: '98:4', name: 'Second layer' }], console: { placements: [placement], artwork: data, library: Object.values(assets) } });
+  await settle();
+  const first = app.element('send-items').children[0], view = first.children.find(item => item.className === 'send-row-visuals');
+  assert.ok(view.children[1].children[1].children[0].src, 'real wire shapes show the current Draft thumbnail');
+  assert.doesNotMatch(textOf(view), /not checked/);
+  descendants(first).find(item => item.getAttribute('aria-label') === `Inspect ${node.name}`).click(); await settle();
+  app.element('inspect-draft').click(); await settle(); assert.match(app.element('inspect-caption').textContent, /Draft artwork/);
+  app.element('inspect-close').click(); await openInsert(app); app.element('browse-images').click(); await settle();
+  tilesOf(app).find(tile => tile.getAttribute('data-asset-id') === baseArt).click(); openImageUsage(app); await settle();
+  assert.equal(app.element('image-usage-summary').textContent, 'Usage in current placements (1)');
+  assert.match(textOf(app.element('image-usage-list')), /hero.artwork.*Draft · Staging/s);
+  assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0);
+});

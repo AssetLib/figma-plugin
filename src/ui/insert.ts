@@ -1,5 +1,5 @@
 import { imageGuidance } from '../shared/image-guidance.js';
-import { imageUsage, usageContract } from '../shared/image-usage.js';
+import { imageUsage, sameUsagePlacement } from '../shared/image-usage.js';
 import { browseScope } from '../shared/browse-scope.js';
 import { parseBrowseResume } from '../shared/browse.js';
 import type { BrowseChoice, BrowseContext, BrowseResume } from '../shared/browse.js';
@@ -483,7 +483,7 @@ export function draftSnapshot(key: string, coordinate: CellCoordinate): { assetI
 export function sendPlacementPreview(key: string, coordinate: CellCoordinate, checked = false): { asset: LibraryAsset | null; caption: string; empty: boolean } {
   const placement = currentPlacement(key);
   const declared = state.placements.find(item => item.key === key);
-  if (checked && (usageStale || !state.placementsLoaded || !placement || !declared || usageContract(placement) !== usageContract(declared))) return {
+  if (checked && (usageStale || !state.placementsLoaded || !placement || !declared || !sameUsagePlacement(placement, declared))) return {
     asset: null, caption: quietLoading || state.ops.loadingList === 'placements' ? 'Checking Draft artwork…' : 'Draft artwork not checked', empty: false };
   const cell = placement && findCell(placement, coordinate);
   if (!cell || !artwork) return { asset: null, caption: 'Draft artwork not loaded', empty: false };

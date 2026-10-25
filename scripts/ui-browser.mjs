@@ -268,8 +268,10 @@ function installFakes(config) {
     // GET /api/token: the token's own organization and app, as the console answers it; without a token, 401 (as an
     // older console does, with CORS headers its missing connection routes lack: config.failures ['start']).
     if (route === 'token') return init.headers?.Authorization ? json(200, config.identity) : json(401, { error: 'Missing or invalid API token.' });
-    if (route === 'placements') return json(200, { placements: placements.map(({ cells, ...placement }) =>
-      ({ ...placement, ...(placementIds ? { slotId: placementIds[placement.key] } : {}) })) });
+    if (route === 'placements') return json(200, { placements: placements.map(({ cells, ...placement }) => {
+      if (config.contractOnlyCatalog) delete placement.slotId;
+      return { ...placement, ...(placementIds ? { slotId: placementIds[placement.key] } : {}) };
+    }) });
     if (route === 'artwork') return json(200, artwork);
     if (route === 'assets') {
       const params = new URLSearchParams(path.split('?')[1] ?? '');
@@ -4209,7 +4211,7 @@ for (const theme of ['light', 'dark']) test(`visual batch review pairs incoming 
   for (const width of [320, 420]) {
     const nodes = [{ id: '96:1', name: 'First banner artwork', type: 'FRAME', width: 390, height: 160 }, { id: '96:2', name: 'Other banner artwork', type: 'FRAME', width: 390, height: 160 }];
     const selection = { ...DEFAULTS.selection, reason: null, sendNodes: nodes.map(node => ({ node, reason: null, link: null, remembered: { fileKey: 'abc123', nodeId: node.id, placementKey: 'home.banner', state: null, appearance: null, arm: null, insertedFrom: null } })) };
-    const page = await openUi({ selection, inspection: true, preferences: { tab: 'send' } }, { width, height: 480, theme });
+    const page = await openUi({ selection, inspection: true, slotIds: true, contractOnlyCatalog: true, preferences: { tab: 'send' } }, { width, height: 480, theme });
     try {
       await page.waitFor(`document.querySelectorAll('.send-row-visuals').length===2 && document.querySelector('.send-row-visuals img').naturalWidth>0`);
       await page.evaluate(`document.getElementById('send-conflicts').open=false; document.getElementById('send-items').scrollIntoView({block:'start'})`);
@@ -4231,7 +4233,7 @@ for (const theme of ['light', 'dark']) test(`visual batch review pairs incoming 
 
 for (const theme of ['light', 'dark']) test(`image picker usage keeps environment scope, recovery and narrow layout (${theme})`, async () => {
   for (const width of [320, 420]) {
-    const page = await openUi({ imageUsage: true, images: 2, preferences: { browse: 'images' } }, { width, height: 480, theme });
+    const page = await openUi({ imageUsage: true, images: 2, slotIds: true, contractOnlyCatalog: true, preferences: { browse: 'images' } }, { width, height: 480, theme });
     try {
       await page.waitFor(`${tiles}===2`); await page.click('#image-grid [role=option]');
       await page.waitFor(`document.getElementById('image-usage-summary').textContent==='Usage in current placements (2)'`);
