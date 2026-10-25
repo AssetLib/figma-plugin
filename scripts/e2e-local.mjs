@@ -62,6 +62,7 @@ const pairing = { start: `${ORIGIN}/api/plugin-connections`, claim: `${ORIGIN}/a
   current: `${ORIGIN}/api/plugin-connections/current` };
 let inFlight = 0;
 async function consoleFetch(url, options = {}, request) {
+  if (base && url.startsWith(base)) request.route = routeOf(request);
   const auth = options.headers?.Authorization;
   const keyed = url === pairing.claim || url === pairing.cancel;
   const expected = url === pairing.start ? undefined : keyed ? keys.readKey && `Bearer ${keys.readKey}` : keys.token && `Bearer ${keys.token}`;
@@ -257,7 +258,7 @@ async function runToken() {
   assert.equal(imageFrame.getPluginData('assetlib.link.v1'), '');
   assert.equal(imageFrame.type, 'FRAME', 'a library image stays a frame');
   assert.equal(lastSelection().remembered, null);
-  assert.equal(el('sync').hidden, true);
+  assert.equal(el('selection-bar').hidden, true, 'an unlinked image hides the linked-artwork controls');
   ok(`Insert image "${pick.name}": ${imageFrame.width} × ${imageFrame.height} frame, not linked`);
 
   // 3b. Drag the placement from Draft onto the canvas: main makes a placeholder where it lands, which the download fills
@@ -341,8 +342,10 @@ async function runToken() {
   assert.deepEqual(base1.production, base0.production, 'production is unchanged');
   assert.deepEqual(after.environments, before.environments);
   if (after.environments.production) {
-    const tags = descendants(rowFor(PLACEMENT)).filter(item => /^tag( |$)/.test(item.className ?? '')).map(item => item.textContent);
-    assert.deepEqual(tags, [base1.production ? 'Changed in Draft' : 'New in Draft']);
+    const row = rowFor(PLACEMENT);
+    assert.match(row.title, base1.production ? /Draft differs from Production in 1 cell/ : /Draft has art that isn’t in Production yet/);
+    const tags = descendants(row).filter(item => /^tag( |$)/.test(item.className ?? '')).map(item => item.textContent);
+    assert.deepEqual(tags, ['1 behind'], 'the dropped copy still shows the preceding Draft image');
   }
   ok(`GET placements/artwork after Send: draft ${PLACEMENT} is ${created.id} via its own cell; staging and production unchanged`);
 
@@ -358,9 +361,9 @@ async function runToken() {
   ok(`GET the new asset's PNG rendition: 200, private, no-store, ${png.width} × ${png.height}, sha256 matches`);
 
   // 5. Previews arrived as data: URLs through the byte route.
-  const previews = [...descendants(el('insert-list')), ...descendants(el('image-grid'))].filter(item => item.tag === 'img' && item.src.startsWith('data:image/'));
-  assert.ok(previews.length > 0, 'at least one preview loaded');
-  ok(`${previews.length} previews loaded as data: URLs`);
+  const previews = () => [...descendants(el('insert-list')), ...descendants(el('image-grid'))].filter(item => item.tag === 'img' && item.src.startsWith('data:image/'));
+  await waitFor(() => previews().length > 0, { message: 'at least one preview loaded', timeout: 30000 });
+  ok(`${previews().length} previews loaded as data: URLs`);
 
   // 6. CORS, which Node's fetch does not enforce.
   for (const route of ['placements/artwork', 'assets', `assets/${created.id}/renditions/${png.sha256}`]) {
