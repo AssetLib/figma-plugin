@@ -271,10 +271,13 @@ export function fakeConsole(state) {
         const params = new URLSearchParams(path.split('?')[1] ?? '');
         const q = (params.get('q') ?? '').toLowerCase();
         const limit = Number(params.get('limit') ?? 24);
-        const matches = (state.library ?? []).filter(asset => !q || asset.name.toLowerCase().includes(q));
+        const checkpoint = params.get('until') ?? state.checkedAt ?? '2026-10-25T12:00:00.123456Z';
+        const matches = (state.library ?? []).filter(asset => (!q || asset.name.toLowerCase().includes(q))
+          && (!params.get('since') || (asset.createdAt ?? '2000-01-01T00:00:00.000000Z') > params.get('since'))
+          && (!params.get('until') || (asset.createdAt ?? '2000-01-01T00:00:00.000000Z') <= checkpoint));
         const start = params.get('cursor') ? matches.findIndex(asset => asset.id === params.get('cursor')) + 1 : 0;
         const page = matches.slice(start, start + limit);
-        return jsonResponse(200, { assets: page, nextCursor: start + limit < matches.length ? page.at(-1).id : null });
+        return jsonResponse(200, state.assetPage ?? { assets: page, nextCursor: start + limit < matches.length ? page.at(-1).id : null, ...(state.checkedAt === false ? {} : { checkedAt: checkpoint }) });
       }
       case 'rendition': {
         const [, assetId, sha] = /^assets\/([^/]+)\/renditions\/([^/]+)$/.exec(path);

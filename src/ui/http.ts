@@ -30,7 +30,7 @@ export type HttpOptions = {
   // GETs retry unless this is false; POSTs never retry.
   retry?: boolean;
   // A new request on a channel aborts the one before it (a list or search that has been replaced).
-  channel?: 'list' | 'artwork';
+  channel?: 'list' | 'artwork' | 'uploads';
   // For a download: the size the console listed. A 200 body is read as bytes, and one whose Content-Length is larger is refused unread.
   bytes?: number;
 };

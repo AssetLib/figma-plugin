@@ -494,7 +494,7 @@ test('artwork rejects illegal coordinates and inheritance, and drops an invalid 
 
 test('image pages parse assets and a uuid cursor, dropping invalid assets', () => {
   const page = parseAssetPage({ assets: [libraryAsset([item(1, 'image/png', 1200, 900)], { processingIntent: null }), { id: 'bad' }, libraryAsset([], { name: 42 })], nextCursor: assetId });
-  assert.deepEqual(page, { assets: [{ id: assetId, name: 'Coast', width: 1200, height: 900, processingIntent: null, renditions: [strip(item(1, 'image/png', 1200, 900))] }], nextCursor: assetId });
+  assert.deepEqual(page, { assets: [{ id: assetId, name: 'Coast', width: 1200, height: 900, processingIntent: null, renditions: [strip(item(1, 'image/png', 1200, 900))] }], nextCursor: assetId, unavailable: 2 });
   assert.deepEqual(parseAssetPage({ assets: [], nextCursor: null }), { assets: [], nextCursor: null });
   for (const value of [null, { assets: {} }, { assets: [], nextCursor: 'x' }, { assets: [] }]) assert.throws(() => parseAssetPage(value), /image list the plugin can’t read/);
 });
@@ -1239,4 +1239,18 @@ test('source library accepts icon intent while retaining supported rendition eli
   assert.equal(parseAssetPage({ assets: [{ ...icon, processingIntent: 'unknown' }], nextCursor: null }).assets.length, 0);
   const raster = parseAssetPage({ assets: [libraryAsset([item(1, 'image/png', 1200, 900)], { processingIntent: 'icon' })], nextCursor: null });
   assert.equal(insertRendition(raster.assets[0]).mime, 'image/png');
+});
+
+test('upload checkpoints preserve microseconds and refuse invalid boundaries without breaking older pages', () => {
+  const exact = '2026-10-25T12:00:00.123456Z';
+  assert.equal(parseAssetPage({ assets: [], nextCursor: null, checkedAt: exact }).checkedAt, exact);
+  const path = assetsPath({ limit: 24, since: exact, until: '2026-10-25T12:01:00.000001Z' });
+  assert.match(path, /since=2026-10-25T12%3A00%3A00.123456Z/);
+  assert.match(path, /until=2026-10-25T12%3A01%3A00.000001Z/);
+  assert.equal(parseAssetPage({ assets: [], nextCursor: null }).checkedAt, undefined);
+  for (const bad of ['2026-02-30T12:00:00Z', '2026-10-25T12:00:00.1234567Z', '2026-10-25T12:00:00+00:00', 'invalid']) {
+    assert.throws(() => assetsPath({ since: bad }));
+    assert.throws(() => parseAssetPage({ assets: [], nextCursor: null, checkedAt: bad }));
+  }
+  assert.equal(parseAssetPage({ assets: [{ invalid: true }], nextCursor: null, checkedAt: exact }).unavailable, 1);
 });

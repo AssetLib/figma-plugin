@@ -220,6 +220,7 @@ function installFakes(config) {
   if (config.slotIds) for (let i = 0; i < placements.length; i += 1) placements[i].slotId = uuid(30000 + i);
   // The separate placements response may have an ID before artwork does: it must not supply the bar's link.
   const placementIds = config.placementIds ? Object.fromEntries(placements.map((placement, i) => [placement.key, uuid(40000 + i)])) : null;
+  let checkpoint = '2026-10-25T12:00:00.123456Z';
   const library = Array.from({ length: config.images ?? 30 }, (_, i) => asset(i + 1, config.imageNames?.[i] ?? `Image ${i + 1}`, ...(config.imageSizes?.[i] ?? [400, 200])));
   if (config.imageUsage) {
     library[0].processingIntent = 'icon';
@@ -278,10 +279,12 @@ function installFakes(config) {
       const params = new URLSearchParams(path.split('?')[1] ?? '');
       const q = (params.get('q') ?? '').toLowerCase();
       const limit = Number(params.get('limit') ?? 24);
-      const matches = library.filter(item => !q || item.name.toLowerCase().includes(q));
+      const matches = library.filter(item => (!q || item.name.toLowerCase().includes(q))
+        && (!params.get('since') || (item.createdAt ?? '') > params.get('since'))
+        && (!params.get('until') || (item.createdAt ?? '') <= params.get('until')));
       const start = params.get('cursor') ? matches.findIndex(item => item.id === params.get('cursor')) + 1 : 0;
       const page = matches.slice(start, start + limit);
-      return json(200, { assets: page, nextCursor: start + limit < matches.length ? page.at(-1).id : null });
+      return json(200, { assets: page, nextCursor: start + limit < matches.length ? page.at(-1).id : null, ...(config.oldAssetApi ? {} : { checkedAt: params.get('until') ?? checkpoint }) });
     }
     if (route === 'rendition') {
       const body = bodies.get(path.split('/').at(-1));
@@ -505,7 +508,7 @@ function installFakes(config) {
   Object.defineProperty(window, 'parent', { configurable: true, get: () => fakeParent });
   // Tests may change `delays` mid-test; each request reads its route's delay when it starts.
   window.__harness = { log, received, notices, uuid, delays, targets, inserts, drops, insertDrops, resizes, saved, opened, artwork, exported, inserted: () => frames,
-    addImage: (n, name) => { const item = asset(n, name, 400, 200); library.unshift(item); return item.id; },
+    addImage: (n, name) => { const item = asset(n, name, 400, 200); checkpoint = new Date(Date.parse(checkpoint) + 1000).toISOString().replace('Z', '456Z'); item.createdAt = checkpoint; library.unshift(item); return item.id; },
     hold: route => { config.hold = [...new Set([...(config.hold ?? []), route])]; },
     release: route => { config.hold = config.hold?.filter(item => item !== route); const waiting = held.get(route); held.delete(route); for (const complete of waiting ?? []) complete(); },
     selectedNodes, fileEntries,
@@ -3976,7 +3979,7 @@ for (const theme of ['light', 'dark']) test(`console return checks preserve cont
       await page.click('#image-grid [role=option]'); await page.click('#shortlist-add');
       const selected = await page.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`);
       await page.click('#images-upload'); await page.waitFor(shown('images-return'));
-      assert.match(await page.evaluate(textOf('images-check-note')), /Search “Image 2” stays applied and may hide/);
+      assert.match(await page.evaluate(textOf('images-check-note')), /Checks all Images/);
       assert.equal(await page.evaluate(inViewport('images-check')), true);
       await page.evaluate(`__harness.addImage(9901, 'Image 2 uploaded'); __harness.hold('assets')`);
       const before = await page.evaluate(`__harness.log.filter(item => item.route === 'assets').length`);
@@ -3984,18 +3987,19 @@ for (const theme of ['light', 'dark']) test(`console return checks preserve cont
       assert.equal(await page.evaluate(tiles), 11);
       await page.click('#images-check');
       assert.equal(await page.evaluate(`__harness.log.filter(item => item.route === 'assets').length`), before + 1);
-      await page.evaluate(`__harness.release('assets')`); await page.waitFor(`${tiles} === 12`);
+      await page.evaluate(`__harness.release('assets')`); await page.waitFor(`document.getElementById('image-arrivals-list').children.length === 1`);
+      assert.equal(await page.evaluate(tiles), 11);
       assert.equal(await page.evaluate(valueOf('insert-search')), 'Image 2');
       assert.equal(await page.evaluate(`document.querySelector('#image-grid [aria-selected=true]').getAttribute('data-asset-id')`), selected);
       assert.equal(await page.evaluate(`document.getElementById('shortlist-names').children.length`), 1);
-      assert.match(await page.evaluate(textOf('status')), /Library checked. 12 images/);
+      assert.match(await page.evaluate(textOf('status')), /1 image loaded/);
       assert.equal(await page.focused(), 'images-check');
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
       const regions = await page.evaluate(`(() => { const b = id => { const r = document.getElementById(id).getBoundingClientRect(); return { top:r.top,bottom:r.bottom,height:r.height }; }; return { list:b('list-region'), footer:b('insert-bar'), check:b('images-check') }; })()`);
       assert.ok(regions.list.height > 40 && regions.check.bottom <= regions.list.top && regions.list.bottom <= regions.footer.top + 1, 'return controls leave a usable list and do not overlap the footer');
       if (shots) await page.screenshot(join(shots, `return-images-${theme}-${width}.png`));
       await page.evaluate(`__harness.setStatus('assets', 503)`); await page.click('#images-check'); await page.waitFor(shown('error-box'));
-      assert.equal(await page.evaluate(tiles), 12); assert.equal(await page.evaluate(valueOf('insert-search')), 'Image 2');
+      assert.equal(await page.evaluate(tiles), 11); assert.equal(await page.evaluate(valueOf('insert-search')), 'Image 2');
       assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.log.some(item => item.route === 'drafts')`), false);
     } finally { await page.close(); }
 
@@ -4257,4 +4261,109 @@ for (const theme of ['light', 'dark']) test(`image picker usage keeps environmen
       assert.equal(await page.evaluate(`document.getElementById('image-usage').open`), false);
     } finally { await page.close(); }
   }
+});
+
+for (const theme of ['light', 'dark']) test(`batch filters keep counted views, focus and Send scope at narrow widths (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const nodes = [
+      { id: '97:1', name: 'Banner artwork', type: 'FRAME', width: 390, height: 160 },
+      { id: '97:2', name: 'Tile artwork', type: 'FRAME', width: 180, height: 180 },
+      { id: '97:3', name: 'Unassigned artwork', type: 'FRAME', width: 390, height: 160 },
+    ];
+    const selection = { ...DEFAULTS.selection, reason: null, sendNodes: nodes.map((node, index) => ({ node, reason: null, link: null,
+      remembered: index < 2 ? { fileKey: 'abc123', nodeId: node.id, placementKey: index ? 'home.tile' : 'home.banner', state: null, appearance: null, arm: null, insertedFrom: null } : null })) };
+    const page = await openUi({ selection, hold: ['drafts'], preferences: { tab: 'send' } }, { width, height: 480, theme });
+    const row = id => `#send-items [data-node-id="${id}"]`;
+    try {
+      await page.waitFor(`${textOf('send-filter-ready')} === 'Ready (2)' && ${textOf('send-attention')} === 'Needs attention (1)'`);
+      assert.equal(await page.evaluate(textOf('send-filter-all')), 'All (3)');
+      await page.click('#send-filter-all'); await page.press('ArrowRight');
+      assert.equal(await page.evaluate(`document.activeElement.id`), 'send-attention');
+      assert.equal(await page.evaluate(`document.querySelectorAll('#send-batch-filters [tabindex="0"]').length`), 1);
+      assert.equal(await page.evaluate(`document.querySelectorAll('#send-items .send-row').length`), 1);
+      await page.click('#send-filter-ready');
+      assert.equal(await page.evaluate(`document.querySelectorAll('#send-items .send-row').length`), 2);
+      assert.equal(await page.evaluate(`document.getElementById('send').getAttribute('aria-disabled')`), 'true', 'hidden included problems still block Send');
+      assert.equal(await page.evaluate(valueOf('placement')), 'home.banner', 'filters retain the active destination');
+      assert.equal(await page.evaluate(`__harness.received.includes('save-send-choice') || __harness.received.includes('export')`), false);
+      const bounds = await page.evaluate(`Array.from(document.querySelectorAll('#send-batch-filters button')).map(button => { const b=button.getBoundingClientRect(); return {left:b.left,right:b.right,top:b.top}; })`);
+      assert.ok(bounds.every(b => b.left >= 0 && b.right <= width), 'every counted filter stays inside the narrow viewport');
+      assert.ok(new Set(bounds.map(b => Math.round(b.top))).size > 1, 'the compact filters wrap instead of overflowing');
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight`), true);
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `batch-filters-${theme}-${width}.png`)); }
+      await page.click('#send-next-issue');
+      assert.equal(await page.evaluate(`document.getElementById('send-attention').getAttribute('aria-checked')`), 'true');
+      assert.equal(await page.evaluate(`document.activeElement.closest('.send-row')?.getAttribute('data-node-id')`), '97:3');
+      await page.click(`${row('97:3')} .send-row-actions button`);
+      assert.equal(await page.evaluate(`document.activeElement.id`), 'send-attention', 'a newly filtered-out focused row hands focus to its filter');
+      assert.equal(await page.evaluate(shown('send-filter-empty')), true);
+      await page.click('#send-show-all');
+      assert.equal(await page.evaluate(`document.activeElement.id`), 'send-filter-all');
+      assert.equal(await page.evaluate(`document.querySelectorAll('#send-items .send-row').length`), 3);
+      await page.click('#send-filter-skipped');
+      assert.equal(await page.evaluate(`document.querySelector('#send-items .send-row').getAttribute('data-node-id')`), '97:3');
+      assert.equal(await page.evaluate(textOf('send')), 'Send 2 layers to draft');
+      await page.click('#send'); await page.waitFor(`__harness.log.some(item=>item.route==='drafts')`);
+      await page.click('#send-filter-sent');
+      assert.equal(await page.evaluate(shown('send-filter-empty')), true);
+      assert.equal(await page.evaluate(textOf('send-filter-ready')), 'Ready (1)');
+      await page.evaluate(`__harness.release('drafts')`);
+      await page.waitFor(`${textOf('send-filter-sent')} === 'Sent (2)'`);
+      assert.equal(await page.evaluate(`document.querySelectorAll('#send-items [data-state="sent"]').length`), 2);
+      assert.equal(await page.evaluate(`__harness.log.filter(item=>item.route==='drafts').length`), 2);
+      assert.equal(await page.evaluate(textOf('send-filter-skipped')), 'Skipped (1)');
+      assert.equal(await page.evaluate(shown('send-filter-empty')), false);
+    } finally { await page.close(); }
+  }
+});
+
+for (const theme of ['light', 'dark']) test(`upload arrivals show named independent previews and explicit selection with pinned paging (${theme})`, async () => {
+  const shots = process.env.ASSETLIB_SCREENSHOTS;
+  if (shots) await mkdir(shots, { recursive: true });
+  for (const width of [320, 420]) {
+    const page = await openUi({ preferences: { browse: 'images' } }, { width, height: 720, theme });
+    try {
+      await page.waitFor(`${tiles} === 24`);
+      await page.click('#insert-search'); await page.type('Image 2'); await page.waitFor(`${tiles} === 11`);
+      await page.click('#image-grid [role=option]');
+      const selected = await page.evaluate(textOf('insert-title'));
+      await page.click('#images-upload'); await page.waitFor(`__harness.opened.length === 1`);
+      await page.evaluate(`for(let i=0;i<26;i++) __harness.addImage(11000+i, i===25 ? '<img src=x onerror=alert(1)> Arrival outside search' : 'Upload '+i)`);
+      await page.click('#images-check'); await page.waitFor(`document.getElementById('image-arrivals-list').children.length === 24`);
+      assert.equal(await page.evaluate(tiles), 11); assert.equal(await page.evaluate(valueOf('insert-search')), 'Image 2');
+      assert.equal(await page.evaluate(textOf('insert-title')), selected);
+      assert.equal(await page.evaluate(`document.querySelectorAll('#image-arrivals-list img').length`), 24, 'names never become markup');
+      const first = await page.evaluate(`__harness.log.filter(item=>item.route==='assets').at(-1).url`);
+      assert.equal(new URL(first).searchParams.get('q'), null);
+      assert.equal(new URL(first).searchParams.get('since'), '2026-10-25T12:00:00.123456Z');
+      await page.waitFor(`document.querySelector('#image-arrivals-list img')?.naturalWidth > 0`);
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.scrollingElement.scrollHeight <= innerHeight`), true);
+      const boxes = await page.evaluate(`(() => { const list=document.getElementById('image-arrivals-list').getBoundingClientRect(), row=document.querySelector('.upload-row').getBoundingClientRect(), button=document.querySelector('.upload-row button').getBoundingClientRect(); return {height:list.height,rowWidth:row.width,buttonRight:button.right,listRight:list.right}; })()`);
+      assert.ok(boxes.height <= 161 && boxes.buttonRight <= boxes.listRight + 1 && boxes.rowWidth <= width);
+      if (shots) await page.screenshot(join(shots, `upload-arrivals-${theme}-${width}.png`));
+      await page.click('#image-arrivals-more'); await page.waitFor(`document.getElementById('image-arrivals-list').children.length === 26`);
+      const next = await page.evaluate(`__harness.log.filter(item=>item.route==='assets').at(-1).url`);
+      assert.equal(new URL(next).searchParams.get('until'), '2026-10-25T12:00:26.123456Z');
+      assert.equal(await page.evaluate(shown('image-arrivals-more')), false);
+      assert.equal(await page.focused(), 'images-check', 'final-page paging returns focus to the check control');
+      await page.click('#image-arrivals-list button');
+      await page.waitFor(`${textOf('insert-title')}.includes('Arrival outside search')`);
+      assert.equal(await page.evaluate(valueOf('insert-search')), 'Image 2'); assert.equal(await page.evaluate(tiles), 11);
+      assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.log.some(item=>item.route==='drafts')`), false);
+    } finally { await page.close(); }
+  }
+});
+
+test('upload arrivals older API opens uploads with an unavailable check and never reports zero', async () => {
+  const page = await openUi({ oldAssetApi: true, preferences: { browse: 'images' } });
+  try {
+    await page.waitFor(`${tiles} === 24`); await page.click('#images-upload'); await page.waitFor(`__harness.opened.length === 1`);
+    assert.match(await page.evaluate(textOf('images-check-note')), /can’t be identified/);
+    assert.equal(await page.evaluate(`document.getElementById('images-check').getAttribute('aria-disabled')`), 'true');
+    const reads = await page.evaluate(`__harness.log.filter(item=>item.route==='assets').length`);
+    await page.click('#images-check'); await page.frames();
+    assert.equal(await page.evaluate(`__harness.log.filter(item=>item.route==='assets').length`), reads);
+    assert.equal(await page.evaluate(shown('image-arrivals')), false);
+    assert.doesNotMatch(await page.evaluate(textOf('status')), /No images|0 image/);
+  } finally { await page.close(); }
 });

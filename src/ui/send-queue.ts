@@ -5,7 +5,7 @@ import { aspectMismatch, aspectRatioDifference, buildDraftBody, bytesToBase64, c
 import type { CellBinding, Connection, DraftResult, Placement } from '../shared/index.js';
 import { CONNECTION_REPLACED } from '../shared/protocol.js';
 import type { MainMessage, SelectionState, SendNode } from '../shared/protocol.js';
-import { bindConsoleLink, clearError, element, errorText, post, reloadConnection, scheduleRender, setStatus, setUnavailable, showError, toast } from './dom.js';
+import { arrowKeys, bindConsoleLink, clearError, element, errorText, flushRender, post, reloadConnection, rovingStops, scheduleRender, setStatus, setUnavailable, showError, toast } from './dom.js';
 import { send } from './http.js';
 import { actionsBlocked, hasCurrentSelection, nextRequestId, state } from './state.js';
 
@@ -15,6 +15,10 @@ export type SendRow = SendNode & { target: CellBinding | null; included: boolean
 type Run = { rows: SendRow[]; connection: Connection; generation: number; fileKey: string; selectionIds: string[]; stopped: boolean; index: number; impacts: Map<SendRow, string | null> };
 type Operation = { id: number; run: Run; row: SendRow; placement: Placement; bind: CellBinding; uploaded: boolean; result?: DraftResult };
 let rows: SendRow[] = [];
+const filters = ['all', 'attention', 'ready', 'sent', 'skipped'] as const;
+type Filter = typeof filters[number];
+let filter: Filter = 'all';
+const filterButton = (value: Filter) => element<HTMLButtonElement>(value === 'attention' ? 'send-attention' : `send-filter-${value}`);
 let activeId: string | null = null;
 let run: Run | null = null;
 let pending: Operation | null = null;
@@ -34,12 +38,16 @@ let snapshot: (key: string, cell: CellBinding) => { assetId: string | null } | n
 
 export function initQueue(actions: { choose: () => void; needFile: () => void; setupReady: () => boolean; artworkChanged: () => void; refused: (text?: string) => void; reconnect: () => void; reviewArtwork: typeof reviewArtwork; beginArtworkRead: () => number; snapshot: typeof snapshot; impactSnapshot: typeof impactSnapshot }): void {
   ({ choose, needFile, setupReady, artworkChanged, refused, reconnect, reviewArtwork, beginArtworkRead, snapshot, impactSnapshot } = actions);
+  for (const value of filters) filterButton(value).addEventListener('click', () => { filter = value; scheduleRender(); });
+  arrowKeys(element('send-batch-filters'), filters.map(filterButton), 'radios');
+  element('send-show-all').addEventListener('click', () => { filter = 'all'; filterButton('all').focus(); scheduleRender(); });
   element('send-next-issue').addEventListener('click', () => {
     if (actionsBlocked()) return;
     const start = rows.findIndex(row => row.node.id === activeId);
     const next = [...rows.slice(start + 1), ...rows.slice(0, start + 1)].find(needsAttention);
     if (!next) return;
-    activeId = next.node.id; choose(); scheduleRender();
+    if (!matchesFilter(next, filter)) filter = 'attention';
+    activeId = next.node.id; choose(); scheduleRender(); flushRender();
     const view = rowElements.get(next.node.id);
     view?.name.focus(); view?.root.scrollIntoView({ block: 'nearest' });
     setStatus(`${next.node.name}: ${problem(next) ?? next.saveError ?? next.detail}`);
@@ -107,6 +115,7 @@ export function queueSelection(selection: SelectionState): void {
     return;
   }
   const same = nextKey === selectionKey || (selectionKey === JSON.stringify([null, [...(selection.selectionIds ?? (selection.node ? [selection.node.id] : []))].sort()]));
+  if (!same) filter = 'all';
   const previous = new Map(rows.map(row => [row.node.id, row]));
   rows = selectionRows(selection).map(item => {
     const old = same ? previous.get(item.node.id) : undefined;
@@ -129,7 +138,7 @@ export function queueSelection(selection: SelectionState): void {
 }
 export function resetQueue(): void {
   if (run) run.stopped = true;
-  pending = null; run = null; rows = []; activeId = null; selectionKey = ''; latest = null; generation = null;
+  pending = null; run = null; rows = []; activeId = null; selectionKey = ''; latest = null; generation = null; filter = 'all';
   rowElements.clear(); state.ops.sending = false; state.ops.syncing = false;
 }
 function saveChoice(row: SendRow): void {
@@ -178,6 +187,12 @@ function candidates(): SendRow[] {
 function needsAttention(row: SendRow): boolean {
   return row.included && Boolean(problem(row) || row.saveError || ['conflict', 'impact', 'failed', 'partial', 'unknown'].includes(row.status));
 }
+function matchesFilter(row: SendRow, value: Filter): boolean {
+  if (value === 'all') return true;
+  if (value === 'skipped') return !row.included;
+  if (value === 'attention') return needsAttention(row);
+  return row.included && row.status === value && (value !== 'ready' || (!needsAttention(row) && row.saving === undefined));
+}
 export function queueAvailable(): boolean {
   return Boolean(state.connection && hasCurrentSelection() && setupReady() && !actionsBlocked() && !state.tokenRefused && !state.selection.truncated
     && !rows.some(row => row.included && (problem(row) || row.saving !== undefined)) && candidates().length);
@@ -222,10 +237,16 @@ async function retryReview(row: SendRow): Promise<void> {
 }
 export function renderQueue(): void {
   const list = element('send-items');
+  if (rows.length < 2) filter = 'all';
   list.hidden = !rows.length;
   const issues = rows.filter(needsAttention).length;
   element('send-attention-bar').hidden = rows.length < 2;
-  element('send-attention').textContent = `Needs attention (${issues})`;
+  for (const value of filters) {
+    const control = filterButton(value);
+    control.textContent = `${value === 'attention' ? 'Needs attention' : value[0]!.toUpperCase() + value.slice(1)} (${rows.filter(row => matchesFilter(row, value)).length})`;
+    control.setAttribute('aria-checked', String(value === filter));
+  }
+  rovingStops(filters.map(filterButton));
   element('send-next-issue').hidden = !issues;
   setUnavailable(element('send-next-issue'), actionsBlocked());
   for (const row of rows) {
@@ -260,7 +281,9 @@ export function renderQueue(): void {
     bindConsoleLink(view.console, state.connection ? consoleLink(state.connection, row.assetId ? 'images' : 'releases', validUuid(row.assetId) ? row.assetId : undefined) : null);
     for (const control of [view.name, view.skip, view.retry, view.review]) setUnavailable(control, actionsBlocked());
   }
-  const nodes = rows.map(row => rowElements.get(row.node.id)!.root);
+  const nodes = rows.filter(row => matchesFilter(row, filter)).map(row => rowElements.get(row.node.id)!.root);
+  element('send-filter-empty').hidden = !rows.length || Boolean(nodes.length);
+  if (list.contains(document.activeElement) && !nodes.some(node => node.contains(document.activeElement))) filterButton(filter).focus({ preventScroll: true });
   if (nodes.length !== list.children.length || nodes.some((node, index) => list.children[index] !== node)) list.replaceChildren(...nodes);
   const row = activeSendRow();
   const review = element('send-review');

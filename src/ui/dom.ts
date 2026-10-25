@@ -16,15 +16,19 @@ export function renderConsoleLink(id: string, section: ConsoleSection | null): v
 }
 
 let consolePage: { id: number; generation: number } | null = null;
+let imagesHandoff: (() => Promise<boolean>) | null = null;
+export function onImagesHandoff(prepare: () => Promise<boolean>): void { imagesHandoff = prepare; }
 /** Keep a normal link, but open through Figma: iframe popup navigation is not reliable on every host. */
 export function bindConsoleLink(link: HTMLAnchorElement, url: string | null): void {
   const generation = state.connectionGeneration;
   if (url && generation !== null && !state.connectionChanging && isConsoleLink(url, state.connection)) link.setAttribute('href', url);
   else link.removeAttribute('href');
-  link.onclick = event => {
+  link.onclick = async event => {
     event.preventDefault();
     if (generation === null || generation !== state.connectionGeneration || state.connectionChanging
       || link.getAttribute('href') !== url || !isConsoleLink(url, state.connection)) return;
+    if (url === consoleLink(state.connection!, 'images') && imagesHandoff && !await imagesHandoff()) return;
+    if (generation !== state.connectionGeneration || state.connectionChanging || link.getAttribute('href') !== url) return;
     consolePage = { id: nextRequestId(), generation };
     if (url === consoleLink(state.connection!, 'images')) { state.imagesOpened = generation; scheduleRender(); }
     post({ type: 'open-console-page', requestId: consolePage.id, connectionGeneration: generation, url });

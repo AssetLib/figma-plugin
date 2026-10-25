@@ -2,7 +2,7 @@ import type {
   Appearance, ArtworkCell, ArtworkResponse, AssetPage, CanvasTarget, CellArtwork, Connection, EnvironmentName, InsertLink,
   LibraryAsset, Placement, PlacementArtwork, Preferences, RenditionInfo, StoredLink,
 } from './types.js';
-import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN } from './connection.js';
+import { LEGACY_PRODUCTION_ORIGIN, PRODUCTION_ORIGIN, validCheckpoint } from './connection.js';
 import { ratioName } from './export.js';
 import { parsePlacements } from './placements.js';
 import { boundedString, isRecord, validArm, validNodeId, validPlacementKey, validSha256, validState, validUuid } from './validation.js';
@@ -64,7 +64,10 @@ export function parseAssetPage(value: unknown): AssetPage {
   if (!isRecord(value) || !Array.isArray(value.assets) || (value.nextCursor !== null && !validUuid(value.nextCursor))) {
     throw new Error('The console sent an image list the plugin can’t read. Refresh and try again.');
   }
-  return { assets: value.assets.map(parseLibraryAsset).filter((item): item is LibraryAsset => item !== null), nextCursor: value.nextCursor };
+  if (value.checkedAt !== undefined && !validCheckpoint(value.checkedAt)) throw new Error('The console sent an upload check the plugin can’t read. Try again.');
+  const assets = value.assets.map(parseLibraryAsset).filter((item): item is LibraryAsset => item !== null);
+  const unavailable = value.assets.length - assets.length;
+  return { assets, nextCursor: value.nextCursor, ...(value.checkedAt === undefined ? {} : { checkedAt: value.checkedAt }), ...(unavailable ? { unavailable } : {}) };
 }
 
 function parsePublished(value: unknown): ArtworkResponse['environments']['staging'] {

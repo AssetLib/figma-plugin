@@ -8771,20 +8771,22 @@ test('return check reads uploaded images once and keeps query, selection and sho
   tilesOf(app)[0].click(); await settle();
   app.element('images-upload').click(); await settle();
   assert.equal(app.element('images-return').hidden, false);
-  assert.match(app.element('images-check-note').textContent, /Search “Coast” stays applied and may hide/);
+  assert.match(app.element('images-check-note').textContent, /Checks all Images/);
   const gate = deferred(); app.console.gates.assets = gate;
   const before = app.requests.filter(r => r.route === 'assets').length;
   app.element('images-check').click(); app.element('images-check').click(); await settle();
   assert.equal(app.requests.filter(r => r.route === 'assets').length, before + 1);
   assert.equal(app.element('images-check').textContent, 'Checking…');
   assert.equal(tilesOf(app).length, 2, 'old results stay visible while checking');
-  const added = libraryAsset(414, 'Coast sunset', 400, 200); app.console.library.unshift(added.asset);
+  const added = libraryAsset(414, 'Outside search sunset', 400, 200); added.asset.createdAt = '2026-10-25T12:00:01.123456Z'; app.console.checkedAt = added.asset.createdAt; app.console.library.unshift(added.asset);
   delete app.console.gates.assets; gate.resolve(); await settle();
-  assert.equal(tilesOf(app).length, 3);
+  assert.equal(tilesOf(app).length, 2);
+  assert.equal(app.element('image-arrivals-list').children.length, 1);
+  assert.match(textOf(app.element('image-arrivals-list')), /Outside search sunset/);
   assert.equal(app.element('insert-search').value, 'Coast');
   assert.equal(tilesOf(app).find(t => t.getAttribute('aria-selected') === 'true').getAttribute('data-asset-id'), entries[0].asset.id);
   assert.equal(app.element('shortlist-names').children.length, 2);
-  assert.match(app.element('status').textContent, /Library checked. 3 images matching your search available/);
+  assert.match(app.element('status').textContent, /1 image loaded/);
   assert.equal(app.insertMessages().length, 0); assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0);
 });
 
@@ -8792,17 +8794,20 @@ test('return check preserves an off-page image selection and failed checks keep 
   const entry = libraryAsset(430, 'Original choice', 400, 200);
   const app = harness({ console: library([entry]), prefs: { tab: 'insert', browse: 'images' } }); await settle();
   tilesOf(app)[0].click(); app.element('images-upload').click(); await settle();
-  app.console.library.unshift(...Array.from({ length: 25 }, (_, i) => libraryAsset(440 + i, `Recent ${i}`, 400, 200).asset));
+  app.console.checkedAt = '2026-10-25T12:00:01.123456Z';
+  app.console.library.unshift(...Array.from({ length: 25 }, (_, i) => ({...libraryAsset(440 + i, `Recent ${i}`, 400, 200).asset, createdAt: app.console.checkedAt})));
   app.element('images-check').click(); await settle();
-  assert.equal(tilesOf(app).length, 24);
+  assert.equal(tilesOf(app).length, 1);
+  assert.equal(app.element('image-arrivals-list').children.length, 24);
   assert.equal(app.element('insert-title').textContent, 'Original choice');
   assert.equal(app.element('insert-bar').hidden, false);
-  assert.match(app.element('status').textContent, /more available.*selected image is kept outside/);
+  assert.match(app.element('status').textContent, /24 images loaded.*More may be available/);
   const before = app.requests.filter(r => r.route === 'assets').length;
   app.console.statuses.assets = 503;
   app.element('images-check').click(); await settle(); app.fireTimers(5000); await settle();
   assert.equal(app.requests.filter(r => r.route === 'assets').length, before + 1, 'no background retry');
-  assert.equal(tilesOf(app).length, 24);
+  assert.equal(tilesOf(app).length, 1);
+  assert.equal(app.element('image-arrivals-list').children.length, 24);
   assert.equal(app.element('insert-title').textContent, 'Original choice');
   assert.match(app.element('error').textContent, /try again/i);
 });
@@ -9444,4 +9449,267 @@ test('icon asset descriptors remain visible and keep scoped usage complete witho
   const svg = harness({ console: { library: [onlySvg] } }); await openInsert(svg); svg.element('browse-images').click(); await settle();
   tilesOf(svg)[0].click(); await settle(); assert.equal(off(svg, 'insert'), true); svg.element('insert').click(); await settle();
   assert.equal(svg.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+
+// Batch filters change the view, never the reviewed Send queue.
+function batchFilterApp(extra = {}) {
+  const second = { ...node, id: '12:35', name: 'Second artwork' };
+  return harness({ selection: [node, second], storage: [[storageKey(connection, second.id), { ...rememberedB, nodeId: second.id }]],
+    ...extra, console: { draft: boundDraft, ...extra.console } });
+}
+const batchRows = app => app.element('send-items').children;
+const batchAction = (row, label) => descendants(row).find(item => item.tagName === 'BUTTON' && item.textContent === label);
+
+test('batch filters keep hidden included layers in validation and the explicit Send total', async () => {
+  const third = { ...node, id: '12:36', name: 'Unassigned artwork' };
+  const app = batchFilterApp({ selection: [node, { ...node, id: '12:35', name: 'Second artwork' }, third] }); await settle();
+  assert.equal(app.element('send-filter-all').textContent, 'All (3)');
+  assert.equal(app.element('send-filter-ready').textContent, 'Ready (2)');
+  assert.equal(app.element('send-attention').textContent, 'Needs attention (1)');
+  const before = app.uiMessages.filter(item => item.type === 'save-send-choice').length;
+  app.element('send-filter-ready').click(); await settle();
+  assert.equal(batchRows(app).length, 2); assert.equal(off(app, 'send'), true, 'a hidden unassigned included layer still blocks Send');
+  app.element('send').click(); await settle(); assert.equal(app.drafts().length, 0);
+  app.element('send-filter-all').click(); await settle(); batchAction(batchRows(app)[2], 'Skip').click(); await settle();
+  app.element('send-filter-skipped').click(); await settle();
+  assert.equal(batchRows(app).length, 1); assert.equal(batchRows(app)[0].getAttribute('data-node-id'), third.id);
+  assert.equal(app.element('send').textContent, 'Send 2 layers to draft');
+  assert.equal(app.element('send-filter-ready').textContent, 'Ready (2)');
+  assert.equal(app.uiMessages.filter(item => item.type === 'save-send-choice').length, before, 'view filters never save destinations');
+  app.element('send').click(); await settle();
+  assert.equal(app.drafts().length, 2, 'explicit Send includes the two reviewed rows hidden by Skipped');
+  assert.equal(app.element('send-filter-sent').textContent, 'Sent (2)');
+  assert.equal(app.element('send-filter-skipped').textContent, 'Skipped (1)');
+  assert.equal(batchRows(app)[0].getAttribute('data-node-id'), third.id);
+  assert.deepEqual(app.drafts().map(item => item.body.bind), [
+    { slotKey: placement.key, state: 'old', appearance: 'light', arm: 'b' },
+    { slotKey: placement.key, state: 'new', appearance: 'dark', arm: 'c' },
+  ]);
+});
+
+test('batch filters update late sending receipts without treating in-flight rows as Ready or Sent', async () => {
+  const hold = deferred(); const app = batchFilterApp({ console: { gates: { drafts: hold } } }); await settle();
+  app.element('send').click(); await settle();
+  assert.equal(app.element('send-filter-ready').textContent, 'Ready (1)');
+  assert.equal(app.element('send-filter-sent').textContent, 'Sent (0)');
+  app.element('send-filter-sent').click(); await settle();
+  assert.equal(batchRows(app).length, 0); assert.equal(app.element('send-filter-empty').hidden, false);
+  hold.resolve(); await settle();
+  assert.equal(app.element('send-filter-sent').textContent, 'Sent (2)');
+  assert.equal(app.element('send-filter-ready').textContent, 'Ready (0)');
+  assert.equal(batchRows(app).length, 2); assert.equal(app.element('send-filter-empty').hidden, true);
+  assert.equal(app.drafts().length, 2);
+});
+
+test('batch filters retain failed, uncertain, partial and conflicted outcomes under Needs attention', async () => {
+  for (const console of [
+    { statuses: { drafts: 400 } },
+    { statuses: { drafts: 500 } },
+    { draft: body => ({ ...boundDraft(body), bound: null, bindError: 'Placement changed.' }) },
+    { statuses: { drafts: 409 }, codes: { drafts: 'draft_changed' } },
+  ]) {
+    const app = batchFilterApp({ console }); await settle(); app.element('send').click(); await settle();
+    assert.equal(app.element('send-attention').textContent, 'Needs attention (2)');
+    assert.equal(app.element('send-filter-ready').textContent, 'Ready (0)');
+    assert.equal(app.element('send-filter-sent').textContent, 'Sent (0)');
+    const writes = app.drafts().length;
+    app.element('send-attention').click(); await settle(); assert.equal(batchRows(app).length, 2);
+    app.element('send-filter-ready').click(); await settle(); assert.equal(batchRows(app).length, 0);
+    assert.equal(app.drafts().length, writes, 'filtering does not retry an outcome');
+  }
+});
+
+test('batch filters release hidden previews and preserve focus, active choice and Next issue recovery', async () => {
+  const app = batchFilterApp(); await settle();
+  const originalChoice = app.element('state').value;
+  app.element('send-filter-ready').click(); await settle();
+  const first = batchRows(app)[0]; const observer = [...app.observers].find(item => item.options.root === app.element('send-items'));
+  const hiddenDraft = descendants(first).find(item => item.tagName === 'IMG' && item.alt === 'Current Draft');
+  assert.ok(observer.targets.has(hiddenDraft));
+  const skip = batchAction(first, 'Skip'); skip.focus(); skip.click(); await settle();
+  assert.equal(app.activeElement(), app.element('send-filter-ready'));
+  assert.equal(observer.targets.has(hiddenDraft), false, 'detaching a filtered row releases its preview observer');
+  assert.equal(app.element('state').value, originalChoice, 'filtering does not redirect the active destination editor');
+  app.element('send-filter-sent').click(); await settle(); assert.equal(app.element('send-filter-empty').hidden, false);
+  app.element('send-show-all').click(); await settle();
+  assert.equal(batchRows(app).length, 2); assert.equal(app.activeElement(), app.element('send-filter-all'));
+  const missing = harness({ selection: [node, { ...node, id: '12:35', name: 'Unassigned artwork' }] }); await settle();
+  missing.element('send-filter-ready').click(); await settle(); assert.equal(batchRows(missing).length, 1);
+  missing.element('send-next-issue').click(); await settle();
+  assert.equal(missing.element('send-attention').getAttribute('aria-checked'), 'true');
+  assert.equal(batchRows(missing)[0].getAttribute('data-node-id'), '12:35');
+  assert.equal(missing.activeElement(), batchAction(batchRows(missing)[0], 'Unassigned artwork'));
+  assert.equal(missing.element('placement').value, '');
+  assert.equal(missing.drafts().length, 0); assert.equal(app.drafts().length, 0);
+});
+
+test('batch filters reset for a new selection and use one roving keyboard stop', async () => {
+  const app = batchFilterApp(); await settle();
+  const group = app.element('send-batch-filters');
+  group.dispatch('keydown', { key: 'ArrowRight', target: app.element('send-filter-all') }); await settle();
+  assert.equal(app.element('send-attention').getAttribute('aria-checked'), 'true');
+  assert.equal(app.activeElement(), app.element('send-attention'));
+  assert.equal(['send-filter-all', 'send-attention', 'send-filter-ready', 'send-filter-sent', 'send-filter-skipped'].filter(id => app.element(id).getAttribute('tabindex') === '0').length, 1);
+  app.select([app.figma.currentPage.selection[0]]); await settle();
+  assert.equal(app.element('send-attention-bar').hidden, true); assert.equal(batchRows(app).length, 1);
+  assert.equal(app.element('send-filter-all').getAttribute('aria-checked'), 'true');
+});
+
+const uploadRows = app => app.element('image-arrivals-list').children;
+const uploadButtons = app => descendants(app.element('image-arrivals-list')).filter(item => item.tagName === 'BUTTON');
+const uploadTime = '2026-10-25T12:00:00.123456Z';
+function addUpload(app, n, name = `Added ${n}`, extra = {}) {
+  const entry = libraryAsset(n, name, 400, 200);
+  Object.assign(entry.asset, { createdAt: '2026-10-25T12:00:01.123456Z' }, extra);
+  app.console.checkedAt = entry.asset.createdAt;
+  app.console.library.unshift(entry.asset); app.console.renditions.push(...entry.served);
+  return entry;
+}
+
+test('upload arrivals pin an exact baseline, page explicitly and keep unreviewed images on recheck', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  app.element('images-upload').click(); await settle();
+  assert.equal(new URL(app.requests.filter(r => r.route === 'assets').at(-1).url).search, '?limit=1');
+  for (let i = 0; i < 26; i++) addUpload(app, 7000 + i);
+  app.element('images-check').click(); await settle();
+  assert.equal(uploadRows(app).length, 24); assert.equal(app.element('image-arrivals-more').hidden, false);
+  let params = new URL(app.requests.filter(r => r.route === 'assets').at(-1).url).searchParams;
+  assert.equal(params.get('since'), uploadTime); assert.equal(params.get('q'), null);
+  const until = app.console.checkedAt;
+  addUpload(app, 7100, 'After checkpoint', { createdAt: '2026-10-25T12:00:02.654321Z' });
+  app.element('image-arrivals-more').click(); await settle();
+  params = new URL(app.requests.filter(r => r.route === 'assets').at(-1).url).searchParams;
+  assert.equal(params.get('until'), until); assert.equal(params.get('since'), uploadTime);
+  assert.equal(uploadRows(app).length, 26); assert.equal(app.element('image-arrivals-more').hidden, true);
+  app.element('images-check').click(); await settle();
+  assert.equal(uploadRows(app).length, 27, 'the prior second page remains reviewable');
+  assert.match(textOf(app.element('image-arrivals-list')), /After checkpoint/);
+  assert.equal(new URL(app.requests.filter(r => r.route === 'assets').at(-1).url).searchParams.get('since'), uploadTime);
+  const oldButton = uploadButtons(app)[0];
+  app.element('images-upload').click(); await settle();
+  oldButton.click(); await settle(); assert.equal(app.element('insert-bar').hidden, true, 'old session buttons cannot select');
+  assert.equal(app.element('image-arrivals').hidden, true);
+  app.element('images-check').click(); await settle();
+  assert.match(app.element('status').textContent, /No images added in this check/);
+});
+
+test('upload arrivals are bounded to five pages and 120 retained images without background scanning', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  app.element('images-upload').click(); await settle();
+  for (let i = 0; i < 125; i++) addUpload(app, 7200 + i);
+  app.element('images-check').click(); await settle();
+  for (let i = 0; i < 4; i++) { app.element('image-arrivals-more').click(); await settle(); }
+  assert.equal(uploadRows(app).length, 120); assert.equal(app.element('image-arrivals-more').hidden, true);
+  assert.equal(app.element('image-arrivals-limit').hidden, false);
+  const before = app.requests.filter(r => r.route === 'assets').length;
+  app.element('image-arrivals-more').click(); await settle(); assert.equal(app.requests.filter(r => r.route === 'assets').length, before);
+  app.element('images-check').click(); await settle(); assert.equal(uploadRows(app).length, 120);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+
+test('upload arrivals select a named image outside search and shape without changing filters or inserting', async () => {
+  const original = libraryAsset(7400, 'Coast choice', 1000, 1000);
+  const app = harness({ console: library([original]), prefs: { tab: 'insert', browse: 'images' }, selection: [{ ...node, fills: [], children: [] }] }); await settle();
+  app.element('insert-search').value = 'Coast'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+  app.element('images-matching').click(); await settle(); tilesOf(app)[0].click();
+  app.element('images-upload').click(); await settle();
+  const added = addUpload(app, 7401, '<img onerror=alert(1)> unrelated');
+  app.element('list-region').scrollTop = 34;
+  app.element('images-check').click(); await settle();
+  assert.equal(app.element('list-region').scrollTop, 34);
+  assert.equal(app.element('insert-title').textContent, 'Coast choice');
+  assert.equal(app.element('images-matching').getAttribute('aria-checked'), 'true');
+  assert.equal(uploadRows(app).length, 1); assert.equal(uploadRows(app)[0].children[1].textContent, added.asset.name);
+  uploadButtons(app)[0].click(); await settle();
+  assert.equal(app.element('insert-title').textContent, added.asset.name);
+  assert.equal(app.element('insert-search').value, 'Coast'); assert.equal(app.element('list-region').scrollTop, 34);
+  assert.equal(tilesOf(app).length, 1);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+
+test('upload arrivals preparation waits, fails safely and retries without a fake baseline', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  const gate = deferred(); app.console.gates.assets = gate;
+  const before = app.requests.filter(r => r.route === 'assets').length;
+  app.element('images-upload').click(); app.element('images-upload').click(); await settle();
+  assert.equal(app.element('images-upload').textContent, 'Preparing…'); assert.equal(app.externalUrls.length, 0);
+  assert.equal(app.requests.filter(r => r.route === 'assets').length, before + 1);
+  app.console.statuses.assets = 503; delete app.console.gates.assets; gate.resolve(); await settle();
+  assert.equal(app.externalUrls.length, 0); assert.equal(app.element('images-return').hidden, true);
+  assert.equal(app.element('error-action').textContent, 'Try again');
+  delete app.console.statuses.assets; app.element('error-action').click(); await settle();
+  assert.equal(app.externalUrls.length, 1); assert.equal(app.element('images-return').hidden, false);
+  app.console.checkedAt = false; app.element('images-upload').click(); await settle();
+  assert.equal(app.externalUrls.length, 2); assert.equal(off(app, 'images-check'), true);
+  assert.match(app.element('images-check-note').textContent, /can’t be identified/);
+  app.element('images-check').click(); await settle(); assert.equal(app.element('image-arrivals').hidden, true);
+});
+
+test('upload arrivals unknown metadata never becomes a zero or selectable image and failed rechecks retain receipts', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  app.element('images-upload').click(); await settle();
+  app.console.assetPage = { assets: [], nextCursor: uuid(7777), checkedAt: '2026-10-25T12:00:01.123456Z' };
+  app.element('images-check').click(); await settle();
+  assert.doesNotMatch(app.element('status').textContent, /No images added/);
+  assert.equal(app.element('image-arrivals-more').hidden, false);
+  app.console.assetPage = { assets: [{ id: 'bad' }], nextCursor: null, checkedAt: '2026-10-25T12:00:01.123456Z' };
+  app.element('images-check').click(); await settle();
+  assert.doesNotMatch(app.element('status').textContent, /No images|0 image/); assert.match(app.element('status').textContent, /unavailable/);
+  delete app.console.assetPage;
+  addUpload(app, 7500, 'SVG only', { renditions: [] });
+  app.element('images-check').click(); await settle();
+  assert.equal(uploadRows(app).length, 1); assert.equal(uploadButtons(app)[0].getAttribute('aria-disabled'), 'true');
+  uploadButtons(app)[0].click(); await settle(); assert.equal(app.element('insert-bar').hidden, true);
+  app.console.checkedAt = false; app.element('images-check').click(); await settle();
+  assert.equal(uploadRows(app).length, 1); assert.match(app.element('error').textContent, /can’t be identified/);
+  assert.equal(app.insertMessages().length, 0);
+});
+
+test('upload arrivals drop late preparation and checks on tab change and credential replacement', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  let gate = deferred(); app.console.gates.assets = gate; app.element('images-upload').click(); await settle();
+  app.element('tab-send').click(); delete app.console.gates.assets; gate.resolve(); await settle();
+  assert.equal(app.externalUrls.length, 0);
+  app.element('tab-insert').click(); await settle(); app.element('images-upload').click(); await settle(); addUpload(app, 7600);
+  gate = deferred(); app.console.gates.assets = gate; app.element('images-check').click(); await settle();
+  app.element('tab-send').click(); delete app.console.gates.assets; gate.resolve(); await settle();
+  app.element('tab-insert').click(); await settle(); assert.equal(uploadRows(app).length, 0);
+  app.element('images-check').click(); await settle(); assert.equal(uploadRows(app).length, 1);
+  const stale = uploadButtons(app)[0];
+  app.saveConnection({ ...connection, token: tok('rotated') }); await settle(); stale.click(); await settle();
+  assert.equal(app.element('image-arrivals').hidden, true); assert.equal(app.insertMessages().length, 0);
+});
+
+test('upload arrivals retain unconfirmed rows visibly without selecting stale metadata and prioritize fresh arrivals', async () => {
+  const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await settle();
+  app.element('images-upload').click(); await settle();
+  const first = addUpload(app, 7700, 'Prior upload');
+  app.element('images-check').click(); await settle(); assert.equal(uploadButtons(app)[0].getAttribute('aria-disabled'), null);
+  app.console.library = [];
+  const fresh = addUpload(app, 7701, 'New upload', { createdAt: '2026-10-25T12:00:02.123456Z' });
+  app.element('images-check').click(); await settle();
+  assert.equal(uploadRows(app).length, 2); assert.equal(uploadRows(app)[0].children[1].textContent, fresh.asset.name);
+  assert.match(uploadRows(app)[1].children[1].textContent, /Prior upload · Not checked in latest results/);
+  assert.equal(uploadButtons(app)[1].getAttribute('aria-disabled'), 'true');
+  uploadButtons(app)[1].click(); await settle(); assert.equal(app.element('insert-bar').hidden, true);
+  app.console.library.push({ ...first.asset, name: 'Renamed upload' });
+  app.element('images-check').click(); await settle();
+  assert.match(textOf(app.element('image-arrivals-list')), /Renamed upload/);
+  assert.doesNotMatch(textOf(app.element('image-arrivals-list')), /Not checked/);
+  assert.equal(uploadButtons(app)[1].getAttribute('aria-disabled'), null);
+  assert.equal(app.insertMessages().length, 0);
+});
+
+test('upload arrivals final-page focus returns to Check only while Load more still owns it', async () => {
+  for (const moved of [false, true]) {
+    const app = harness({ prefs: { tab: 'insert', browse: 'images' } }); await settle();
+    app.element('images-upload').click(); await settle();
+    for (let i = 0; i < 25; i++) addUpload(app, 7800 + i);
+    app.element('images-check').click(); await settle();
+    const gate = deferred(); app.console.gates.assets = gate;
+    app.element('image-arrivals-more').focus(); app.element('image-arrivals-more').click(); await settle();
+    if (moved) app.element('insert-search').focus();
+    delete app.console.gates.assets; gate.resolve(); await settle();
+    assert.equal(app.document.activeElement.id, moved ? 'insert-search' : 'images-check');
+  }
 });

@@ -252,6 +252,11 @@
     .catalog-arrivals p { overflow-wrap: anywhere; margin-top: 8px; }
     .intake-return { flex: none; padding: 0 12px 8px; }
     .intake-return p { margin-top: 4px; }
+    .upload-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+    .upload-row > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .upload-row > button, .upload-row > .thumb { flex: none; }
+    #image-arrivals { padding: 0 12px 8px; max-height: none; overflow: visible; }
+    #image-arrivals-list { max-height: 160px; overflow: auto; }
     .empty-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .empty-actions > * { height: 24px; padding: 0 8px; }
 
@@ -296,7 +301,7 @@
     .image-usage-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
     .image-usage-row .title, #image-usage-note { overflow-wrap: anywhere; }
     .send-row-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .send-attention { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .send-attention { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
     .send-row-header .text-action { min-width: 0; max-width: 100%; height: auto; min-height: 24px; white-space: normal; overflow-wrap: anywhere; text-align: left; }
     .send-row-header .title { min-width: 0; }
     .send-row-meta { color: var(--al-text-meta); overflow-wrap: anywhere; }
@@ -577,6 +582,7 @@
         <div id="shortlist-names" class="shortlist-names"></div>
       </div>
       <div id="list-region" class="list-region">
+        <details id="image-arrivals" class="catalog-arrivals" open hidden><summary>Added since you opened uploads</summary><p id="image-arrivals-note" class="meta"></p><div id="image-arrivals-list"></div><button id="image-arrivals-more" class="text-action" type="button" hidden>Load more added images</button><p id="image-arrivals-limit" class="meta" hidden>Review is limited to 120 images or five pages. Open the console for the rest.</p></details>
         <div id="insert-catalog-tools" hidden><button id="insert-catalog-check" class="text-action" type="button">Check for placements</button></div><p id="insert-catalog-result" class="note" hidden></p><details id="insert-catalog-arrivals" class="catalog-arrivals" hidden><summary id="insert-catalog-summary"></summary><div id="insert-catalog-added"></div><button id="insert-catalog-more" class="text-action" type="button" hidden>Show more</button></details>
         <div id="browse-resume" class="info" hidden><p>Your previous app-library browsing is available. Canvas selections are not restored.</p><div class="inspector-actions"><button id="browse-resume-continue" class="secondary small" type="button">Continue browsing this app</button><button id="browse-resume-dismiss" class="secondary small" type="button">Start fresh</button></div></div><p id="browse-resume-note" class="meta" hidden></p>
         <div id="browse-results" class="browse-results" hidden>
@@ -614,9 +620,19 @@
           <p id="selection-name" class="title">Reading selection…</p>
           <p id="selection-meta" class="meta"></p>
         </section>
-        <div id="send-attention-bar" class="send-attention" hidden><p id="send-attention" class="meta"></p><button id="send-next-issue" class="text-action" type="button">Next issue</button></div>
+        <div id="send-attention-bar" class="send-attention" hidden>
+          <div id="send-batch-filters" class="placement-filters" role="radiogroup" aria-label="Filter selected artwork" title="Filters only change this list. Hidden layers keep their Send settings.">
+            <button id="send-filter-all" class="secondary small" type="button" role="radio" aria-checked="true">All</button>
+            <button id="send-attention" class="secondary small" type="button" role="radio" aria-checked="false">Needs attention</button>
+            <button id="send-filter-ready" class="secondary small" type="button" role="radio" aria-checked="false">Ready</button>
+            <button id="send-filter-sent" class="secondary small" type="button" role="radio" aria-checked="false">Sent</button>
+            <button id="send-filter-skipped" class="secondary small" type="button" role="radio" aria-checked="false">Skipped</button>
+          </div>
+          <button id="send-next-issue" class="text-action" type="button">Next issue</button>
+        </div>
         <details id="send-conflicts" class="info" hidden open><summary id="send-conflict-summary"></summary><p class="meta">Preview each layer, then keep one for this cell. Nothing is sent until you choose Send.</p><div id="send-conflict-list"></div></details>
         <div id="send-items" class="send-items" role="list" aria-label="Selected artwork"></div>
+        <p id="send-filter-empty" class="meta" hidden>No layers match this filter. <button id="send-show-all" class="text-action" type="button">Show all</button></p>
         <!-- Asked for once per document when Figma doesn't give the plugin the file's key. -->
         <div id="file-fallback" class="info" hidden>
           <p>Link this file once so Assetlib can trace art back to it. In Figma, choose <strong>Share → Copy link</strong>, then paste it here.</p>

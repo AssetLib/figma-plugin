@@ -149,6 +149,8 @@ export interface ArtworkResponse {
 export interface AssetPage {
   assets: LibraryAsset[];
   nextCursor: string | null;
+  checkedAt?: string;
+  unavailable?: number;
 }
 
 export interface InsertLink {

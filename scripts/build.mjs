@@ -25,7 +25,8 @@ const dev = watching || args.has('--dev');
 // 2026-10-24: bundled SHA-256 supports Figma's opaque iframe without Web Crypto.
 // 2026-10-24: loaded-image shape guidance and simultaneous visual shortlist reuse the inspector/cache.
 // 2026-10-25: visual batch review and scoped image usage share bounded previews and existing artwork reads.
-const MAX_UI_BYTES = 282_000;
+// 2026-10-25: counted Send filters and checkpoint-based upload arrivals share queue, HTTP and previews.
+const MAX_UI_BYTES = 289_000;
 // Raised from 48 KB on October 15, 2026: phase 1's file inventory, raster density, and main-component fills beside the fill toast's Undo.
 // Raised on October 21, 2026 for bounded multi-selection, per-layer choices, and export guards.
 // Raised on October 23, 2026 for validated Draft review links and bounded on-demand inspection previews.

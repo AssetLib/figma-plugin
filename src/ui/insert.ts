@@ -192,9 +192,9 @@ function continueBrowse(): void {
   void (async () => {
     try {
       if (saved.browse === 'images') {
-        await loadImages(true, false, true);
+        await loadImages(true, true);
         while (intent === resumeIntent && images?.nextCursor && images.pages < (context?.pages ?? 1)) {
-          const count = images.pages; await loadImages(false, false, true);
+          const count = images.pages; await loadImages(false, true);
           if (images?.pages === count) break;
         }
       } else await loadArtwork();
@@ -393,10 +393,20 @@ function selectPlacement(key: string): void {
 }
 function selectImage(assetId: string): void {
   cancelResume();
-  if (!images?.items.some(item => item.id === assetId) && !shortlistAsset(assetId)) return;
+  if (!images?.items.some(item => item.id === assetId) && !shortlistAsset(assetId) && images?.retained?.id !== assetId) return;
   activeKey = assetId;
   selected = { kind: 'image', assetId };
   selectionChanged(assetId);
+}
+/** A current upload receipt may select an image outside the query without changing that query or its pages. */
+export function selectUploadedImage(asset: LibraryAsset): void {
+  if (!images || actionsBlocked() || !insertRendition(asset)) return;
+  const scroll = element('list-region').scrollTop;
+  images.retained = asset;
+  images.items = images.items.map(item => item.id === asset.id ? asset : item);
+  updateShortlist([asset]);
+  selectImage(asset.id);
+  element('list-region').scrollTop = scroll;
 }
 function choose(key: string): void {
   if (state.prefs.browse === 'placements') selectPlacement(key);
@@ -1265,9 +1275,7 @@ async function loadArtwork(): Promise<void> {
     if (generation === state.connectionGeneration && artworkTicket === quietTicket && artworkRefreshPending) ensureArtwork(true);
   }
 }
-/** Same bounded library read as Refresh, but keeps the current context and never retries in the background. */
-export function checkImages(): Promise<string | undefined> { return loadImages(true, true); }
-async function loadImages(reset: boolean, checking = false, resuming = false): Promise<string | undefined> {
+async function loadImages(reset: boolean, resuming = false): Promise<void> {
   const config = state.connection;
   const generation = state.connectionGeneration;
   if (!config) return;
@@ -1279,22 +1287,19 @@ async function loadImages(reset: boolean, checking = false, resuming = false): P
   const cursor = reset ? undefined : previous?.nextCursor ?? undefined;
   if (!reset && !cursor) return;
   const ticket = startList('images', q), attention = state.attentionCount;
-  if (reset && !checking) { images = null; if (selected?.kind === 'image' && previous?.q !== q) selected = null; }
+  if (reset) { images = null; if (selected?.kind === 'image' && previous?.q !== q) selected = null; }
   scheduleRender(true);
   let failure: ReadFailure | null = null;
   try {
-    const result = await send(config, { path: assetsPath({ limit: 24, cursor, q: q || undefined }), channel: 'list', ...(checking ? { retry: false } : {}) });
-    if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted'
-      || checking && (state.connectionChanging || attention !== state.attentionCount || state.prefs.tab !== 'insert' || state.prefs.browse !== 'images' || currentQuery() !== q)) return;
+    const result = await send(config, { path: assetsPath({ limit: 24, cursor, q: q || undefined }), channel: 'list' });
+    if (generation !== state.connectionGeneration || ticket !== listTicket || result.kind === 'aborted') return;
     if (result.status !== 200) {
       if (await replacedElsewhere(config, generation, result)) return;
-      if (checking && attention !== state.attentionCount) return;
       if (tokenRefused(result.status, result.payload)) needsAttention({ text: TOKEN_NO_LONGER_ACCEPTED, field: 'token' }, true);
       failure = readFailureOf(result, readFailure(result, config, 'insert'));
       throw new Error(failure.text);
     }
-    const page = parseAssetPage(result.payload), retained = checking ? selectedImage() : !reset ? previous?.retained : null;
-    if (checking) restoreScroll = element('list-region').scrollTop;
+    const page = parseAssetPage(result.payload), retained = !reset ? previous?.retained : null;
     updateShortlist(page.assets);
     const added = previous && !reset ? page.assets.filter(asset => !previous.items.some(item => item.id === asset.id)) : page.assets;
     images = { items: previous && !reset ? [...previous.items, ...added] : added, nextCursor: page.nextCursor, q, retained, pages: reset ? 1 : (previous?.pages ?? 0) + 1 };
@@ -1302,13 +1307,8 @@ async function loadImages(reset: boolean, checking = false, resuming = false): P
     if (attention === state.attentionCount) markConnected();
     // On the last page Load more hides; focus moves to the first new image rather than the page.
     if (!reset && !resuming && added[0]) preferFocus(added[0].id);
-    if (checking) return `Library checked. ${page.assets.length} image${page.assets.length === 1 ? '' : 's'}${q ? ' matching your search' : ''}${page.nextCursor ? ' loaded; more available' : ' available'}.${retained && !page.assets.some(item => item.id === retained.id) ? ' Your selected image is kept outside these results.' : ''}`;
   } catch (error) {
     if (generation !== state.connectionGeneration || ticket !== listTicket) return;
-    if (checking) {
-      if (failure && refusedToken(failure)) showInsertError(TOKEN_NO_LONGER_ACCEPTED);
-      throw error;
-    }
     // A failed Load more keeps the pages already shown, and says so in the error line.
     if (!reset) {
       images = previous;

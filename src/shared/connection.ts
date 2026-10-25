@@ -188,7 +188,7 @@ export function apiUrl(connection: AppRoute, endpoint: 'placements' | 'drafts' |
 }
 
 /** The image library page's path. No URL global: query values are encoded by hand. */
-export function assetsPath(query: { cursor?: string; limit?: number; q?: string } = {}): string {
+export function assetsPath(query: { cursor?: string; limit?: number; q?: string; since?: string; until?: string } = {}): string {
   const params: string[] = [];
   if (query.limit !== undefined) {
     if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 50) throw new Error('Choose between 1 and 50 images per page.');
@@ -201,7 +201,17 @@ export function assetsPath(query: { cursor?: string; limit?: number; q?: string 
   // Image names never hold control characters, and the console refuses them in q.
   const q = query.q?.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 120);
   if (q) params.push(`q=${encodeURIComponent(q)}`);
+  for (const key of ['since', 'until'] as const) if (query[key] !== undefined) {
+    if (!validCheckpoint(query[key])) throw new Error('The upload check expired. Open uploads again.');
+    params.push(`${key}=${encodeURIComponent(query[key])}`);
+  }
   return `assets${params.length ? `?${params.join('&')}` : ''}`;
+}
+
+/** Keep the server's microseconds intact; Date is only used to reject impossible calendar dates. */
+export function validCheckpoint(value: unknown): value is string {
+  return typeof value === 'string' && /^[1-9]\d{3}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z$/.test(value)
+    && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
 }
 
 export function assetsUrl(connection: AppRoute, query: { cursor?: string; limit?: number; q?: string } = {}): string {
