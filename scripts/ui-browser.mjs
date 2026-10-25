@@ -221,6 +221,12 @@ function installFakes(config) {
   // The separate placements response may have an ID before artwork does: it must not supply the bar's link.
   const placementIds = config.placementIds ? Object.fromEntries(placements.map((placement, i) => [placement.key, uuid(40000 + i)])) : null;
   const library = Array.from({ length: config.images ?? 30 }, (_, i) => asset(i + 1, config.imageNames?.[i] ?? `Image ${i + 1}`, ...(config.imageSizes?.[i] ?? [400, 200])));
+  if (config.imageUsage) {
+    artwork.assets[library[0].id] = library[0];
+    const art = { assetId: library[0].id, via: { arm: null, appearance: null } };
+    placements[0].cells[0].draft = art; placements[0].cells[0].production = art;
+    placements[1].cells[0].staging = art; artwork.environments.staging = { sequence: 2, createdAt: '2026-10-01T00:00:00.000Z' };
+  }
   if (config.artwork === 'empty') artwork.placements = [];
 
   // Advance Date.now without making timers fire early: artwork freshness uses request start and locally seen links;
@@ -4195,6 +4201,56 @@ for (const theme of ['light', 'dark']) test(`direct image inspection needs no ca
       assert.equal(await page.evaluate(shown('inspect-draft-pane')), false);
       await page.press('Escape'); assert.equal(await page.focused(), 'insert-inspect');
       assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.received.includes('preview-selection') || __harness.log.some(entry => entry.route === 'drafts')`), false);
+    } finally { await page.close(); }
+  }
+});
+
+for (const theme of ['light', 'dark']) test(`visual batch review pairs incoming and Draft artwork without sending (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const nodes = [{ id: '96:1', name: 'First banner artwork', type: 'FRAME', width: 390, height: 160 }, { id: '96:2', name: 'Other banner artwork', type: 'FRAME', width: 390, height: 160 }];
+    const selection = { ...DEFAULTS.selection, reason: null, sendNodes: nodes.map(node => ({ node, reason: null, link: null, remembered: { fileKey: 'abc123', nodeId: node.id, placementKey: 'home.banner', state: null, appearance: null, arm: null, insertedFrom: null } })) };
+    const page = await openUi({ selection, inspection: true, preferences: { tab: 'send' } }, { width, height: 480, theme });
+    try {
+      await page.waitFor(`document.querySelectorAll('.send-row-visuals').length===2 && document.querySelector('.send-row-visuals img').naturalWidth>0`);
+      await page.evaluate(`document.getElementById('send-conflicts').open=false; document.getElementById('send-items').scrollIntoView({block:'start'})`);
+      assert.equal(await page.evaluate(`__harness.received.filter(type=>type==='preview-selection').length`), 1);
+      await page.click('#send-items [aria-label="Inspect Other banner artwork"]');
+      await page.waitFor(`!document.getElementById('artwork-inspector').hidden && document.getElementById('inspect-layer-image').naturalWidth>0`);
+      assert.match(await page.evaluate(textOf('inspect-caption')), /Other banner artwork/);
+      await page.press('Escape');
+      assert.equal(await page.evaluate(`document.activeElement.getAttribute('aria-label')`), 'Inspect Other banner artwork');
+      await page.waitFor(`document.querySelectorAll('.send-row-visuals img[src]').length===4`);
+      await page.evaluate(`document.getElementById('send-items').scrollTop=0`); await page.frames();
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth && document.documentElement.scrollHeight<=innerHeight && document.getElementById('send-items').clientHeight<=248`), true);
+      assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.received.includes('save-send-choice') || __harness.log.some(item=>item.route==='drafts')`), false);
+      assert.equal(await page.evaluate(`document.getElementById('send').getAttribute('aria-disabled')`), 'true', 'duplicate guard remains');
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `visual-batch-${theme}-${width}.png`)); }
+    } finally { await page.close(); }
+  }
+});
+
+for (const theme of ['light', 'dark']) test(`image picker usage keeps environment scope, recovery and narrow layout (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const page = await openUi({ imageUsage: true, images: 2, preferences: { browse: 'images' } }, { width, height: 480, theme });
+    try {
+      await page.waitFor(`${tiles}===2`); await page.click('#image-grid [role=option]');
+      await page.waitFor(`document.getElementById('image-usage-summary').textContent==='Usage in current placements (2)'`);
+      await page.click('#image-usage-summary');
+      await page.waitFor(`document.querySelectorAll('.image-usage-row img[src]').length===2`);
+      assert.match(await page.evaluate(textOf('image-usage-list')), /onboarding.hero.*Draft · Production.*onboarding.footer.*Staging/s);
+      assert.match(await page.evaluate(textOf('image-usage-note')), /release-only placements may be omitted/);
+      assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth && document.documentElement.scrollHeight<=innerHeight && document.getElementById('image-usage-list').clientHeight<=112 && document.getElementById('insert').getBoundingClientRect().bottom<=innerHeight`), true);
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `image-usage-${theme}-${width}.png`)); }
+      await page.evaluate(`__harness.hold('artwork')`); await page.click('#image-usage-refresh');
+      assert.equal(await page.evaluate(textOf('image-usage-note')), 'Checking usage…');
+      assert.equal(await page.evaluate(`document.querySelectorAll('.image-usage-row').length`), 0);
+      await page.evaluate(`__harness.setStatus('artwork',500); __harness.release('artwork')`);
+      await page.waitFor(`document.getElementById('image-usage-note').textContent==='Usage unavailable. Check again.'`);
+      await page.evaluate(`__harness.setStatus('artwork',0)`); await page.click('#image-usage-refresh');
+      await page.waitFor(`document.querySelectorAll('.image-usage-row').length===2`);
+      assert.equal(await page.evaluate(`__harness.received.includes('export') || __harness.received.includes('insert') || __harness.log.some(item=>item.route==='drafts')`), false);
+      await page.click('#image-usage-summary'); await page.click('#image-grid [role=option]:nth-child(2)');
+      assert.equal(await page.evaluate(`document.getElementById('image-usage').open`), false);
     } finally { await page.close(); }
   }
 });

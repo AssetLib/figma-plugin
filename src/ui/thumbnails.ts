@@ -53,6 +53,10 @@ function stopWaiting(img: HTMLImageElement): void {
   waiting?.delete(img);
   if (sha256 && waiting && !waiting.size) thumbnailWaiting.delete(sha256);
 }
+export function releaseThumbnail(img: HTMLImageElement, root: HTMLElement): void {
+  thumbnailObservers.get(root)?.unobserve(img); thumbnailVisible.delete(img); stopWaiting(img); pruneThumbnails();
+  img.removeAttribute('src'); img.removeAttribute('data-sha');
+}
 /** Drops jobs not yet started whose images all left the view or the list. */
 function pruneThumbnails(): void {
   thumbnailQueue = thumbnailQueue.filter(job => thumbnailWanted(job.rendition.sha256));

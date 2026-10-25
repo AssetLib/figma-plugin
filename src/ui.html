@@ -286,6 +286,15 @@
     .send-items:empty { display: none; }
     .send-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
     .send-row[aria-current="true"] { border-color: var(--text); }
+    .send-row-visuals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; grid-row: 2; }
+    .send-row-visuals > div { display: grid; gap: 4px; }
+    .send-row-visuals > p { grid-column: 1 / -1; overflow-wrap: anywhere; }
+    .send-row-visuals > button { justify-self: start; }
+    #image-usage { min-width: 0; }
+    #image-usage summary { cursor: pointer; }
+    #image-usage-list { max-height: 112px; overflow: auto; }
+    .image-usage-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+    .image-usage-row .title, #image-usage-note { overflow-wrap: anywhere; }
     .send-row-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .send-attention { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .send-row-header .text-action { min-width: 0; max-width: 100%; height: auto; min-height: 24px; white-space: normal; overflow-wrap: anywhere; text-align: left; }
@@ -678,6 +687,7 @@
     </div>
     <footer id="insert-bar" class="footer" hidden>
       <div id="insert-cells" class="cell-strip" role="radiogroup" aria-label="Cell" hidden></div>
+      <details id="image-usage" hidden><summary id="image-usage-summary" class="meta">Usage in current placements</summary><p id="image-usage-note" class="meta"></p><div id="image-usage-list"></div><button id="image-usage-more" class="text-action" type="button" hidden>Show more</button> <button id="image-usage-refresh" class="text-action" type="button">Check again</button></details>
       <div class="footer-row">
         <span id="insert-preview" class="thumb"><img id="insert-thumb" alt=""></span>
         <div class="footer-text"><p id="insert-title" class="title"></p><p id="insert-meta" class="meta"></p></div>

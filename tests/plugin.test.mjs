@@ -9318,3 +9318,99 @@ test('empty shape recovery counts loaded images, keeps search and offers more on
     assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
   }
 });
+
+test('visual batch review shows per-row Draft thumbnails and previews only explicitly reviewed layers', async () => {
+  const nodes = Array.from({ length: 12 }, (_, index) => ({ ...node, id: `98:${index}`, name: `Batch layer ${index}` }));
+  const app = harness({ selection: nodes, remembered: null }); await settle();
+  assert.equal(app.previewExports.length, 1, 'opening a batch exports only its active layer');
+  const views = () => app.element('send-items').children.map(row => row.children.find(child => child.className === 'send-row-visuals'));
+  assert.equal(views().length, 12);
+  assert.equal(views().filter(view => view.children[0].children[1].children[0].src).length, 1);
+  for (const row of app.element('send-items').children.slice(1, 10)) {
+    descendants(row).find(item => item.tagName === 'BUTTON' && item.getAttribute('aria-label')?.startsWith('Choose destination')).click(); await settle();
+  }
+  assert.equal(app.previewExports.length, 10);
+  assert.equal(views().filter(view => view.children[0].children[1].children[0].src).length, 8, 'DOM does not retain evicted pixels');
+  const current = app.element('send-items').children[9];
+  const inspect = descendants(current).find(item => item.getAttribute('aria-label') === 'Inspect Batch layer 9');
+  const writes = app.uiMessages.filter(message => message.type === 'save-send-choice').length;
+  inspect.click(); await settle(); assert.equal(app.element('artwork-inspector').hidden, false);
+  assert.equal(app.uiMessages.filter(message => message.type === 'save-send-choice').length, writes);
+  assert.match(app.element('inspect-caption').textContent, /Batch layer 9/);
+  app.element('inspect-close').click(); await settle(); assert.equal(app.document.activeElement, inspect);
+  app.select([nodes[0]]); await settle(); const exports = app.previewExports.length; inspect.click(); await settle();
+  assert.equal(app.element('artwork-inspector').hidden, true, 'detached batch controls cannot open a different layer');
+  assert.equal(app.previewExports.length, exports);
+  assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0);
+});
+
+test('visual batch review scopes Draft thumbnails, unknown destinations and preview cancellation', async () => {
+  const second = { ...node, id: '98:2', name: 'Another layer' };
+  const app = harness({ selection: [node, second] }); await settle();
+  const rows = app.element('send-items').children;
+  assert.match(textOf(rows[0]), /Current Draft.*Draft artwork/s);
+  assert.match(textOf(rows[1]), /Choose a destination/);
+  const observer = [...app.observers].find(item => item.options.root === app.element('send-items'));
+  assert.ok(observer?.targets.size);
+  app.element('tab-insert').click(); await settle();
+  assert.equal(observer.targets.size, 0, 'leaving Send releases batch observers');
+  assert.equal(app.drafts().length, 0);
+});
+
+function openImageUsage(app) { app.element('image-usage').open = true; app.element('image-usage').dispatch('toggle'); }
+test('image picker usage lists distinct current placements and actual environments without changing choices', async () => {
+  const app = harness({ console: { library: Object.values(assets) } });
+  await openInsert(app); app.element('browse-images').click(); await settle();
+  tilesOf(app).find(tile => tile.getAttribute('data-asset-id') === baseArt).click(); await settle();
+  assert.equal(app.element('image-usage').hidden, false); openImageUsage(app); await settle();
+  assert.equal(app.element('image-usage-summary').textContent, 'Usage in current placements (1)');
+  assert.match(textOf(app.element('image-usage-list')), /hero.artwork.*Home · Draft · Staging/s);
+  assert.doesNotMatch(textOf(app.element('image-usage-list')), /Production/);
+  assert.equal(app.element('image-usage-list').children.length, 1);
+  assert.match(app.element('image-usage-note').textContent, /release-only placements may be omitted/);
+  assert.match(descendants(app.element('image-usage-list')).find(item => item.tagName === 'IMG').src, /^data:/);
+  const choice = app.element('insert-title').textContent;
+  app.element('image-usage-refresh').click(); await settle();
+  assert.equal(app.element('insert-title').textContent, choice);
+  tilesOf(app).find(tile => tile.getAttribute('data-asset-id') === armArt).click(); await settle();
+  assert.equal(app.element('image-usage').open, false, 'switching images closes the previous image’s usage');
+  openImageUsage(app); await settle(); assert.match(textOf(app.element('image-usage-list')), /Home · Draft/);
+  assert.doesNotMatch(textOf(app.element('image-usage-list')), /Staging/);
+  assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+});
+
+test('image picker usage keeps loading, partial, failure and stale connections explicitly unknown', async () => {
+  const app = harness({ console: { library: Object.values(assets) } });
+  await openInsert(app); app.element('browse-images').click(); await settle(); tilesOf(app)[0].click(); openImageUsage(app); await settle();
+  const gate = deferred(); app.console.gates.artwork = gate;
+  app.element('image-usage-refresh').click(); await settle();
+  assert.equal(app.element('image-usage-note').textContent, 'Checking usage…');
+  assert.equal(app.element('image-usage-list').children.length, 0);
+  app.console.statuses.artwork = 500; gate.resolve(); await settle();
+  assert.equal(app.element('image-usage-note').textContent, 'Usage unavailable. Check again.');
+  assert.doesNotMatch(app.element('image-usage-summary').textContent, /\(0\)/);
+  delete app.console.statuses.artwork; delete app.console.gates.artwork; app.console.artwork.placements[0].cells.pop();
+  app.element('image-usage-refresh').click(); await settle();
+  assert.match(app.element('image-usage-note').textContent, /Partial usage/);
+  assert.doesNotMatch(app.element('image-usage-summary').textContent, /\(/);
+  const late = deferred(); app.console.gates.artwork = late;
+  app.element('image-usage-refresh').click(); await settle();
+  app.saveConnection({ ...connection, appId: 'app-b', token: tok('usage_other') }); await settle();
+  late.resolve(); await settle();
+  assert.equal(app.element('image-usage').hidden, true); assert.equal(app.element('image-usage-list').children.length, 0);
+});
+
+test('visual batch review and inspection withdraw retained Draft art during failed refreshes', async () => {
+  const app = batch3({ selection: [node, { ...node, id: '98:3', name: 'Second layer' }], remembered: rememberedA }); await settle();
+  const first = app.element('send-items').children[0], view = first.children.find(item => item.className === 'send-row-visuals');
+  assert.ok(view.children[1].children[1].children[0].src);
+  const gate = deferred(); app.console.gates.artwork = gate; app.advance(60000); app.focusWindow(); await settle();
+  assert.match(textOf(view), /Checking Draft artwork/); assert.equal(view.children[1].children[1].children[0].src, '');
+  app.console.statuses.artwork = 500; gate.resolve(); await settle();
+  assert.match(textOf(view), /Draft artwork not checked/);
+  descendants(first).find(item => item.getAttribute('aria-label') === `Inspect ${node.name}`).click(); await settle();
+  app.element('inspect-draft').click(); await settle();
+  assert.match(app.element('inspect-caption').textContent, /Draft artwork not checked/);
+  assert.equal(app.element('inspect-draft-image').src, '');
+  assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0);
+});

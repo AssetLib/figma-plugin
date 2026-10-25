@@ -1,4 +1,5 @@
 import { imageGuidance } from '../shared/image-guidance.js';
+import { imageUsage, usageContract } from '../shared/image-usage.js';
 import { browseScope } from '../shared/browse-scope.js';
 import { parseBrowseResume } from '../shared/browse.js';
 import type { BrowseChoice, BrowseContext, BrowseResume } from '../shared/browse.js';
@@ -77,6 +78,14 @@ const seenLinks = new Map<string, number>();
 const checkedLinks = new Set<string>();
 // A full Refresh abandoned for Images must still reload when Placements next shows, without losing the bar's preview.
 let artworkListStale = false;
+let usageStale = true;
+let usageOwner = '';
+let usageContent = '';
+let usageLimit = 10;
+let usageSource: ArtworkResponse | null = null;
+let usageCatalog: Placement[] | null = null;
+let usageAsset: string | null = null;
+let usageData: ReturnType<typeof imageUsage> | null = null;
 let quietTicket = 0;
 let quietLoading = false;
 let quietFrom: number | null = null;
@@ -471,8 +480,11 @@ export function draftSnapshot(key: string, coordinate: CellCoordinate): { assetI
 }
 
 /** A candidate shows the cell choosing it would use; unknown artwork is never described as empty. */
-export function sendPlacementPreview(key: string, coordinate: CellCoordinate): { asset: LibraryAsset | null; caption: string; empty: boolean } {
+export function sendPlacementPreview(key: string, coordinate: CellCoordinate, checked = false): { asset: LibraryAsset | null; caption: string; empty: boolean } {
   const placement = currentPlacement(key);
+  const declared = state.placements.find(item => item.key === key);
+  if (checked && (usageStale || !state.placementsLoaded || !placement || !declared || usageContract(placement) !== usageContract(declared))) return {
+    asset: null, caption: quietLoading || state.ops.loadingList === 'placements' ? 'Checking Draft artwork…' : 'Draft artwork not checked', empty: false };
   const cell = placement && findCell(placement, coordinate);
   if (!cell || !artwork) return { asset: null, caption: 'Draft artwork not loaded', empty: false };
   const art = cell.draft;
@@ -975,6 +987,7 @@ export function renderInsertBar(): void {
   element('insert-meta').title = target?.meta ?? '';
   const canvas = canvasTarget(target);
   element('insert-inspect').hidden = !target?.asset || state.prefs.browse !== 'images' && !filling(canvas);
+  renderImageUsage(state.prefs.browse === 'images' && !insertBar.hidden ? target?.asset ?? null : null);
   setUnavailable(element('insert-inspect'), actionsBlocked());
   const reported = reportedTarget();
   const beside = besideComponent(reported, target) ? `Figma doesn’t put components inside components, so this goes beside ${reported.name ?? 'the selection'}.` : '';
@@ -1018,6 +1031,37 @@ export function renderInsertBar(): void {
     || syncBar() !== null || !element('intro').hidden;
 }
 
+function renderImageUsage(asset: LibraryAsset | null): void {
+  const details = element<HTMLDetailsElement>('image-usage'), list = element('image-usage-list');
+  const owner = asset ? `${state.connectionGeneration}:${asset.id}` : '';
+  if (owner !== usageOwner) { details.open = false; usageOwner = owner; usageLimit = 10; usageContent = ''; }
+  details.hidden = !asset;
+  const current = artworkGeneration === state.connectionGeneration ? artwork : null;
+  const loading = quietLoading || state.ops.loadingList === 'placements';
+  const catalog = state.placementsLoaded ? state.placements : null;
+  if (current !== usageSource || catalog !== usageCatalog || asset?.id !== usageAsset) {
+    usageSource = current; usageCatalog = catalog; usageAsset = asset?.id ?? null;
+    usageData = current && asset ? imageUsage(current, catalog, asset.id) : null;
+  }
+  const usage = usageData;
+  const known = usage && !usageStale && usage.complete;
+  element('image-usage-summary').textContent = `Usage in current placements${known ? ` (${usage.uses.length})` : ''}`;
+  const note = loading ? 'Checking usage…' : !current || usageStale ? 'Usage unavailable. Check again.' : !usage?.complete
+    ? 'Partial usage. Unlisted placements are unknown.' : !usage.uses.length ? 'No use found in current placements. Release-only placements may be omitted.' : 'Current catalog only; release-only placements may be omitted.';
+  element('image-usage-note').textContent = note;
+  element('image-usage-more').hidden = !details.open || (usage?.uses.length ?? 0) <= usageLimit;
+  setUnavailable(element('image-usage-refresh'), loading || actionsBlocked());
+  const content = JSON.stringify([owner, details.open, loading, usageStale, usageLimit, usage?.uses.map(item => [item.placement.key, item.placement.screen, item.placement.width, item.placement.height, item.environments])]);
+  if (content === usageContent) return;
+  usageContent = content; releaseListImages(list); list.replaceChildren();
+  if (!details.open || !asset || loading || usageStale) return;
+  for (const { placement, environments } of usage?.uses.slice(0, usageLimit) ?? []) {
+    const row = makeNode('div', 'image-usage-row'), labels = makeNode('div', 'row-text');
+    labels.append(makeNode('p', 'title', placement.key), makeNode('p', 'meta', `${placement.screen} · ${environments.map(environmentLabel).join(' · ')}`));
+    row.append(thumbnailFrame(asset, false, placement, list), labels); list.append(row);
+  }
+}
+
 /** Opens the Insert tab's list for this connection, unless it is loaded or loading. Waits for the connection test. */
 export function enterInsert(): void {
   if (state.prefs.tab !== 'insert' || !state.connection || state.connectionGeneration === null || state.ops.connecting) return;
@@ -1047,6 +1091,7 @@ function acceptArtwork(payload: unknown, generation: number, from: number, atten
   artworkGeneration = generation;
   artworkFrom = from;
   artworkListStale = false;
+  usageStale = false;
   const placement = selectedPlacement();
   if (selected?.kind === 'placement') {
     if (!placement) selected = null;
@@ -1074,6 +1119,8 @@ async function loadArtworkQuietly(): Promise<void> {
   if (!config || generation === null) return;
   const ticket = ++quietTicket;
   quietLoading = true;
+  usageStale = true;
+  scheduleRender();
   const from = beginArtworkRead(), attention = state.attentionCount;
   quietFrom = from;
   artworkRequested(from);
@@ -1092,6 +1139,7 @@ async function loadArtworkQuietly(): Promise<void> {
   finally {
     if (ticket === quietTicket) {
       quietLoading = false;
+      scheduleRender();
       quietFrom = null;
       if (generation === state.connectionGeneration) artworkFinishedAt = Date.now();
       if (!artwork) {
@@ -1183,6 +1231,7 @@ async function loadArtwork(): Promise<void> {
   quietLoading = false;
   quietFrom = null;
   artworkListStale = true;
+  usageStale = true;
   scheduleRender(true);
   const from = beginArtworkRead(), attention = state.attentionCount;
   artworkRequested(from);
@@ -1523,6 +1572,8 @@ export function failInsert(requestId: number, message: string): boolean {
 
 export function resetInsert(): void {
   clickedItem = null; cancelResume();
+  usageStale = true; usageOwner = ''; usageContent = ''; usageSource = null; usageCatalog = null; usageAsset = null; usageData = null;
+  element<HTMLDetailsElement>('image-usage').open = false;
   resumeScope = ''; resumeRequest = null; resumeReady = false; resumeSaved = ''; resumeOffer = null; resumeChoice = null; resumeNote = '';
   resetShortlist();
   resetFile();
@@ -1692,6 +1743,11 @@ function listKeydown(event: KeyboardEvent): void {
 
 export function initInsert(goToSend: () => void): void {
   initShortlist(selectedImage, selectImage);
+  element('image-usage').addEventListener('toggle', () => scheduleRender());
+  element('image-usage-more').addEventListener('click', () => { usageLimit += 10; scheduleRender(); });
+  element('image-usage-refresh').addEventListener('click', () => {
+    if (!actionsBlocked() && !quietLoading && state.ops.loadingList !== 'placements') { ensureArtwork(true); scheduleRender(); }
+  });
   const shapeButtons = ['images-all', 'images-matching'].map(id => element<HTMLButtonElement>(id));
   shapeButtons.forEach((button, index) => button.addEventListener('click', () => {
     const target = shapeTarget();

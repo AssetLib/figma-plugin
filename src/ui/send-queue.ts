@@ -46,6 +46,10 @@ export function initQueue(actions: { choose: () => void; needFile: () => void; s
   });
 }
 export function activeSendRow(): SendRow | null { return rows.find(row => row.node.id === activeId) ?? rows[0] ?? null; }
+export function activateSendRow(nodeId: string): boolean {
+  if (actionsBlocked() || !hasCurrentSelection() || state.prefs.tab !== 'send' || !rows.some(row => row.node.id === nodeId)) return false;
+  activeId = nodeId; choose(); scheduleRender(); return true;
+}
 export function sendRows(): readonly SendRow[] { return rows; }
 export function duplicateDestinations(): SendRow[][] {
   const groups: SendRow[][] = [];
