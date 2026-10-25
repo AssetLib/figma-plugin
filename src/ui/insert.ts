@@ -15,6 +15,7 @@ import type { InsertDestination, MainMessage, SelectedLink, UiMessage } from '..
 import { webpToPng } from '../image.js';
 import { createCellRenderer, renderCells } from './cells.js';
 import { inspectFill } from './fill-inspection.js';
+import { openInspection } from './inspector.js';
 import { initShortlist, renderShortlist, resetShortlist, shortlistAsset, updateShortlist } from './shortlist.js';
 import { cellAxes, fileRows, fileTag, renderFileScope, requestFileScan, resetFile, selectFileNode } from './infile.js';
 import { hintOfCurrent, startConnect } from './connect.js';
@@ -869,7 +870,11 @@ export function renderList(): void {
   } else {
     const matches = images.items.filter(asset => !imageShape || imageGuidance(asset, target)?.matches);
     gridChildren.push(...matches.map(imageTile));
-    if (!matches.length) empty = { text: 'No loaded images match this layer’s shape. Show All or load more images.', action: null };
+    if (!matches.length) {
+      clearArtFilter = true;
+      recoveryLabel = `Show all ${images.items.length} loaded image${images.items.length === 1 ? '' : 's'}`;
+      empty = { text: 'No loaded images match this layer’s shape.', action: 'clear' };
+    }
   }
   if (browse === 'images' && images && (images.items.length || images.q) && !loading('images') && images.q === query) summary = `${images.items.length} image${images.items.length === 1 ? '' : 's'}${images.nextCursor ? ' loaded · more available' : images.q ? ' matching your search' : ''}`;
   element('browse-summary').textContent = summary;
@@ -969,7 +974,7 @@ export function renderInsertBar(): void {
   // The whole line on hover, for a narrow window that shortens it.
   element('insert-meta').title = target?.meta ?? '';
   const canvas = canvasTarget(target);
-  element('insert-inspect').hidden = !target?.asset || !filling(canvas);
+  element('insert-inspect').hidden = !target?.asset || state.prefs.browse !== 'images' && !filling(canvas);
   setUnavailable(element('insert-inspect'), actionsBlocked());
   const reported = reportedTarget();
   const beside = besideComponent(reported, target) ? `Figma doesn’t put components inside components, so this goes beside ${reported.name ?? 'the selection'}.` : '';
@@ -1698,12 +1703,16 @@ export function initInsert(goToSend: () => void): void {
   element('browse-resume-dismiss').addEventListener('click', () => { resumeOffer = null; rememberBrowse(); scheduleRender(); });
   element('list-region').addEventListener('scroll', rememberBrowse);
   element('insert-inspect').addEventListener('click', () => {
-    const target = insertTarget(), generation = state.connectionGeneration, revision = state.selection.revision;
-    if (actionsBlocked() || !target?.asset || !filling(canvasTarget(target))) return;
+    const target = insertTarget(), generation = state.connectionGeneration, revision = state.selection.revision, browse = state.prefs.browse;
+    if (actionsBlocked() || !target?.asset || browse !== 'images' && !filling(canvasTarget(target))) return;
     const asset = target.asset;
     const choice = JSON.stringify(selected);
-    inspectFill(asset, target.title, element('insert-inspect'), () => state.prefs.tab === 'insert' && generation === state.connectionGeneration
-      && revision === state.selection.revision && JSON.stringify(selected) === choice && insertTarget()?.asset?.id === asset.id);
+    const current = () => state.prefs.tab === 'insert' && state.prefs.browse === browse && hasCurrentSelection() && generation === state.connectionGeneration
+      && revision === state.selection.revision && JSON.stringify(selected) === choice && insertTarget()?.asset === asset;
+    const returnTo = element('insert-inspect');
+    if (filling(canvasTarget(target))) inspectFill(asset, target.title, returnTo, current);
+    else openInspection({ returnTo, current, refresh: () => { retryFailedThumbnails(); scheduleRender(); },
+      items: () => [{ label: target.title, caption: target.meta, asset, source: asset, sourceLabel: 'Source' }] });
   });
   artFilterButtons.forEach((button, index) => button.addEventListener('click', () => {
     cancelResume();
@@ -1767,7 +1776,7 @@ export function initInsert(goToSend: () => void): void {
     if (searchTimer !== null) window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(searchImages, 300);
   });
-  element('insert-clear').addEventListener('click', () => { cancelResume(); if (clearArtFilter) { artFilter = 'all'; scheduleRender(true); } else clearSearch(); searchInput.focus(); });
+  element('insert-clear').addEventListener('click', () => { cancelResume(); if (clearArtFilter) { if (state.prefs.browse === 'images') imageShape = false; else artFilter = 'all'; scheduleRender(true); } else clearSearch(); searchInput.focus(); });
   searchClear.addEventListener('click', () => { clearSearch(); searchInput.focus(); });
   element('insert-refresh').addEventListener('click', refreshList);
   element('insert-retry').addEventListener('click', refreshList);

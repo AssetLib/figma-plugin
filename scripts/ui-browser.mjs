@@ -3882,6 +3882,7 @@ for (const theme of ['light', 'dark']) test(`image shortlist compares decoded ca
       await page.click('#insert-search'); await page.type('Lake'); await page.waitFor(`${tiles} === 1`);
       assert.equal(await page.evaluate(`document.getElementById('shortlist-compare').disabled`), false);
       await page.click('#shortlist-compare'); await page.waitFor(`!document.getElementById('artwork-inspector').hidden && document.getElementById('inspect-use').getAttribute('aria-disabled') !== 'true'`);
+      assert.equal(await page.evaluate(textOf('inspect-use')), 'Select image');
       assert.match(await page.evaluate(textOf('inspect-caption')), /Figma target: Card artwork.*320.*200.*different aspect ratio/);
       assert.match(await page.evaluate(textOf('inspect-size')), /Source 400.*200.*Preview 390 × 195 px/);
       assert.equal(await page.evaluate(`(() => { const title = document.getElementById('inspect-title').getBoundingClientRect(), close = document.getElementById('inspect-close').getBoundingClientRect(); return title.height >= 16 && title.top >= 0 && title.bottom < innerHeight && close.top >= 0 && close.bottom < innerHeight; })()`), true, 'inspector heading and Close stay visible when opened');
@@ -3916,7 +3917,7 @@ for (const theme of ['light', 'dark']) test(`image shortlist compares decoded ca
     } finally { await page.close(); }
   }
 });
-test('image shortlist keeps Use disabled on unreadable previews, retries, and drops late replies after selection changes', async () => {
+test('image shortlist keeps Select image disabled on unreadable previews, retries, and drops late replies after selection changes', async () => {
   const page = await openUi({ inspection: true, images: 2, statuses: { rendition: 404 } }, { width: 320, height: 480 });
   try {
     await page.waitFor(`${rows} === 7`); await page.click('#browse-images'); await page.waitFor(`${tiles} === 2`);
@@ -4142,7 +4143,13 @@ for (const theme of ['light', 'dark']) test(`artwork decisions shape filter coun
       await page.click('#images-more'); await page.waitFor(`${tiles} === 29`); assert.match(await page.evaluate(textOf('images-matching')), /shape 29$/);
       await page.click('#insert-search'); await page.type('Square'); await page.waitFor(`document.getElementById('images-all').textContent === 'All 1'`);
       assert.match(await page.evaluate(textOf('insert-empty-text')), /No loaded images match/);
-      await page.click('#images-all'); await page.waitFor(`${tiles} === 1`);
+      assert.equal(await page.evaluate(textOf('insert-clear')), 'Show all 1 loaded image');
+      assert.equal(await page.evaluate(shown('images-more')), false);
+      assert.doesNotMatch(await page.evaluate(textOf('insert-empty-text')), /load more/i);
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `shape-recovery-${theme}-${width}.png`)); }
+      await page.click('#insert-clear'); await page.waitFor(`${tiles} === 1`);
+      assert.equal(await page.evaluate(valueOf('insert-search')), 'Square');
+      assert.equal(await page.evaluate(`document.getElementById('images-all').getAttribute('aria-checked')`), 'true');
       await page.click('#search-clear'); await page.waitFor(`${tiles} === 24`);
       if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `artwork-shape-guidance-${theme}-${width}.png`)); }
       await page.evaluate(`__harness.select(${JSON.stringify({ ...selection, fillPreview: { width: 200, height: 200, mode: 'FIT' }, insertTarget: { ...selection.insertTarget, containerWidth: 200, containerHeight: 200 } })})`);
@@ -4155,6 +4162,39 @@ for (const theme of ['light', 'dark']) test(`artwork decisions shape filter coun
       assert.match(await page.evaluate(textOf('images-shape-note')), /Crop and Tile.*unavailable/);
       assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.log.some(entry => entry.route === 'drafts')`), false);
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth <= innerWidth`), true);
+    } finally { await page.close(); }
+  }
+});
+
+for (const theme of ['light', 'dark']) test(`direct image inspection needs no canvas selection or shortlist (${theme})`, async () => {
+  for (const width of [320, 420]) {
+    const page = await openUi({ inspection: true, images: 2, imageNames: ['Coast', 'Garden'], preferences: { browse: 'images' } }, { width, height: 480, theme });
+    try {
+      await page.waitFor(`${tiles} === 2`); await page.click('#image-grid [role=option]');
+      assert.equal(await page.evaluate(textOf('insert-inspect')), 'Inspect artwork');
+      assert.equal(await page.evaluate(`document.getElementById('shortlist-names').children.length`), 0);
+      await page.click('#insert-inspect');
+      await page.waitFor(`!document.getElementById('artwork-inspector').hidden && document.getElementById('inspect-layer-image').naturalWidth > 0`);
+      assert.equal(await page.evaluate(textOf('inspect-title')), 'Inspect artwork');
+      assert.equal(await page.evaluate(`['inspect-draft-pane','inspect-third-pane','inspect-views','inspect-use'].every(id => document.getElementById(id).hidden)`), true);
+      assert.match(await page.evaluate(textOf('inspect-size')), /Source 400.*200.*Preview 390 × 195 px/);
+      assert.doesNotMatch(await page.evaluate(textOf('inspect-help')), /compares artwork/);
+      await page.click('#inspect-dark');
+      assert.equal(await page.evaluate(`(() => { const image=document.getElementById('inspect-layer-image').getBoundingClientRect(), panel=document.getElementById('inspect-layer-panel').getBoundingClientRect(), title=document.getElementById('inspect-title').getBoundingClientRect(), close=document.getElementById('inspect-close').getBoundingClientRect(); return image.width>100 && image.height>30 && image.left>=panel.left && image.right<=panel.right+1 && image.top>=panel.top && image.bottom<=panel.bottom+1 && title.height>=16 && title.top>=0 && close.bottom<innerHeight && document.documentElement.scrollWidth<=innerWidth; })()`), true);
+      if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot(join(shots, `direct-inspection-${theme}-${width}.png`)); }
+      await page.click('#inspect-pixels');
+      assert.deepEqual(await page.evaluate(`(() => { const box=document.getElementById('inspect-layer-image').getBoundingClientRect(); return [box.width, box.height]; })()`), [390, 195]);
+      await page.press('Escape'); assert.equal(await page.focused(), 'insert-inspect');
+      assert.equal(await page.evaluate(textOf('insert-title')), 'Coast');
+      await page.click('#insert-inspect'); await page.evaluate(`document.getElementById('inspect-layer-image').dispatchEvent(new Event('error'))`); await page.frames();
+      assert.match(await page.evaluate(textOf('inspect-caption')), /Preview unavailable/);
+      await page.click('#inspect-refresh'); await page.waitFor(`document.getElementById('inspect-layer-image').naturalWidth>0 && document.getElementById('inspect-layer-image').getAttribute('src')`);
+      await page.evaluate(`__harness.select(${JSON.stringify({ ...DEFAULTS.selection, node: { id: '97:1', type: 'TEXT', name: 'A text layer', width: 400, height: 200 }, reason: null })})`);
+      await page.waitFor(`document.getElementById('artwork-inspector').hidden && !document.getElementById('app').inert`);
+      await page.click('#insert-inspect'); await page.waitFor(`!document.getElementById('artwork-inspector').hidden && document.getElementById('inspect-layer-image').naturalWidth>0`);
+      assert.equal(await page.evaluate(shown('inspect-draft-pane')), false);
+      await page.press('Escape'); assert.equal(await page.focused(), 'insert-inspect');
+      assert.equal(await page.evaluate(`__harness.received.includes('insert') || __harness.received.includes('export') || __harness.received.includes('preview-selection') || __harness.log.some(entry => entry.route === 'drafts')`), false);
     } finally { await page.close(); }
   }
 });

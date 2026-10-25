@@ -9252,3 +9252,69 @@ test('artwork decisions withholds stale query counts and filter activation durin
   app.element('images-matching').click(); assert.equal(app.element('images-all').getAttribute('aria-checked'), 'true');
   assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
 });
+
+test('direct image inspection works without a canvas target or shortlist and keeps content actions separate', async () => {
+  const entry = libraryAsset(440, 'Inspect me', 400, 200);
+  const choices = [[], [{ ...node, type: 'TEXT' }], [{ ...node, children: [{ ...node, id: '12:35' }] }],
+    [{ ...node, fills: [{ type: 'IMAGE', imageHash: 'one', scaleMode: 'CROP' }] }],
+    [{ ...node, fills: [] }, { ...node, id: '12:35', fills: [] }]];
+  for (const selection of choices) {
+    const app = harness({ selection, console: library([entry]) });
+    await openInsert(app, { keep: true }); app.element('browse-images').click(); await settle();
+    tilesOf(app)[0].click(); await settle();
+    assert.equal(app.element('insert-inspect').hidden, false);
+    assert.equal(app.element('shortlist-names').children.length, 0);
+    app.element('insert-inspect').click(); await settle();
+    assert.equal(app.element('artwork-inspector').hidden, false);
+    const comparing = app.element('inspect-panels').getAttribute('data-compare') === 'true';
+    decodeInspection(app, comparing ? 'draft' : 'layer');
+    if (!comparing) {
+      assert.equal(app.element('inspect-title').textContent, 'Inspect artwork');
+      assert.equal(app.element('inspect-draft-panel').hidden, true);
+      assert.equal(app.element('inspect-views').hidden, true);
+      assert.match(app.element('inspect-size').textContent, /Source 400\s×\s200.*Preview 400 × 200/);
+      app.element('inspect-dark').click(); app.element('inspect-pixels').click();
+      assert.equal(app.element('inspect-layer-panel').getAttribute('data-pixels'), 'true');
+    }
+    app.keydown({ key: 'Escape' }, app.element('artwork-inspector')); await settle();
+    assert.equal(app.element('artwork-inspector').hidden, true);
+    assert.equal(app.document.activeElement, app.element('insert-inspect'));
+    assert.equal(app.insertMessages().length, 0); assert.equal(app.exportMessages().length, 0); assert.equal(app.drafts().length, 0); assert.equal(app.undoCommits.length, 0);
+  }
+});
+
+test('direct image inspection closes on changed image, scope, selection or connection and ignores late previews', async () => {
+  const entries = [libraryAsset(441, 'First image', 400, 200), libraryAsset(442, 'Second image', 200, 200)];
+  const changes = [app => tilesOf(app)[1].click(), app => app.element('browse-placements').click(),
+    app => app.select([node]), app => app.saveConnection({ ...connection, appId: 'app-b', token: tok('direct_other') })];
+  for (const change of changes) {
+    const app = harness({ selection: [], console: library(entries) });
+    await openInsert(app); app.element('browse-images').click(); await settle(); tilesOf(app)[0].click(); await settle();
+    app.element('insert-inspect').click(); await settle(); assert.equal(app.element('artwork-inspector').hidden, false);
+    change(app); await settle(); assert.equal(app.element('artwork-inspector').hidden, true); assert.equal(app.element('app').inert, false);
+    decodeInspection(app); app.element('inspect-use').click(); await settle();
+    assert.equal(app.element('artwork-inspector').hidden, true);
+    assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+  }
+});
+
+test('empty shape recovery counts loaded images, keeps search and offers more only with a cursor', async () => {
+  for (const total of [2, 25]) {
+    const entries = Array.from({ length: total }, (_, i) => libraryAsset(450 + i, `Square ${i}`, 200, 200));
+    const app = harness({ selection: [{ ...node, width: 400, height: 200, fills: [] }], console: library(entries) });
+    await openInsert(app, { keep: true }); app.element('browse-images').click(); await settle();
+    app.element('insert-search').value = 'Square'; app.element('insert-search').dispatch('input'); app.fireTimers(300); await settle();
+    app.element('images-matching').click(); await settle();
+    assert.equal(tilesOf(app).length, 0); assert.equal(app.element('insert-clear').hidden, false);
+    assert.equal(app.element('insert-clear').textContent, `Show all ${Math.min(total, 24)} loaded images`);
+    assert.equal(app.element('images-more').hidden, total <= 24);
+    if (total <= 24) assert.doesNotMatch(app.element('insert-empty-text').textContent, /load more/i);
+    const reads = app.requests.filter(item => item.route === 'assets').length;
+    app.element('insert-clear').click(); await settle();
+    assert.equal(app.element('insert-search').value, 'Square'); assert.equal(tilesOf(app).length, Math.min(total, 24));
+    assert.equal(app.element('images-all').getAttribute('aria-checked'), 'true');
+    assert.equal(app.requests.filter(item => item.route === 'assets').length, reads, 'recovery reuses loaded results');
+    if (total > 24) { app.element('images-more').click(); await settle(); assert.equal(tilesOf(app).length, total); assert.equal(app.element('images-more').hidden, true); }
+    assert.equal(app.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+  }
+});

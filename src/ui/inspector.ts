@@ -46,6 +46,7 @@ export function renderInspection(): void {
   dialog.hidden = !session; element('app').inert = Boolean(session);
   if (!session) return;
   const items = session.items().slice(0, 3);
+  element('inspect-title').textContent = items.length > 1 ? 'Compare artwork' : 'Inspect artwork';
   element('inspect-panels').setAttribute('data-compare', String(Boolean(session.compare)));
   element('inspect-panels').style.gridTemplateColumns = session.compare ? `repeat(${items.length}, minmax(0, 1fr))` : '';
   if (!items.length) { closeInspection(); return; }
@@ -94,7 +95,7 @@ export function renderInspection(): void {
   element('inspect-refresh').hidden = !session.refresh;
   element('inspect-use').hidden = !session.use;
   setUnavailable(element('inspect-use'), actionsBlocked() || !loaded || session.usable?.(side) === false);
-  element('inspect-help').textContent = `${inLayer ? 'Original offers 100% preview pixels.' : '100% shows preview pixels, not app size.'} ← → compares artwork. Esc returns.`;
+  element('inspect-help').textContent = `${inLayer ? 'Original offers 100% preview pixels.' : '100% shows preview pixels, not app size.'}${items.length > 1 ? ' ← → compares artwork.' : ''} Esc returns.`;
   const bounds = panels.filter(panel => !panel.hidden).map(panel => panel.getBoundingClientRect());
   const scale = target ? Math.min(...bounds.flatMap(box => [box.width / target.width, box.height / target.height]), 1) : 1;
   names.forEach(name => {
