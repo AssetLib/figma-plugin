@@ -222,6 +222,7 @@ function installFakes(config) {
   const placementIds = config.placementIds ? Object.fromEntries(placements.map((placement, i) => [placement.key, uuid(40000 + i)])) : null;
   const library = Array.from({ length: config.images ?? 30 }, (_, i) => asset(i + 1, config.imageNames?.[i] ?? `Image ${i + 1}`, ...(config.imageSizes?.[i] ?? [400, 200])));
   if (config.imageUsage) {
+    library[0].processingIntent = 'icon';
     artwork.assets[library[0].id] = library[0];
     const art = { assetId: library[0].id, via: { arm: null, appearance: null } };
     placements[0].cells[0].draft = art; placements[0].cells[0].production = art;
@@ -4236,6 +4237,7 @@ for (const theme of ['light', 'dark']) test(`image picker usage keeps environmen
     const page = await openUi({ imageUsage: true, images: 2, slotIds: true, contractOnlyCatalog: true, preferences: { browse: 'images' } }, { width, height: 480, theme });
     try {
       await page.waitFor(`${tiles}===2`); await page.click('#image-grid [role=option]');
+      assert.match(await page.evaluate(`document.querySelector('#image-grid [role=option]').title`), /Icon$/);
       await page.waitFor(`document.getElementById('image-usage-summary').textContent==='Usage in current placements (2)'`);
       await page.click('#image-usage-summary');
       await page.waitFor(`document.querySelectorAll('.image-usage-row img[src]').length===2`);

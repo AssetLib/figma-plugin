@@ -52,7 +52,7 @@ function parseRendition(value: unknown): RenditionInfo | null {
 export function parseLibraryAsset(value: unknown): LibraryAsset | null {
   if (!isRecord(value) || !validUuid(value.id) || typeof value.name !== 'string' || value.name.length > 1000
     || !count(value.width) || !count(value.height) || !Array.isArray(value.renditions)
-    || (value.processingIntent !== undefined && value.processingIntent !== null && value.processingIntent !== 'photo' && value.processingIntent !== 'artwork')) return null;
+    || (value.processingIntent !== undefined && value.processingIntent !== null && value.processingIntent !== 'photo' && value.processingIntent !== 'artwork' && value.processingIntent !== 'icon')) return null;
   return {
     id: value.id, name: value.name, width: value.width, height: value.height,
     processingIntent: (value.processingIntent ?? null) as LibraryAsset['processingIntent'],

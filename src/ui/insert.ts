@@ -598,7 +598,7 @@ function placementRow(placement: PlacementArtwork, current: ArtworkResponse): HT
 function imageTile(asset: LibraryAsset): HTMLElement {
   const tile = makeNode('div', 'tile');
   tile.setAttribute('data-asset-id', asset.id);
-  const kind = asset.processingIntent === 'photo' ? 'Photo' : 'Artwork';
+  const kind = asset.processingIntent === 'photo' ? 'Photo' : asset.processingIntent === 'icon' ? 'Icon' : 'Artwork';
   const guidance = imageGuidance(asset, shapeTarget());
   tile.title = `${asset.name || 'Untitled image'} · ${asset.width} × ${asset.height} · ${kind}`;
   const name = makeNode('span', 'name');

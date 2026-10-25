@@ -9430,3 +9430,18 @@ test('batch previews and image usage accept real artwork ids with contract-only 
   assert.match(textOf(app.element('image-usage-list')), /hero.artwork.*Draft · Staging/s);
   assert.equal(app.drafts().length, 0); assert.equal(app.exportMessages().length, 0);
 });
+
+test('icon asset descriptors remain visible and keep scoped usage complete without enabling SVG insertion', async () => {
+  const data = artwork(); data.placements[0].slotId = uuid(981); data.assets[baseArt].processingIntent = 'icon';
+  const app = harness({ console: { placements: [placement], artwork: data, library: Object.values(data.assets) } });
+  await openInsert(app); app.element('browse-images').click(); await settle();
+  assert.equal(tilesOf(app).length, 2, 'icon descriptors are not silently dropped');
+  const tile = tilesOf(app).find(item => item.getAttribute('data-asset-id') === baseArt);
+  assert.match(tile.title, /Icon$/); tile.click(); openImageUsage(app); await settle();
+  assert.equal(app.element('image-usage-summary').textContent, 'Usage in current placements (1)');
+  assert.match(textOf(app.element('image-usage-list')), /Draft · Staging/);
+  const onlySvg = { ...data.assets[baseArt], renditions: [{ sha256: sha(999), mime: 'image/svg+xml', bytes: 100, width: 100, height: 100 }] };
+  const svg = harness({ console: { library: [onlySvg] } }); await openInsert(svg); svg.element('browse-images').click(); await settle();
+  tilesOf(svg)[0].click(); await settle(); assert.equal(off(svg, 'insert'), true); svg.element('insert').click(); await settle();
+  assert.equal(svg.insertMessages().length, 0); assert.equal(app.drafts().length, 0);
+});

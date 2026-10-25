@@ -1231,3 +1231,12 @@ test('browse ownership uses bundled SHA-256 matching standard vectors and exact 
     assert.notEqual(browseScope({ ...connection, token: `${token}b` }), browseScope(connection));
   }
 });
+
+test('source library accepts icon intent while retaining supported rendition eligibility and refusing unknown intent', () => {
+  const icon = libraryAsset([item(1, 'image/svg+xml', 1200, 900)], { processingIntent: 'icon' });
+  const page = parseAssetPage({ assets: [icon], nextCursor: null });
+  assert.equal(page.assets[0].processingIntent, 'icon'); assert.equal(insertRendition(page.assets[0]), null);
+  assert.equal(parseAssetPage({ assets: [{ ...icon, processingIntent: 'unknown' }], nextCursor: null }).assets.length, 0);
+  const raster = parseAssetPage({ assets: [libraryAsset([item(1, 'image/png', 1200, 900)], { processingIntent: 'icon' })], nextCursor: null });
+  assert.equal(insertRendition(raster.assets[0]).mime, 'image/png');
+});

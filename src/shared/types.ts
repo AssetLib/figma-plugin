@@ -118,7 +118,7 @@ export interface LibraryAsset {
   name: string;
   width: number;
   height: number;
-  processingIntent: 'photo' | 'artwork' | null;
+  processingIntent: 'photo' | 'artwork' | 'icon' | null;
   renditions: RenditionInfo[];
 }
 
