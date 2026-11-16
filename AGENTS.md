@@ -84,7 +84,7 @@ CI (`.github/workflows/verify.yml`) runs `npm ci`, `npm run verify`, and `npm ru
 
 Dev dependencies are exact pins: `@figma/plugin-typings` 1.117.0, `typescript` 5.9.3, `esbuild` 0.25.12. README records why each version was chosen; keep pins exact and update that table when one changes. Every lockfile entry has its registry `resolved` URL and `integrity` hash; keep it that way so `npm ci` verifies each package.
 
-`package.json` is `private` at version 0.1.0 and nothing else reads that version. The founder authorized a Figma Community release on October 20, 2026. It is not published until Figma approves the submission. Keep the existing plugin ID and record submission separately from approval and outside-install acceptance. There are no release tags.
+`package.json` is `private` at version 0.1.0 and nothing else reads that version. The founder authorized a Figma Community release on October 20, 2026. Community Version 1 became publicly available on November 16, 2026, and its isolated-client staging acceptance passed that day using an existing account. Keep the existing plugin ID and distinguish source changes, Community updates, agent rehearsal, and independent outside-designer acceptance. Later source features become publicly available only after a separate Community update. There are no release tags.
 
 ## Writing rules
 

@@ -2,7 +2,13 @@
 
 Insert your app's placement artwork and library images into Figma, then send one or several selected layers to their own draft placements. Destinations are remembered, and first and repeat sends use the same **Send to draft** action. Publishing remains a separate action in the Assetlib console.
 
-Submitted to Figma Community on 2026-10-21; review is pending. Use the development install below until the public listing is available.
+Available in [Figma Community](https://www.figma.com/community/plugin/1690264758934826227/assetlib) since 2026-11-16. Community Version 1 supports single-layer Send and Sync. This source branch includes batch Send and the later review and browsing improvements being prepared for the next Community update.
+
+## Install from Figma Community
+
+1. Open the [Assetlib Community page](https://www.figma.com/community/plugin/1690264758934826227/assetlib) and choose **Open in Figma**. Sign in if asked, then use **Open in…** to choose a design file or **New file**.
+2. Choose **Run**, or save the plugin and open **Plugins → Assetlib → Open Assetlib** in the design file.
+3. Choose **Connect to Assetlib**, approve the matching request in your browser, then return to Figma. See [Connect](#connect) for the account and workspace requirements.
 
 ## Install as a development plugin
 
@@ -18,7 +24,7 @@ The build creates a minified `dist/code.js` and a self-contained `dist/ui.html`.
 1. In Figma desktop, open a design file, select **Plugins → Development → Import plugin from manifest…**, and choose this repository's `manifest.json`.
 2. Run **Plugins → Development → Assetlib → Open Assetlib**. Rebuild after source changes; use Figma's development hot reload or reopen the plugin.
 
-`manifest.json` commits the plugin `id` `1690264758934826227`, which Figma assigned when this plugin was created as a development plugin. The plugin is not published to the Figma Community. Figma scopes client storage to the plugin ID, so saved connections and send destinations belong to that ID; don't change it in the repository. A manifest without an `id` imports, but the plugin then cannot save its connection: Figma reports `Cannot access client storage without a plugin ID`.
+`manifest.json` commits the plugin `id` `1690264758934826227`, shared by the development install and Community plugin. Figma scopes client storage to the plugin ID, so saved connections and send destinations belong to that ID; don't change it in the repository. A manifest without an `id` imports, but the plugin then cannot save its connection: Figma reports `Cannot access client storage without a plugin ID`.
 
 To use a development ID of your own instead: select **Plugins → Development → New plugin**, choose **Figma design** and **Custom UI**, save the generated starter in a separate temporary folder, and copy its `id` into your local `manifest.json` before importing. If Figma lists that starter under the same ID, remove its development entry first. Don't commit your ID. Client storage under a different ID starts empty, so connections and send destinations saved under the other ID don't carry over.
 
@@ -26,7 +32,7 @@ See Figma's [development plugin instructions](https://help.figma.com/hc/en-us/ar
 
 ## Test against staging
 
-Choose **Change → Console → Staging console**, then **Connect to Assetlib**. Approve in `assetlib-billing-staging.vercel.app`. To keep a saved production connection untouched, import a separate development plugin using your own ID (see above); keep the repository’s ID unchanged. The account chip says **Staging** while connected to this separate console; its workspaces, images, tokens, and browser links stay there. Inside that console, Draft, Staging, and Production still name its own release environments. Publish test releases only to **Staging** in the console.
+Choose **Change → Console → Staging console**, then **Connect to Assetlib**. Approve in `assetlib-billing-staging.vercel.app`. For Community acceptance, use an isolated browser client or Figma account so the saved production connection under the shared plugin ID stays intact. For development testing, use a separate development plugin ID (see above); keep the repository’s ID unchanged. The account chip says **Staging** while connected to this separate console; its workspaces, images, tokens, and browser links stay there. Inside that console, Draft, Staging, and Production still name its own release environments. Publish test releases only to **Staging** in the console.
 
 The release manifest allows the exact staging host alongside production; arbitrary preview hosts are not supported. Production remains the default, and saved connections stay unchanged. A staging token is never reused on production. Localhost appears only in `npm run watch` or `node scripts/build.mjs --dev` builds and is allowed only for development plugins.
 
@@ -182,7 +188,7 @@ A read times out after 20 seconds, and a download after 20 seconds plus 15 per M
 
 Messages are plain and say what to do next, without HTTP codes or developer terms: a refused or revoked saved pasted token offers Connect again or a new token (a revoked token’s 403 included, wherever it is met); a freshly pasted token the console refuses still says to create a new one in Settings › Tokens; a token without the Draft permission says so; HTTP 409 keeps the console's own message; an export too large to send says "over 3.3 MB as a PNG" (whichever limit it met: 4 MiB of PNG, Vercel's 4.5 MB request, or HTTP 413; every PNG under 3.3 MB fits); a busy console (429) asks to try again in a minute; a server error says "Assetlib had a problem ({status})"; an unreachable console says to check the internet connection (the local console is named, since it may not be running); timeouts say how many seconds the plugin waited, and a draft that timed out may have arrived anyway. A console without the Insert endpoints (a 404) is reported as such; Send also requires the artwork endpoint before uploading, a network failure on an Insert read is said as one ("Can't reach Assetlib. Check your internet connection.", with **Try again**), and an image removed after the list loaded asks for a Refresh, with **Refresh** in the error line. When a pasted token’s `GET /api/token` fails with a network error, a tokenless request distinguishes an older console that needs organization and app IDs from one that cannot be reached; only an answer enables the ID fields; a later **Connect** with the ID fields still empty asks the console about the token again. Finished operations are Figma toasts of at most 100 characters; every toast, result, and error is also announced through one status and one alert region. The shared contract allows at most 4 MiB decoded PNG bytes and 4,500,000 bytes for the JSON body, Vercel's request limit, so a base64 PNG above about 3.3 MB decoded does not fit.
 
-Community listing copy and editable artwork are in [community/](community/README.md). Preparation is not publication: Figma reviews submissions before listing the plugin.
+Community listing copy, editable artwork, and update instructions are in [community/](community/README.md). The public listing's version history identifies the available Community release; source changes require a separate Community update.
 
 ## Development and verification
 
